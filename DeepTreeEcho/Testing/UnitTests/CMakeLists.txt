@@ -162,11 +162,36 @@ gtest_discover_tests(ActiveInferenceTests
 )
 
 # ============================================================================
+# Cortisol Dynamics Tests
+# ============================================================================
+add_executable(CortisolDynamicsTests
+    CortisolDynamicsTests.cpp
+)
+
+target_link_libraries(CortisolDynamicsTests
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+target_include_directories(CortisolDynamicsTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/../../
+    ${CMAKE_SOURCE_DIR}/../../../
+)
+
+gtest_discover_tests(CortisolDynamicsTests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    PROPERTIES
+        LABELS "unit;neurochemical;cortisol"
+        TIMEOUT 60
+)
+
+# ============================================================================
 # All Tests Target
 # ============================================================================
 add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure --parallel 4
-    DEPENDS CoreTests MemoryTests AvatarCognitionTests ReservoirIntegrationTests ActiveInferenceTests
+    DEPENDS CoreTests MemoryTests AvatarCognitionTests ReservoirIntegrationTests ActiveInferenceTests CortisolDynamicsTests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running all DeepTreeEcho unit tests"
 )
@@ -196,10 +221,10 @@ endif()
 # ============================================================================
 # Installation
 # ============================================================================
-install(TARGETS CoreTests MemoryTests AvatarCognitionTests ReservoirIntegrationTests ActiveInferenceTests
+install(TARGETS CoreTests MemoryTests AvatarCognitionTests ReservoirIntegrationTests ActiveInferenceTests CortisolDynamicsTests
     RUNTIME DESTINATION bin/tests
 )
 
 message(STATUS "DeepTreeEcho Tests configured")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "  Tests: CoreTests, MemoryTests, AvatarCognitionTests, ReservoirIntegrationTests, ActiveInferenceTests")
+message(STATUS "  Tests: CoreTests, MemoryTests, AvatarCognitionTests, ReservoirIntegrationTests, ActiveInferenceTests, CortisolDynamicsTests")
