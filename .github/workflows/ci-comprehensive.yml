@@ -70,6 +70,8 @@ jobs:
   unit-tests-deeptreeecho:
     name: Unit Tests - DeepTreeEcho
     runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_COMMIT_ID: '53bef8994c541b6561884a8395ea35715ece75db'
     strategy:
       fail-fast: false
       matrix:
@@ -87,17 +89,16 @@ jobs:
       - name: Validate vcpkgGitCommitId format
         shell: bash
         run: |
-          SHA="53bef8994c541b6561884a8395ea35715ece75db"
-          if ! echo "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "ERROR: vcpkgGitCommitId '$SHA' is not a valid 40-hex-digit SHA1" >&2
+          if ! echo "$VCPKG_COMMIT_ID" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "ERROR: vcpkgGitCommitId '$VCPKG_COMMIT_ID' is not a valid 40-hex-digit SHA1" >&2
             exit 1
           fi
-          echo "vcpkgGitCommitId is valid: $SHA"
+          echo "vcpkgGitCommitId is valid: $VCPKG_COMMIT_ID"
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: '53bef8994c541b6561884a8395ea35715ece75db'
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
