@@ -84,10 +84,20 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Validate vcpkgGitCommitId format
+        shell: bash
+        run: |
+          SHA="53bef8994c541b6561884a8395ea35715ece75db"
+          if ! echo "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "ERROR: vcpkgGitCommitId '$SHA' is not a valid 40-hex-digit SHA1" >&2
+            exit 1
+          fi
+          echo "vcpkgGitCommitId is valid: $SHA"
+
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: '2024.01.12'
+          vcpkgGitCommitId: '53bef8994c541b6561884a8395ea35715ece75db'
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
