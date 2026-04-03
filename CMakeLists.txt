@@ -60,11 +60,13 @@ if(NOT EIGEN3_FOUND)
     message(FATAL_ERROR "Eigen library not found. Install libeigen3-dev or ensure bundled Eigen has header files.")
 endif()
 
-# Create an interface library for Eigen
-add_library(Eigen3::Eigen INTERFACE IMPORTED)
-set_target_properties(Eigen3::Eigen PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${EIGEN3_INCLUDE_DIR}"
-)
+# Create an interface library for Eigen only if find_package didn't already create it
+if(NOT TARGET Eigen3::Eigen)
+    add_library(Eigen3::Eigen INTERFACE IMPORTED)
+    set_target_properties(Eigen3::Eigen PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${EIGEN3_INCLUDE_DIR}"
+    )
+endif()
 
 # Set compiler flags
 if(MSVC)
