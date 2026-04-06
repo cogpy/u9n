@@ -126,6 +126,7 @@ jobs:
             ${{ runner.os }}-build-
 
       - name: Configure CMake
+        shell: bash
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
@@ -181,6 +182,7 @@ jobs:
 
       - name: Configure CMake
         working-directory: ReservoirEcho/reservoircpp_cpp
+        shell: bash
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
@@ -272,6 +274,7 @@ jobs:
           key: ${{ runner.os }}-e2e-${{ hashFiles('**/CMakeLists.txt') }}
 
       - name: Configure CMake
+        shell: bash
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \

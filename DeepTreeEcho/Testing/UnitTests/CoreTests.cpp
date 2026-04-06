@@ -15,6 +15,7 @@
 #include <memory>
 #include <vector>
 #include <chrono>
+#include <thread>
 #include <random>
 
 // Mock Unreal Engine types for standalone testing
