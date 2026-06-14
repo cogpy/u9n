@@ -134,7 +134,7 @@ jobs:
             -DENABLE_COVERAGE=${{ matrix.build_type == 'Debug' && runner.os == 'Linux' }}
 
       - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }} -j $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
 
       - name: Run Unit Tests
         run: |
