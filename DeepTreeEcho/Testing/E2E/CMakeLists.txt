@@ -41,7 +41,6 @@ add_executable(CognitivePipelineE2E
 target_link_libraries(CognitivePipelineE2E
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     Threads::Threads
 )
 
@@ -67,7 +66,6 @@ add_executable(AvatarIntegrationE2E
 target_link_libraries(AvatarIntegrationE2E
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     Threads::Threads
 )
 
@@ -93,7 +91,6 @@ add_executable(ReservoirCognitiveE2E
 target_link_libraries(ReservoirCognitiveE2E
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     Threads::Threads
 )
 

@@ -10,7 +10,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <gmock/gmock.h>
 #include <memory>
 #include <vector>
 #include <random>
@@ -95,7 +94,10 @@ public:
         Vector newState = preActivation.array().tanh();
         State = (1.0 - Config.LeakRate) * State + Config.LeakRate * newState;
         
-        // Output
+        if (!bTrained) {
+            return State.head(Config.OutputDim);
+        }
+
         return Wout * State;
     }
     

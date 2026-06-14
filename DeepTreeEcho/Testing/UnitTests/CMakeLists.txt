@@ -40,7 +40,6 @@ add_executable(CoreTests
 target_link_libraries(CoreTests
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     pthread
 )
 
@@ -66,7 +65,6 @@ add_executable(MemoryTests
 target_link_libraries(MemoryTests
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     pthread
 )
 
@@ -92,7 +90,6 @@ add_executable(AvatarCognitionTests
 target_link_libraries(AvatarCognitionTests
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     pthread
 )
 
@@ -118,7 +115,6 @@ add_executable(ReservoirIntegrationTests
 target_link_libraries(ReservoirIntegrationTests
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     pthread
 )
 
@@ -145,7 +141,6 @@ add_executable(ActiveInferenceTests
 target_link_libraries(ActiveInferenceTests
     GTest::gtest
     GTest::gtest_main
-    GTest::gmock
     pthread
 )
 
