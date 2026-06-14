@@ -11,7 +11,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <gmock/gmock.h>
 #include <memory>
 #include <vector>
 #include <cmath>
@@ -94,19 +93,26 @@ struct FGenerativeModel {
     int NumActions = 3;
     
     FGenerativeModel() {
-        // Initialize with default dimensions
-        A.resize(NumObservations, Vector(NumStates, 0.25));
-        B.resize(NumStates, Vector(NumStates * NumActions, 0.0));
-        C.resize(NumObservations, 0.0);
-        D.resize(NumStates, 0.25);
-        
+        ConfigureDimensions(NumStates, NumObservations, NumActions);
+    }
+
+    void ConfigureDimensions(int numStates, int numObservations, int numActions) {
+        NumStates = numStates;
+        NumObservations = numObservations;
+        NumActions = numActions;
+
+        A.assign(NumObservations, Vector(NumStates, 0.25));
+        B.assign(NumStates, Vector(NumStates * NumActions, 0.0));
+        C.assign(NumObservations, 0.0);
+        D.assign(NumStates, NumStates > 0 ? 1.0 / NumStates : 0.0);
+
         // Set up simple observation model (identity-ish)
         for (int i = 0; i < NumObservations; i++) {
             for (int j = 0; j < NumStates; j++) {
                 A[i][j] = (i == j) ? 0.7 : 0.1;
             }
         }
-        
+
         // Normalize columns
         for (int j = 0; j < NumStates; j++) {
             double sum = 0.0;
@@ -273,7 +279,10 @@ public:
     double GetFreeEnergy() const { return CurrentBelief.FreeEnergy; }
     
     void SetPreferences(const Vector& preferences) {
-        Model.C = preferences;
+        Model.C.assign(Model.NumObservations, 0.0);
+        for (size_t i = 0; i < std::min(Model.C.size(), preferences.size()); i++) {
+            Model.C[i] = preferences[i];
+        }
     }
     
 private:
@@ -383,9 +392,7 @@ public:
         
         // Initialize active inference engine
         FGenerativeModel model;
-        model.NumStates = beliefDim;
-        model.NumObservations = beliefDim;
-        model.NumActions = intentionDim;
+        model.ConfigureDimensions(beliefDim, beliefDim, intentionDim);
         InferenceEngine.Initialize(model);
         
         bInitialized = true;

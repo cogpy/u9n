@@ -85,6 +85,7 @@ add_subdirectory(ReservoirEcho/reservoircpp_cpp)
 # ============================================================================
 if(BUILD_TESTING OR BUILD_E2E_TESTS)
     find_package(GTest QUIET)
+    find_package(Threads REQUIRED)
     if(NOT GTest_FOUND)
         include(FetchContent)
         FetchContent_Declare(
@@ -115,21 +116,29 @@ if(BUILD_TESTING)
     file(GLOB UNIT_TEST_SOURCES "DeepTreeEcho/Testing/UnitTests/*.cpp")
     
     if(UNIT_TEST_SOURCES)
-        add_executable(DeepTreeEchoUnitTests ${UNIT_TEST_SOURCES})
-        target_link_libraries(DeepTreeEchoUnitTests
-            GTest::gtest
-            GTest::gtest_main
-            GTest::gmock
-            Threads::Threads
-            Eigen3::Eigen
-        )
-        target_include_directories(DeepTreeEchoUnitTests PRIVATE
-            ${CMAKE_SOURCE_DIR}/DeepTreeEcho
-            ${CMAKE_SOURCE_DIR}/ReservoirEcho/reservoircpp_cpp/include
-        )
-        gtest_discover_tests(DeepTreeEchoUnitTests
-            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-            PROPERTIES LABELS "unit"
+        set(DEEP_TREE_ECHO_UNIT_TEST_TARGETS)
+        foreach(UNIT_TEST_SOURCE ${UNIT_TEST_SOURCES})
+            get_filename_component(UNIT_TEST_NAME ${UNIT_TEST_SOURCE} NAME_WE)
+            add_executable(${UNIT_TEST_NAME} ${UNIT_TEST_SOURCE})
+            target_link_libraries(${UNIT_TEST_NAME}
+                GTest::gtest
+                GTest::gtest_main
+                Threads::Threads
+                Eigen3::Eigen
+            )
+            target_include_directories(${UNIT_TEST_NAME} PRIVATE
+                ${CMAKE_SOURCE_DIR}/DeepTreeEcho
+                ${CMAKE_SOURCE_DIR}/ReservoirEcho/reservoircpp_cpp/include
+            )
+            gtest_discover_tests(${UNIT_TEST_NAME}
+                WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                PROPERTIES LABELS "unit"
+            )
+            list(APPEND DEEP_TREE_ECHO_UNIT_TEST_TARGETS ${UNIT_TEST_NAME})
+        endforeach()
+
+        add_custom_target(DeepTreeEchoUnitTests
+            DEPENDS ${DEEP_TREE_ECHO_UNIT_TEST_TARGETS}
         )
     endif()
 endif()
@@ -149,7 +158,6 @@ if(BUILD_E2E_TESTS)
         target_link_libraries(${E2E_NAME}
             GTest::gtest
             GTest::gtest_main
-            GTest::gmock
             Threads::Threads
             Eigen3::Eigen
         )
