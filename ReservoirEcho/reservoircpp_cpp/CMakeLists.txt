@@ -65,6 +65,10 @@ target_include_directories(reservoircpp_core PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+if(WIN32 AND BUILD_SHARED_LIBS)
+    set_target_properties(reservoircpp_core PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
 # Deep Tree Echo integration library
 add_library(deep_tree_echo ${DEEP_TREE_ECHO_SOURCES})
 target_include_directories(deep_tree_echo PUBLIC

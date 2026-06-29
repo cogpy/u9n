@@ -16,6 +16,7 @@
 #include <cmath>
 #include <random>
 #include <functional>
+#include <chrono>
 
 // ============================================================================
 // Mock Types for Active Inference

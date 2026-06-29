@@ -14,6 +14,7 @@
 #include <vector>
 #include <random>
 #include <cmath>
+#include <chrono>
 #include <Eigen/Dense>
 
 // ============================================================================
@@ -22,6 +23,7 @@
 
 using Matrix = Eigen::MatrixXd;
 using Vector = Eigen::VectorXd;
+constexpr double kPi = 3.14159265358979323846;
 
 /**
  * @brief Mock Echo State Network for testing
@@ -699,7 +701,7 @@ TEST(TemporalPatternTest, SequenceProcessing) {
     std::vector<Vector> outputs;
     for (int t = 0; t < 100; t++) {
         Vector input(1);
-        input(0) = std::sin(2.0 * M_PI * t / 20.0);
+        input(0) = std::sin(2.0 * kPi * t / 20.0);
         outputs.push_back(esn.Forward(input));
     }
     
