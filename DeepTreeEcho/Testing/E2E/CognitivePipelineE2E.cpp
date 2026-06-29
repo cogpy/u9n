@@ -14,11 +14,13 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <vector>
+#include <array>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
 #include <chrono>
+#include <cmath>
 #include <random>
 #include <atomic>
 
@@ -494,13 +496,14 @@ protected:
     
     FSensoryInput CreatePatternedInput(int pattern) {
         FSensoryInput input;
+        constexpr float kPi = 3.14159265358979323846f;
         
         // Create recognizable patterns
         for (int i = 0; i < 128; i++) {
-            input.Visual[i] = std::sin(2.0f * M_PI * i / 128.0f * pattern);
+            input.Visual[i] = std::sin(2.0f * kPi * i / 128.0f * pattern);
         }
         for (int i = 0; i < 64; i++) {
-            input.Auditory[i] = std::cos(2.0f * M_PI * i / 64.0f * pattern);
+            input.Auditory[i] = std::cos(2.0f * kPi * i / 64.0f * pattern);
         }
         
         return input;
