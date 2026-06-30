@@ -767,7 +767,11 @@ TEST(ReservoirPerformanceTest, ESNForwardPerformance) {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
-    EXPECT_LT(duration.count(), 1000);  // 1000 forward passes in under 1 second
+#ifdef NDEBUG
+    EXPECT_LT(duration.count(), 1000);   // 1000 forward passes in under 1 second (Release)
+#else
+    EXPECT_LT(duration.count(), 10000);  // 1000 forward passes in under 10 seconds (Debug builds on CI)
+#endif
 }
 
 TEST(ReservoirPerformanceTest, CognitiveBridgePerformance) {
