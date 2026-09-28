@@ -58,9 +58,11 @@ public:
     enum class Kind { Episodic, Semantic, Procedural, Declarative };
     struct Entry { Eigen::VectorXd Raw, Key; int Label; Kind Type; double Salience; };
 
+    size_t Capacity = 0;       // 0 = unbounded; otherwise the oldest entry is evicted on overflow
     double Shrinkage = 0.1;    // ridge = α·√(σ_max·σ_median); swept: 0.1 → probe σ=0.25 recall 1.00, σ=0.5 0.64
 
     void Store(const Eigen::VectorXd& key, int label, Kind k = Kind::Episodic, double salience = 1.0) {
+        if (Capacity > 0 && Entries.size() >= Capacity) Entries.erase(Entries.begin());
         Entries.push_back({key, Project(key), label, k, salience});
     }
 

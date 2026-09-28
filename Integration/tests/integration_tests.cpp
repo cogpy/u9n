@@ -135,7 +135,26 @@ static void ContextualReadoutRetainsOldTask() {
     CHECK(after < before + 0.05);      // task A survives learning task B
 }
 
+static void AgentConsolidatesEpisodicMemory() {
+    UnifiedEchoAgent a(1, 7, /*memoryCapacity=*/64);
+    a.ConsolidateEvery = 16;
+    std::mt19937 rng(3); std::normal_distribution<double> N(0, 1);
+    Eigen::VectorXd key; int label = -1;
+    for (int t = 0; t < 12 * 120; ++t) {
+        a.Tick(Eigen::VectorXd::Constant(1, 0.5 * N(rng)), 0.0);
+        if (a.CurrentStep() == 12 && a.Torus.Coherence() > 0.5) { key = a.LastEpisodeKey(); label = (int)a.CyclesCompleted() - 1; }
+    }
+    CHECK(a.Memory.Size() <= 64);
+    CHECK(a.Consolidations() >= 1);
+    CHECK(a.Memory.IsConsolidated());
+    CHECK(label >= 0);
+    // A lightly corrupted copy of the most recent stored episode must come back to it.
+    Eigen::VectorXd cue = key + 0.02 * Eigen::VectorXd::NullaryExpr(key.size(), [&] { return N(rng); });
+    CHECK(a.RecallEpisode(cue) == label);
+}
+
 int main() {
+    AgentConsolidatesEpisodicMemory();
     EchoSpaceConsolidationSeparatesSharedMode(); TrajectoryKeyShape();
     ContextualReadoutRetainsOldTask();
     ReservoirSpectralRadius(); EcanFocusesSalientCluster(); ThompsonPrefersRewardedArm(); MosesDeduplicates();

@@ -301,7 +301,7 @@ static Probe Embodied() {
         }
     }
     const double rate = got / acts, chance = 0.9 / A + 0.1 * (A - 1) / A;
-    std::ostringstream n; n << "EchoSpace consolidated " << agent.Memory.Size() << " episodes; "
+    std::ostringstream n; n << "EchoSpace holds " << agent.Memory.Size() << " episodes (" << agent.Consolidations() << " consolidations); "
                             << agent.Core.MinedPatterns().size() << " MOSES patterns";
     return {"closed_loop_agency", "Closed-loop contextual agency (12-step unified agent)", "reward rate (2nd half)",
             rate, chance, Clamp01((rate - chance) / (0.9 - chance)), n.str()};

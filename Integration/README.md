@@ -29,7 +29,7 @@ wrap these classes directly.
 ```bash
 cmake -B build && cmake --build build --target U9nIntegrationTests DeepTreeEchoAGIEval
 ctest --test-dir build -R U9nIntegrationTests       # labelled "unit", so CI's `ctest -L unit` runs it
-./build/bin/DeepTreeEchoAGIEval report.md report.json   # ~35 s
+./build/bin/DeepTreeEchoAGIEval report.md report.json   # ~40 s
 ```
 
 ## AGI capability evaluation
@@ -95,7 +95,18 @@ Recall with 200 stored 20-step sequences:
 The limits of the fix:
 
 - **High noise.** At σ = 0.5, noise is as large as the signal, and recall falls to 0.59. A shrinkage scaled only to σ_max reached 0.82 there but broke the dominant-shared-mode case. Getting both would need the shrinkage chosen per memory store (e.g. by held-out reconstruction) rather than one global constant.
-- **Consolidation is a batch step.** It costs O(M²·D), so it should run periodically, not on every store. `UnifiedEchoAgent` stores many episodes and does not call it yet.
+- **Consolidation is a batch step.** It costs O(M²·D + M³), so the agent amortises it instead of running it on every store (see below).
+
+### Episodic memory in the agent cycle
+
+`UnifiedEchoAgent` now uses the same trajectory keys and consolidation as the probe:
+
+- **Episodes.** At step 12, the four Perceiving states of the cycle (steps 1, 4, 7, 10) are concatenated into one episode key, labelled with the cycle index. The key is stored only when the toroid's coherence is above 0.5. This replaces storing a single raw state at every sync point, which produced about 3,000 unconsolidated entries per 12,000 ticks.
+- **Bounded memory.** `EchoSpace::Capacity` defaults to 512 episodes in the agent and evicts the oldest entry on overflow.
+- **Sleep consolidation.** Every `ConsolidateEvery` stored episodes (default 128), the agent calls `Consolidate()` at the end of the cycle. Episodes stored in between are projected through the latest fitted map.
+- **Recall.** `RecallEpisode(key)` returns the cycle index of the nearest stored episode. `LastEpisodeKey()` exposes the current cycle's key.
+
+In the closed-loop probe (12,000 ticks), the agent fills its 512 slots and consolidates 7 times. That adds about 4 s to the evaluation and leaves every score unchanged.
 
 ### Verdict
 
