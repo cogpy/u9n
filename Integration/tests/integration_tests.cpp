@@ -13,6 +13,9 @@ static int Failures = 0;
 static void ReservoirSpectralRadius() {
     ReservoirConfig c; c.Size = 200;
     EchoReservoir r(c);
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(3, 3);
+    M(0, 1) = -0.9; M(1, 0) = 0.9; M(2, 2) = 0.5;           // dominant complex pair |λ| = 0.9
+    CHECK(std::abs(EchoReservoir::SpectralRadiusOf(M) - 0.9) < 0.02);
     for (int t = 0; t < 100; ++t) r.Step(0.5);
     CHECK(r.State().allFinite());
     CHECK(r.State().cwiseAbs().maxCoeff() <= 1.0);

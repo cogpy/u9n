@@ -29,7 +29,7 @@ wrap these classes directly.
 ```bash
 cmake -B build && cmake --build build --target U9nIntegrationTests DeepTreeEchoAGIEval
 ctest --test-dir build -R U9nIntegrationTests       # labelled "unit", so CI's `ctest -L unit` runs it
-./build/bin/DeepTreeEchoAGIEval report.md report.json   # ~45 s
+./build/bin/DeepTreeEchoAGIEval report.md report.json   # ~35 s
 ```
 
 ## AGI capability evaluation

@@ -7,7 +7,6 @@
 #pragma once
 
 #include <Eigen/Dense>
-#include <Eigen/Eigenvalues>
 #include <random>
 #include <vector>
 #include <cmath>
@@ -74,9 +73,19 @@ public:
         return Wout * Sb;
     }
 
-    static double SpectralRadiusOf(const Eigen::MatrixXd& M) {
-        Eigen::EigenSolver<Eigen::MatrixXd> es(M, false);
-        return es.eigenvalues().cwiseAbs().maxCoeff();
+    // Gelfand estimate ρ ≈ (‖M^k v‖ / ‖v‖)^(1/k): O(k·N²) instead of an O(N³) eigensolve,
+    // and robust to complex-conjugate dominant pairs where plain power iteration oscillates.
+    static double SpectralRadiusOf(const Eigen::MatrixXd& M, int iters = 200) {
+        Eigen::VectorXd v = Eigen::VectorXd::Ones(M.rows()).normalized();
+        double logGrowth = 0;
+        for (int k = 0; k < iters; ++k) {
+            v = M * v;
+            const double n = v.norm();
+            if (n < 1e-300) return 0.0;
+            logGrowth += std::log(n);
+            v /= n;
+        }
+        return std::exp(logGrowth / iters);
     }
 
     const Eigen::VectorXd& State() const { return X; }
