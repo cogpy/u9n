@@ -1,4 +1,5 @@
 // integration_tests.cpp — dependency-free checks for the u9n integration layer.
+#include "u9n/ContextualReadout.h"
 #include "u9n/UnifiedEchoAgent.h"
 
 #include <cstdio>
@@ -75,7 +76,32 @@ static void UnifiedCycleStreams() {
     CHECK(a.CurrentStep() == 12);
 }
 
+static void ContextualReadoutRetainsOldTask() {
+    ReservoirConfig c; c.Size = 128;
+    EchoReservoir r(c);
+    ContextualReadout bank(c.Size, 1);
+    auto run = [&](double f, int steps, bool train) {
+        r.Reset(); bank.ResetContext();
+        double se = 0, sv = 0;
+        for (int t = 0; t < steps; ++t) {
+            r.Step(std::sin(f * t));
+            bank.Observe(r.State());
+            const double y = std::sin(f * (t + 3));
+            if (train) bank.Train(r.State(), Eigen::VectorXd::Constant(1, y));
+            else if (t > 200) { se += std::pow(bank.Predict(r.State())[0] - y, 2); sv += y * y; }
+        }
+        return train ? 0.0 : std::sqrt(se / sv);
+    };
+    run(0.2, 4000, true);
+    const double before = run(0.2, 600, false);
+    run(0.05, 4000, true);
+    const double after = run(0.2, 600, false);
+    CHECK(bank.HeadCount() >= 2);
+    CHECK(after < before + 0.05);      // task A survives learning task B
+}
+
 int main() {
+    ContextualReadoutRetainsOldTask();
     ReservoirSpectralRadius(); EcanFocusesSalientCluster(); ThompsonPrefersRewardedArm(); MosesDeduplicates();
     ToroidLocksAntiPhase(); AdaptiveAttentionMatchesScheme(); EchoSpaceRecall(); NanEchoParamCount(); UnifiedCycleStreams();
     std::printf(Failures ? "%d failure(s)\n" : "all integration checks passed\n", Failures);

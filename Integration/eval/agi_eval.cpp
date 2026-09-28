@@ -5,6 +5,7 @@
 // Capabilities that cannot be exercised in this build are reported N/A, not guessed.
 //
 // usage: DeepTreeEchoAGIEval [report.md] [report.json]
+#include "u9n/ContextualReadout.h"
 #include "u9n/UnifiedEchoAgent.h"
 
 #include <cstdio>
@@ -175,37 +176,51 @@ static Probe EpisodicMemory() {
             acc, 1.0 / items, Clamp01((acc - 1.0 / items) / (1 - 1.0 / items)), "200 stored sequences, cue noise σ=0.25"};
 }
 
-// ── 7. Continual learning: GTAngel online Wout, task A → task B ───────────
+// ── 7. Continual learning: sequential tasks A → B → C without task labels ───
+// Single online Wout (GTAngel) vs ContextualReadout (context-routed head bank).
 static Probe ContinualLearning() {
+    const double freqs[3] = {0.2, 0.05, 0.11};
     EchoReservoir r;
-    GTAngelCore core; core.LearningRate = 2e-3;
+    GTAngelCore single; single.LearningRate = 2e-3;
+    ContextualReadout bank(r.Config().Size, 1);
+
     auto sgd = [&](double f, int steps) {
-        r.Reset();
+        r.Reset(); bank.ResetContext();
         for (int t = 0; t < steps; ++t) {
             r.Step(std::sin(f * t));
+            bank.Observe(r.State());
             if (t <= 50) continue;
             VectorXd tgt = VectorXd::Zero(GTAngelCore::ActionCount); tgt[0] = std::sin(f * (t + 3));
-            core.TrainWout(r.State(), tgt);
+            single.TrainWout(r.State(), tgt);
+            bank.Train(r.State(), tgt.head(1));
         }
     };
+    // Returns {single NRMSE, bank NRMSE}; bank is scored only after its context settles.
     auto test = [&](double f) {
-        r.Reset(); double se = 0, sv = 0;
-        for (int t = 0; t < 600; ++t) {
+        r.Reset(); bank.ResetContext();
+        double se1 = 0, se2 = 0, sv = 0;
+        for (int t = 0; t < 800; ++t) {
             r.Step(std::sin(f * t));
-            if (t <= 50) continue;
+            bank.Observe(r.State());
+            if (t <= 200) continue;
             const double y = std::sin(f * (t + 3));
-            se += std::pow(core.Readout().row(0).dot(r.State()) - y, 2); sv += y * y;
+            se1 += std::pow(single.Readout().row(0).dot(r.State()) - y, 2);
+            se2 += std::pow(bank.Predict(r.State())[0] - y, 2);
+            sv += y * y;
         }
-        return std::sqrt(se / sv);
+        return std::make_pair(std::sqrt(se1 / sv), std::sqrt(se2 / sv));
     };
-    sgd(0.2, 6000);  const double aAfterA = test(0.2);
-    sgd(0.05, 6000); const double aAfterB = test(0.2), bAfterB = test(0.05);
-    const double retention = Clamp01(1.0 - std::max(0.0, aAfterB - aAfterA));
-    std::ostringstream n;
-    n << "task A NRMSE " << aAfterA << " -> " << aAfterB << " after learning B (B NRMSE " << bAfterB
-      << "); score = retention x B-competence";
-    return {"continual_learning", "Continual learning (retention after new task, online SGD Wout)", "increase in task-A NRMSE",
-            aAfterB - aAfterA, 1.0, retention * Clamp01(1.0 - bAfterB), n.str()};
+    for (double f : freqs) sgd(f, 6000);
+    double worst1 = 0, worst2 = 0; std::ostringstream n;
+    n << "after A->B->C, per-task NRMSE single/bank:";
+    for (double f : freqs) {
+        auto [e1, e2] = test(f);
+        worst1 = std::max(worst1, e1); worst2 = std::max(worst2, e2);
+        n << " " << f << ":" << e1 << "/" << e2;
+    }
+    n << "; heads spawned " << bank.HeadCount() << "; baseline = single GTAngel Wout (worst-task NRMSE)";
+    return {"continual_learning", "Continual learning (3 sequential tasks, no task labels)", "worst-task NRMSE after all tasks",
+            worst2, worst1, Clamp01(1.0 - worst2), n.str()};
 }
 
 // ── 8. Metacognition: does GTAngel coherence track real competence? ───────

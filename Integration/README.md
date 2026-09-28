@@ -13,6 +13,7 @@ wrap these classes directly.
 | | `echoSpaceService.ts`: vector memory | `u9n::EchoSpace` (cosine recall, salience weighted) | 〃 |
 | | `deepTreeEchoService.ts` `getImprovementTrend` | `u9n::ResonanceLog` | 〃 |
 | | NanEcho `train_nanecho.py` (8L/8H/512d) | `u9n::NanEchoSpec` (descriptor only, no weights) | 〃 |
+| u9n | continual-learning readout bank | `u9n::ContextualReadout` (context-routed heads, no task labels) | `include/u9n/ContextualReadout.h` |
 | u9n | ESN (ρ=0.9, leak=0.3) | `u9n::EchoReservoir` (ridge readout) | `include/u9n/EchoReservoir.h` |
 | **all** | 12-step / 3-stream cycle | `u9n::UnifiedEchoAgent` | `include/u9n/UnifiedEchoAgent.h` |
 
@@ -45,9 +46,32 @@ The raw numbers are in [`AGI_EVALUATION_RESULTS.md`](AGI_EVALUATION_RESULTS.md),
 | Working memory (MC) | 0.55 | MC ≈ 55 of a 512 ceiling, which is typical for tanh ESNs. |
 | Temporal prediction (NARMA-10) | 0.39 | NRMSE 0.50 against 0.82 for the linear baseline. A tuned ESN reaches about 0.2–0.4. |
 | Episodic memory (noisy cue recall) | 0.27 | Weak. Reservoir encodings of 20-step sequences are not noise-robust keys. |
-| Continual learning | **0.02** | **Fails.** Learning task B wipes task A (NRMSE 0.01 → 0.99), which is catastrophic forgetting. |
+| Continual learning (3 sequential tasks) | 0.96 | **Fixed** with `ContextualReadout`. Worst-task NRMSE is 0.04; the single GTAngel Wout scores 0.75 on the same run. See below. |
 | Selective attention / toroid phase lock | 1.00 | These pass by construction: they confirm the dynamics are correct, not that the system is intelligent. |
 | Language & open-ended reasoning (NanEcho 48M) | N/A | No checkpoint or torch runtime here. At about 51 M parameters it would be a small nanoGPT at best. |
+
+### Continual learning fix
+
+`ContextualReadout` replaces the single online readout with a bank of readout heads:
+
+- **Context key.** The key is a slow running average of each neuron's squared activation, which gives a label-free signature of what the reservoir is currently doing.
+- **Routing.** Each sample goes to the head whose prototype is closest to the key by cosine similarity. A new head spawns, warm-started from the nearest one, when no prototype is closer than 0.97.
+- **Learning.** Only the routed head takes the GTAngel ridge-SGD step, so heads never overwrite each other.
+- **Settling gate.** Training waits until the key has integrated about 150 steps. Without this gate, the first samples of a new task were written into the old task's head, and the fix barely helped.
+
+Probe 7 learns three sine-prediction tasks in sequence (frequencies 0.2, 0.05 and 0.11), then tests all three:
+
+| Task | Single Wout NRMSE | ContextualReadout NRMSE |
+|---|---:|---:|
+| A (0.2) | 0.75 | 0.010 |
+| B (0.05) | 0.48 | 0.040 |
+| C (0.11) | 0.02 | 0.022 |
+
+The limits of the fix:
+
+- It works when tasks drive the reservoir into distinguishable states.
+- Two tasks that share an input signature but need different outputs would still collide in one head.
+- It does not produce transfer between tasks.
 
 ### Verdict
 
@@ -58,7 +82,6 @@ they perform at or above textbook baselines.
 The capabilities that define general intelligence are absent or failing:
 
 - **Open-ended language and reasoning** is not evaluated, and the only candidate is a 48 M model.
-- **Continual learning** collapses under catastrophic forgetting.
 - **Episodic memory** is weak.
 - **Abstraction and transfer across domains** has no mechanism at all.
 - **Planning over long horizons** has no model-based search.
@@ -67,7 +90,6 @@ Most of the documentation's "Complete" labels describe architecture that exists,
 
 ### Highest-leverage next steps
 
-1. **Continual learning.** Keep per-context readouts keyed by MOSES patterns or EchoSpace, or add EWC-style penalties on Wout. Re-run probe 7.
-2. **Episodic keys.** Use EchoSpace keys from the time-averaged, attention-weighted state rather than the final state.
-3. **Language.** Load a trained NanEcho checkpoint, report perplexity, and bind it to `UnifiedEchoAgent` through the Reflecting stream.
-4. **UE bridge.** Wrap `UnifiedEchoAgent` in a `UActorComponent` under `DeepTreeEcho/`, and mirror GTAngel's `Ue5PlayerAiBridgeService` IPC so the WPF trainer and UE5 share one core.
+1. **Episodic keys.** Use EchoSpace keys from the time-averaged, attention-weighted state rather than the final state.
+2. **Language.** Load a trained NanEcho checkpoint, report perplexity, and bind it to `UnifiedEchoAgent` through the Reflecting stream.
+3. **UE bridge.** Wrap `UnifiedEchoAgent` in a `UActorComponent` under `DeepTreeEcho/`, and mirror GTAngel's `Ue5PlayerAiBridgeService` IPC so the WPF trainer and UE5 share one core.
