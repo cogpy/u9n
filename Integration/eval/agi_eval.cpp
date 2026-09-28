@@ -220,7 +220,7 @@ static Probe ContinualLearning() {
     }
     n << "; heads spawned " << bank.HeadCount() << "; baseline = single GTAngel Wout (worst-task NRMSE)";
     return {"continual_learning", "Continual learning (3 sequential tasks, no task labels)", "worst-task NRMSE after all tasks",
-            worst2, worst1, Clamp01(1.0 - worst2), n.str()};
+            worst2, worst1, Clamp01((worst1 - worst2) / worst1), n.str()};
 }
 
 // ── 8. Metacognition: does GTAngel coherence track real competence? ───────
