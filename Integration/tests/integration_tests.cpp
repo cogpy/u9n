@@ -135,6 +135,33 @@ static void ContextualReadoutRetainsOldTask() {
     CHECK(after < before + 0.05);      // task A survives learning task B
 }
 
+static void EchoSpaceSalienceWeightedEviction() {
+    EchoSpace m;
+    m.Capacity = 3;
+    m.RetentionDecay = 1.0;                      // pure salience ranking
+    m.Store(Eigen::Vector3d(1, 0, 0), 0, EchoSpace::Kind::Episodic, 1.0);
+    m.Store(Eigen::Vector3d(0, 1, 0), 1, EchoSpace::Kind::Episodic, 0.1);
+    m.Store(Eigen::Vector3d(0, 0, 1), 2, EchoSpace::Kind::Episodic, 1.0);
+    m.Store(Eigen::Vector3d(1, 1, 0), 3, EchoSpace::Kind::Episodic, 0.5);
+    CHECK(m.Size() == 3);
+    CHECK(!m.Contains(1));                        // lowest salience evicted, not the oldest
+    CHECK(m.Contains(0) && m.Contains(2) && m.Contains(3));
+
+    // With decay, an old salient entry eventually loses to fresh mundane ones.
+    EchoSpace d;
+    d.Capacity = 2;
+    d.RetentionDecay = 0.5;
+    d.Store(Eigen::Vector3d(1, 0, 0), 0, EchoSpace::Kind::Episodic, 1.0);
+    for (int i = 1; i <= 6; ++i) d.Store(Eigen::Vector3d(0, 1, double(i)), i, EchoSpace::Kind::Episodic, 0.3);
+    CHECK(!d.Contains(0));
+
+    // Equal salience degrades to FIFO.
+    EchoSpace f;
+    f.Capacity = 2;
+    for (int i = 0; i < 3; ++i) f.Store(Eigen::Vector3d(1, double(i), 0), i);
+    CHECK(!f.Contains(0) && f.Contains(1) && f.Contains(2));
+}
+
 static void AgentConsolidatesEpisodicMemory() {
     UnifiedEchoAgent a(1, 7, /*memoryCapacity=*/64);
     a.ConsolidateEvery = 16;
@@ -154,6 +181,7 @@ static void AgentConsolidatesEpisodicMemory() {
 }
 
 int main() {
+    EchoSpaceSalienceWeightedEviction();
     AgentConsolidatesEpisodicMemory();
     EchoSpaceConsolidationSeparatesSharedMode(); TrajectoryKeyShape();
     ContextualReadoutRetainsOldTask();

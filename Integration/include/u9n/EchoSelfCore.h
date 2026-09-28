@@ -56,14 +56,27 @@ inline double AdaptiveAttention(double load, double activity) {
 class EchoSpace {
 public:
     enum class Kind { Episodic, Semantic, Procedural, Declarative };
-    struct Entry { Eigen::VectorXd Raw, Key; int Label; Kind Type; double Salience; };
+    struct Entry { Eigen::VectorXd Raw, Key; int Label; Kind Type; double Salience; long Stamp; };
 
-    size_t Capacity = 0;       // 0 = unbounded; otherwise the oldest entry is evicted on overflow
+    // Capacity 0 = unbounded. On overflow the entry with the lowest retention
+    //     r = Salience · RetentionDecay^age   (age = stores since it was written)
+    // is evicted, so salient episodes outlive mundane ones but still fade eventually.
+    // RetentionDecay = 1 gives pure salience ranking; salience all equal gives FIFO.
+    size_t Capacity = 0;
+    double RetentionDecay = 0.998;   // half-life ≈ 346 stores (sweep in Integration/README.md)
     double Shrinkage = 0.1;    // ridge = α·√(σ_max·σ_median); swept: 0.1 → probe σ=0.25 recall 1.00, σ=0.5 0.64
 
     void Store(const Eigen::VectorXd& key, int label, Kind k = Kind::Episodic, double salience = 1.0) {
-        if (Capacity > 0 && Entries.size() >= Capacity) Entries.erase(Entries.begin());
-        Entries.push_back({key, Project(key), label, k, salience});
+        if (Capacity > 0 && Entries.size() >= Capacity) Entries.erase(Entries.begin() + LeastRetained());
+        Entries.push_back({key, Project(key), label, k, salience, Clock++});
+    }
+
+    double Retention(size_t i) const {
+        return Entries[i].Salience * std::pow(RetentionDecay, double(Clock - Entries[i].Stamp));
+    }
+    bool Contains(int label) const {
+        for (auto& e : Entries) if (e.Label == label) return true;
+        return false;
     }
 
     // Fit the whitening map on current contents and re-project stored keys.
@@ -126,6 +139,13 @@ public:
     bool IsConsolidated() const { return Whitened; }
 
 private:
+    size_t LeastRetained() const {
+        size_t worst = 0;
+        for (size_t i = 1; i < Entries.size(); ++i)
+            if (Retention(i) < Retention(worst)) worst = i;   // ties keep the oldest (lowest index)
+        return worst;
+    }
+
     Eigen::VectorXd Project(const Eigen::VectorXd& k) const {
         if (!Whitened || k.size() != Mean.size()) return k.normalized();
         return (Whitener * (k - Mean)).normalized();
@@ -135,6 +155,7 @@ private:
     Eigen::VectorXd Mean;
     Eigen::MatrixXd Whitener;
     bool Whitened = false;
+    long Clock = 0;
 };
 
 class ResonanceLog {

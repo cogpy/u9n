@@ -5,7 +5,8 @@
 //     s=1 Acting      : attention-gated logits → Thompson action (GTAngel)
 //     s=2 Reflecting  : MOSES mining, toroid advance, resonance log (EchoSelf)
 //   step 12 (cycle end): the cycle's four perceived states form one episode key (trajectory
-//   encoding); it is stored in EchoSpace when the hemispheres are coherent, and every
+//   encoding); it is stored in EchoSpace when the hemispheres are coherent, with salience
+//   coherence × cycle |reward| driving eviction, and every
 //   ConsolidateEvery stored episodes EchoSpace re-fits its whitening ("sleep" consolidation).
 #pragma once
 
@@ -49,6 +50,7 @@ public:
             Resonance.Record(reward);
             break;
         }
+        CycleRewardAbs += std::abs(reward);
         if (Step == 12) EndCycle();
         return action;
     }
@@ -78,8 +80,12 @@ private:
         return c;
     }
     void EndCycle() {
+        // Salience: hemispheric coherence × how strongly rewarded the cycle was
+        // (mean |reward| ∈ [0,1]); neutral cycles keep half weight so they are not all tied.
+        const double salience = Torus.Coherence() * (0.5 + 0.5 * std::min(1.0, CycleRewardAbs / 12.0));
+        CycleRewardAbs = 0;
         if (Torus.Coherence() > 0.5) {
-            Memory.Store(CycleTrace, (int)Cycles, EchoSpace::Kind::Episodic, Torus.Coherence());
+            Memory.Store(CycleTrace, (int)Cycles, EchoSpace::Kind::Episodic, salience);
             if (++StoresSinceConsolidation >= ConsolidateEvery && Memory.Consolidate()) {
                 StoresSinceConsolidation = 0;
                 ++ConsolidationCount;
@@ -93,6 +99,7 @@ private:
     long Cycles = 0;
     int StoresSinceConsolidation = 0;
     int ConsolidationCount = 0;
+    double CycleRewardAbs = 0;
     // 4 Perceiving steps per cycle (1,4,7,10) → episode key of 4 × ReservoirSize.
     Eigen::VectorXd CycleTrace = Eigen::VectorXd::Zero(4 * GTAngelCore::ReservoirSize);
 };

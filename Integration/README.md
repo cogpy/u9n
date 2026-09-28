@@ -102,9 +102,20 @@ The limits of the fix:
 `UnifiedEchoAgent` now uses the same trajectory keys and consolidation as the probe:
 
 - **Episodes.** At step 12, the four Perceiving states of the cycle (steps 1, 4, 7, 10) are concatenated into one episode key, labelled with the cycle index. The key is stored only when the toroid's coherence is above 0.5. This replaces storing a single raw state at every sync point, which produced about 3,000 unconsolidated entries per 12,000 ticks.
-- **Bounded memory.** `EchoSpace::Capacity` defaults to 512 episodes in the agent and evicts the oldest entry on overflow.
+- **Bounded memory.** `EchoSpace::Capacity` defaults to 512 episodes in the agent. On overflow it evicts the entry with the lowest retention, `salience · RetentionDecay^age`, where age counts stores since the entry was written. The agent sets salience to hemispheric coherence × (0.5 + 0.5·mean |reward| of the cycle), so strongly rewarded or punished cycles outlive neutral ones.
 - **Sleep consolidation.** Every `ConsolidateEvery` stored episodes (default 128), the agent calls `Consolidate()` at the end of the cycle. Episodes stored in between are projected through the latest fitted map.
 - **Recall.** `RecallEpisode(key)` returns the cycle index of the nearest stored episode. `LastEpisodeKey()` exposes the current cycle's key.
+
+Salience-weighted eviction was measured on a closed-loop run: 1,500 cycles, capacity 128, with rewards only during one third of the time ("eventful" cycles). The table shows what fraction of retained episodes were eventful, and the oldest cycle still held:
+
+| `RetentionDecay` | Eventful fraction kept | Oldest cycle kept |
+|---|---:|---:|
+| 0 (equivalent to FIFO) | 0.30 (base rate) | 1,372 |
+| 0.995 | 0.57 | 1,277 |
+| **0.998 (default)** | **0.94** | 1,170 |
+| 0.999 | 0.99 | 1,103 |
+
+Higher decay keeps more salient episodes but reaches further into the past. At 1.0, pure salience ranking kept an episode from cycle 6. The right value scales with capacity, so treat 0.998 as tuned for capacities of a few hundred.
 
 In the closed-loop probe (12,000 ticks), the agent fills its 512 slots and consolidates 7 times. That adds about 4 s to the evaluation and leaves every score unchanged.
 
