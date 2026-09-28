@@ -71,6 +71,8 @@ endif()
 # Set compiler flags
 if(MSVC)
     add_compile_options(/W4)
+    # Expose M_PI and friends from <cmath> on MSVC
+    add_compile_definitions(_USE_MATH_DEFINES)
 else()
     add_compile_options(-Wall -Wextra -pedantic)
     # Suppress deprecated-copy warnings from Eigen 3.3.7 with modern GCC

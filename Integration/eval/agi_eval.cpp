@@ -72,7 +72,7 @@ static Probe Narma10() {
     MatrixXd S = r.Harvest(Scalars(u), wash);
     MatrixXd Y(1, S.cols());
     for (int t = 0; t < S.cols(); ++t) Y(0, t) = y[t + wash];
-    const int te = S.cols() - train;
+    const int te = int(S.cols()) - train;
     MatrixXd W = EchoReservoir::FitRidge(S.leftCols(train), Y.leftCols(train), 1e-6);
     const double esn = Nrmse(EchoReservoir::Predict(W, S.rightCols(te)), Y.rightCols(te));
 
@@ -94,7 +94,7 @@ static Probe DelayedParity() {
     MatrixXd S = r.Harvest(Scalars(u), wash);
     MatrixXd Y(1, S.cols());
     for (int t = 0; t < S.cols(); ++t) Y(0, t) = u[t + wash - 1] * u[t + wash - 2] * u[t + wash - 3];
-    const int te = S.cols() - train;
+    const int te = int(S.cols()) - train;
     MatrixXd P = EchoReservoir::Predict(EchoReservoir::FitRidge(S.leftCols(train), Y.leftCols(train), 1e-6), S.rightCols(te));
     int ok = 0; for (int t = 0; t < te; ++t) ok += (P(0, t) > 0) == (Y(0, train + t) > 0);
     const double acc = double(ok) / te;
