@@ -205,13 +205,9 @@ class DynArray {
         template<typename TIterator>
         void assign(TIterator start, TIterator end) {
             resize_uninitialized(static_cast<std::size_t>(std::distance(start, end)));
-            #if defined(_MSC_VER) && !defined(__clang__)
-                if (size() != 0ul) {
-                    std::copy(start, end, stdext::checked_array_iterator<value_type*>(data(), size()));
-                }
-            #else
-                std::copy(start, end, data());
-            #endif
+            // The buffer is sized to distance(start, end) above, so a plain copy is bounds-safe.
+            // (stdext::checked_array_iterator was removed from newer MSVC STL releases.)
+            std::copy(start, end, data());
         }
 
     private:
