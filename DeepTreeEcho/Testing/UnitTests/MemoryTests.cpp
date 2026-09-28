@@ -825,7 +825,11 @@ TEST(MemoryPerformanceTest, EpisodicQueryPerformance) {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
-    EXPECT_LT(duration.count(), 500);  // 200 queries in under 500ms
+#ifdef NDEBUG
+    EXPECT_LT(duration.count(), 500);   // 200 queries in under 500ms (Release)
+#else
+    EXPECT_LT(duration.count(), 5000);  // unoptimised Debug builds (MSVC checked iterators) on CI
+#endif
 }
 
 // ============================================================================
