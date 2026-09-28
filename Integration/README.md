@@ -45,7 +45,7 @@ The raw numbers are in [`AGI_EVALUATION_RESULTS.md`](AGI_EVALUATION_RESULTS.md),
 | Metacognition (coherence vs true error) | 0.77 | r = −0.77. Coherence tracks competence, but it is built partly from the same loss, so this overstates introspection. |
 | Working memory (MC) | 0.55 | MC ≈ 55 of a 512 ceiling, which is typical for tanh ESNs. |
 | Temporal prediction (NARMA-10) | 0.39 | NRMSE 0.50 against 0.82 for the linear baseline. A tuned ESN reaches about 0.2–0.4. |
-| Episodic memory (noisy cue recall) | 0.27 | Weak. Reservoir encodings of 20-step sequences are not noise-robust keys. |
+| Episodic memory (noisy cue recall) | 0.79 | **Improved** from 0.27. Recall is 1.00 at cue noise σ=0.25 and 0.59 at σ=0.5; the old path scored 0.28 and 0.08. See below. |
 | Continual learning (3 sequential tasks) | 0.96 | **Fixed** with `ContextualReadout`. Worst-task NRMSE is 0.04; the single GTAngel Wout scores 0.75 on the same run. See below. |
 | Selective attention / toroid phase lock | 1.00 | These pass by construction: they confirm the dynamics are correct, not that the system is intelligent. |
 | Language & open-ended reasoning (NanEcho 48M) | N/A | No checkpoint or torch runtime here. At about 51 M parameters it would be a small nanoGPT at best. |
@@ -73,6 +73,30 @@ The limits of the fix:
 - Two tasks that share an input signature but need different outputs would still collide in one head.
 - It does not produce transfer between tasks.
 
+### Episodic memory fix
+
+The old path stored the final reservoir state as the key and recalled by raw cosine. It failed for two reasons, each measured separately:
+
+1. **The final state forgets the episode.** With leak rate 0.3 and ρ = 0.9, the last state is dominated by the last few inputs. `EchoReservoir::EncodeTrajectory` instead concatenates the states along the trajectory. The final state alone recalled 0.28, five sampled states 0.68, and all 20 states 0.89.
+2. **Shared directions swamp the cosine.** Every reservoir state shares a large common subspace, from the bias and input-driven modes. `EchoSpace::Consolidate()` fits a shrunk PCA whitening on the stored keys only, then projects both stored keys and cues through it. With whitening, the full trajectory recalls 0.995–1.00.
+
+Two details in `Consolidate()` matter:
+
+- **Numerically zero components are dropped.** Centring leaves one component with eigenvalue ≈ 0, and whitening it amplifies round-off without bound. That bug cost recall until it was fixed.
+- **The shrinkage ridge is α·√(σ_max·σ_median).** Scaling to σ_max alone switches whitening off when one shared mode dominates (the unit test covers this case). Scaling to σ_median alone amplifies cue noise on steep reservoir spectra. The geometric mean works for both.
+
+Recall with 200 stored 20-step sequences:
+
+| Cue noise | Final state + raw cosine | Trajectory + consolidated |
+|---|---:|---:|
+| σ = 0.25 | 0.275 | 1.00 |
+| σ = 0.5 | 0.075 | 0.59 |
+
+The limits of the fix:
+
+- **High noise.** At σ = 0.5, noise is as large as the signal, and recall falls to 0.59. A shrinkage scaled only to σ_max reached 0.82 there but broke the dominant-shared-mode case. Getting both would need the shrinkage chosen per memory store (e.g. by held-out reconstruction) rather than one global constant.
+- **Consolidation is a batch step.** It costs O(M²·D), so it should run periodically, not on every store. `UnifiedEchoAgent` stores many episodes and does not call it yet.
+
 ### Verdict
 
 Deep Tree Echo is **not AGI, and nowhere near it**. It is a well-integrated **narrow adaptive-control stack**.
@@ -82,7 +106,7 @@ they perform at or above textbook baselines.
 The capabilities that define general intelligence are absent or failing:
 
 - **Open-ended language and reasoning** is not evaluated, and the only candidate is a 48 M model.
-- **Episodic memory** is weak.
+- **Episodic memory** degrades at high cue noise (0.59 recall at σ=0.5).
 - **Abstraction and transfer across domains** has no mechanism at all.
 - **Planning over long horizons** has no model-based search.
 
@@ -90,6 +114,5 @@ Most of the documentation's "Complete" labels describe architecture that exists,
 
 ### Highest-leverage next steps
 
-1. **Episodic keys.** Use EchoSpace keys from the time-averaged, attention-weighted state rather than the final state.
-2. **Language.** Load a trained NanEcho checkpoint, report perplexity, and bind it to `UnifiedEchoAgent` through the Reflecting stream.
-3. **UE bridge.** Wrap `UnifiedEchoAgent` in a `UActorComponent` under `DeepTreeEcho/`, and mirror GTAngel's `Ue5PlayerAiBridgeService` IPC so the WPF trainer and UE5 share one core.
+1. **Language.** Load a trained NanEcho checkpoint, report perplexity, and bind it to `UnifiedEchoAgent` through the Reflecting stream.
+2. **UE bridge.** Wrap `UnifiedEchoAgent` in a `UActorComponent` under `DeepTreeEcho/`, and mirror GTAngel's `Ue5PlayerAiBridgeService` IPC so the WPF trainer and UE5 share one core.

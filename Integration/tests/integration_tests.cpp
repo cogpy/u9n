@@ -66,6 +66,38 @@ static void EchoSpaceRecall() {
     CHECK(m.Recall(Eigen::Vector3d(0.1, 0.9, 0)) == 2);
 }
 
+// Mirrors the reservoir failure mode: every key carries a large component in a shared
+// low-rank subspace with fresh random coefficients on each presentation, plus a small
+// private signature. Raw cosine is swamped by the shared part; consolidation must fix it.
+static void EchoSpaceConsolidationSeparatesSharedMode() {
+    std::mt19937 rng(5); std::normal_distribution<double> N(0, 1);
+    const int D = 64, M = 40, R = 3;
+    const Eigen::MatrixXd shared = Eigen::MatrixXd::NullaryExpr(D, R, [&] { return N(rng); });
+    auto sharedPart = [&] { return Eigen::VectorXd(shared * Eigen::VectorXd::NullaryExpr(R, [&] { return 5.0 * N(rng); })); };
+    std::vector<Eigen::VectorXd> priv(M);
+    EchoSpace raw, cons;
+    for (int i = 0; i < M; ++i) {
+        priv[i] = Eigen::VectorXd::NullaryExpr(D, [&] { return N(rng); });
+        const Eigen::VectorXd k = sharedPart() + priv[i];
+        raw.Store(k, i); cons.Store(k, i);
+    }
+    CHECK(cons.Consolidate());
+    int okRaw = 0, okCons = 0;
+    for (int i = 0; i < M; ++i) {
+        const Eigen::VectorXd q = sharedPart() + priv[i] + 0.3 * Eigen::VectorXd::NullaryExpr(D, [&] { return N(rng); });
+        okRaw += raw.Recall(q) == i; okCons += cons.Recall(q) == i;
+    }
+    CHECK(okCons >= M - 2);
+    CHECK(okCons > okRaw);
+}
+
+static void TrajectoryKeyShape() {
+    ReservoirConfig c; c.Size = 16;
+    EchoReservoir r(c);
+    CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1)).size() == 160);
+    CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1), 4).size() == 48);   // t=4,8 and last
+}
+
 static void NanEchoParamCount() {
     NanEchoSpec s;
     CHECK(s.Params() > 45'000'000 && s.Params() < 55'000'000);
@@ -104,6 +136,7 @@ static void ContextualReadoutRetainsOldTask() {
 }
 
 int main() {
+    EchoSpaceConsolidationSeparatesSharedMode(); TrajectoryKeyShape();
     ContextualReadoutRetainsOldTask();
     ReservoirSpectralRadius(); EcanFocusesSalientCluster(); ThompsonPrefersRewardedArm(); MosesDeduplicates();
     ToroidLocksAntiPhase(); AdaptiveAttentionMatchesScheme(); EchoSpaceRecall(); NanEchoParamCount(); UnifiedCycleStreams();

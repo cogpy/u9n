@@ -8,6 +8,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -44,17 +45,73 @@ inline double AdaptiveAttention(double load, double activity) {
     return std::clamp(0.5 + load * 0.3 + (0.2 - activity), 0.0, 1.0);
 }
 
+// Vector memory with optional consolidation (whitening).
+//
+// Raw cosine recall is dominated by the few directions every reservoir state shares
+// (bias, input-driven common mode), so distinct episodes look alike. Consolidate()
+// fits a shrunk PCA whitening on the *stored* keys only (Gram-matrix trick, O(M²·D)):
+//     z_c = u_cᵀ (k − μ) / (σ_c + α·√(σ_max·σ_median))   (σ_c = √λ_c, per retained component)
+// which flattens shared directions while shrinkage keeps noise-only directions from
+// being blown up. Cues are projected with the same fitted map; they never influence it.
 class EchoSpace {
 public:
     enum class Kind { Episodic, Semantic, Procedural, Declarative };
-    struct Entry { Eigen::VectorXd Key; int Label; Kind Type; double Salience; };
+    struct Entry { Eigen::VectorXd Raw, Key; int Label; Kind Type; double Salience; };
+
+    double Shrinkage = 0.1;    // ridge = α·√(σ_max·σ_median); swept: 0.1 → probe σ=0.25 recall 1.00, σ=0.5 0.64
 
     void Store(const Eigen::VectorXd& key, int label, Kind k = Kind::Episodic, double salience = 1.0) {
-        Entries.push_back({key.normalized(), label, k, salience});
+        Entries.push_back({key, Project(key), label, k, salience});
     }
-    // Returns label of nearest entry by cosine; -1 when empty.
+
+    // Fit the whitening map on current contents and re-project stored keys.
+    // Returns false (no-op) with fewer than 2 entries or mismatched key sizes.
+    bool Consolidate() {
+        const int M = (int)Entries.size();
+        if (M < 2) return false;
+        const Eigen::Index D = Entries[0].Raw.size();
+        Eigen::MatrixXd X(D, M);
+        for (int i = 0; i < M; ++i) {
+            if (Entries[i].Raw.size() != D) return false;
+            X.col(i) = Entries[i].Raw;
+        }
+        Mean = X.rowwise().mean();
+        X.colwise() -= Mean;
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(X.transpose() * X);
+        const Eigen::VectorXd ev = es.eigenvalues();          // ascending
+        const double top = std::sqrt(std::max(ev[M - 1], 1e-300));
+        // Ridge scale = geometric mean of the largest and median component. Scaling to the
+        // largest alone lets one dominant shared mode swamp every private direction (whitening
+        // silently turns off); scaling to the median alone under-regularises steep reservoir
+        // spectra and amplifies cue noise.
+        std::vector<double> scs;
+        for (int c = 0; c < M; ++c) {
+            const double sc = std::sqrt(std::max(ev[c], 0.0));
+            if (sc > 1e-6 * top) scs.push_back(sc);
+        }
+        if (scs.empty()) return false;
+        std::nth_element(scs.begin(), scs.begin() + scs.size() / 2, scs.end());
+        const double ridge = Shrinkage * std::sqrt(top * scs[scs.size() / 2]);
+        Eigen::MatrixXd U = X * es.eigenvectors();             // D×M, column c has norm √ev_c
+        // Centering makes the Gram matrix rank ≤ M−1; components at numerical zero carry
+        // only round-off, which whitening would amplify without bound, so drop them.
+        int kept = 0;
+        for (int c = 0; c < M; ++c) {
+            const double sc = std::sqrt(std::max(ev[c], 0.0));
+            if (sc <= 1e-6 * top) { U.col(c).setZero(); continue; }
+            U.col(c) /= sc * (sc + ridge);
+            ++kept;
+        }
+        if (kept == 0) return false;
+        Whitener = U.transpose();
+        Whitened = true;
+        for (auto& e : Entries) e.Key = Project(e.Raw);
+        return true;
+    }
+
+    // Returns label of nearest entry by cosine (in whitened space once consolidated); -1 when empty.
     int Recall(const Eigen::VectorXd& q, double* sim = nullptr) const {
-        const Eigen::VectorXd qn = q.normalized();
+        const Eigen::VectorXd qn = Project(q);
         int best = -1; double bs = -2;
         for (auto& e : Entries) {
             const double s = e.Key.dot(qn) * (0.9 + 0.1 * e.Salience);
@@ -64,9 +121,18 @@ public:
         return best;
     }
     size_t Size() const { return Entries.size(); }
+    bool IsConsolidated() const { return Whitened; }
 
 private:
+    Eigen::VectorXd Project(const Eigen::VectorXd& k) const {
+        if (!Whitened || k.size() != Mean.size()) return k.normalized();
+        return (Whitener * (k - Mean)).normalized();
+    }
+
     std::vector<Entry> Entries;
+    Eigen::VectorXd Mean;
+    Eigen::MatrixXd Whitener;
+    bool Whitened = false;
 };
 
 class ResonanceLog {

@@ -49,6 +49,21 @@ public:
 
     void Reset() { X.setZero(); }
 
+    // Episode key: concatenated states along the trajectory (every `stride` steps, always
+    // including the last). The final state alone forgets early inputs (fading memory);
+    // the trajectory keeps the whole episode.
+    Eigen::VectorXd EncodeTrajectory(const std::vector<double>& seq, int stride = 1) {
+        Reset();
+        std::vector<Eigen::VectorXd> kept;
+        for (int t = 0; t < (int)seq.size(); ++t) {
+            Step(seq[t]);
+            if ((t + 1) % stride == 0 || t + 1 == (int)seq.size()) kept.push_back(X);
+        }
+        Eigen::VectorXd key(Cfg.Size * (Eigen::Index)kept.size());
+        for (size_t i = 0; i < kept.size(); ++i) key.segment(Cfg.Size * (Eigen::Index)i, Cfg.Size) = kept[i];
+        return key;
+    }
+
     // Run inputs, collect states (columns) after washout.
     Eigen::MatrixXd Harvest(const std::vector<Eigen::VectorXd>& inputs, int washout) {
         Eigen::MatrixXd S(Cfg.Size, (int)inputs.size() - washout);
