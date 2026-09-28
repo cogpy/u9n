@@ -71,6 +71,8 @@ endif()
 # Set compiler flags
 if(MSVC)
     add_compile_options(/W4)
+    # Expose M_PI and friends from <cmath> on MSVC
+    add_compile_definitions(_USE_MATH_DEFINES)
 else()
     add_compile_options(-Wall -Wextra -pedantic)
     # Suppress deprecated-copy warnings from Eigen 3.3.7 with modern GCC
@@ -79,6 +81,7 @@ endif()
 
 # Add ReservoirCpp subdirectory
 add_subdirectory(ReservoirEcho/reservoircpp_cpp)
+
 
 # ============================================================================
 # Testing Infrastructure
@@ -99,6 +102,9 @@ if(BUILD_TESTING OR BUILD_E2E_TESTS)
     include(GoogleTest)
     enable_testing()
 endif()
+
+# GTAngelEcho + EchoSelf-48M integration layer and AGI capability evaluation
+add_subdirectory(Integration)
 
 # Coverage flags
 if(ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
