@@ -56,7 +56,11 @@ public:
     }
 
     // Nearest stored episode (its cycle index) for a key of the same form as LastEpisodeKey().
-    int RecallEpisode(const Eigen::VectorXd& key, double* sim = nullptr) const { return Memory.Recall(key, sim); }
+    // By default a confident recall reinforces the episode (salience boost + rehearsal), so
+    // episodes the agent keeps using survive eviction; pass reinforce=false for a pure lookup.
+    int RecallEpisode(const Eigen::VectorXd& key, double* sim = nullptr, bool reinforce = true) {
+        return reinforce ? Memory.RecallAndReinforce(key, sim) : Memory.Recall(key, sim);
+    }
 
     const Eigen::VectorXd& LastEpisodeKey() const { return CycleTrace; }
     long CyclesCompleted() const { return Cycles; }

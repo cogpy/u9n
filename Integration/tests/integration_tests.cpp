@@ -162,6 +162,30 @@ static void EchoSpaceSalienceWeightedEviction() {
     CHECK(!f.Contains(0) && f.Contains(1) && f.Contains(2));
 }
 
+static void RecallReinforcesSalience() {
+    // A low-salience entry that keeps being recalled outlives a higher-salience one that is not.
+    EchoSpace m;
+    m.Capacity = 3;
+    m.RetentionDecay = 0.9;
+    m.Store(Eigen::Vector3d(1, 0, 0), 0, EchoSpace::Kind::Episodic, 0.2);   // used
+    m.Store(Eigen::Vector3d(0, 1, 0), 1, EchoSpace::Kind::Episodic, 0.6);   // never used
+    for (int i = 2; i < 10; ++i) {
+        CHECK(m.RecallAndReinforce(Eigen::Vector3d(1, 0.05, 0)) == 0);
+        m.Store(Eigen::Vector3d(0, 0.2 * i, 1), i, EchoSpace::Kind::Episodic, 0.5);
+    }
+    CHECK(m.Contains(0));
+    CHECK(!m.Contains(1));
+    CHECK(m.SalienceOf(0) > 0.8);                 // 0.2 → ~0.87 after 8 boosts of 0.2
+
+    // Weak matches are not reinforced; pure Recall never changes salience.
+    EchoSpace w;
+    w.Store(Eigen::Vector3d(1, 0, 0), 7, EchoSpace::Kind::Episodic, 0.4);
+    w.Store(Eigen::Vector3d(0, 1, 0), 8, EchoSpace::Kind::Episodic, 0.4);
+    w.RecallAndReinforce(Eigen::Vector3d(-1, 0, -0.1));   // cosine < 0 with everything
+    w.Recall(Eigen::Vector3d(1, 0, 0));
+    CHECK(std::abs(w.SalienceOf(7) - 0.4) < 1e-12 && std::abs(w.SalienceOf(8) - 0.4) < 1e-12);
+}
+
 static void AgentConsolidatesEpisodicMemory() {
     UnifiedEchoAgent a(1, 7, /*memoryCapacity=*/64);
     a.ConsolidateEvery = 16;
@@ -181,6 +205,7 @@ static void AgentConsolidatesEpisodicMemory() {
 }
 
 int main() {
+    RecallReinforcesSalience();
     EchoSpaceSalienceWeightedEviction();
     AgentConsolidatesEpisodicMemory();
     EchoSpaceConsolidationSeparatesSharedMode(); TrajectoryKeyShape();

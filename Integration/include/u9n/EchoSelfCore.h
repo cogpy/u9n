@@ -64,6 +64,16 @@ public:
     // RetentionDecay = 1 gives pure salience ranking; salience all equal gives FIFO.
     size_t Capacity = 0;
     double RetentionDecay = 0.998;   // half-life ≈ 346 stores (sweep in Integration/README.md)
+    // Recall-driven reinforcement (RecallAndReinforce): a confident match gains salience
+    // s ← s + ReinforceBoost·(1 − s) and is rehearsed (age reset), so memories that keep
+    // getting used resist eviction. Confidence is how far the best match stands out from all
+    // stored entries, z = (best − mean)/std over the cue's similarities. It is scale-free
+    // (absolute cosine levels shift with whitening and key size) and, measured on agent
+    // episodes, separates stored from evicted-episode cues far better than a similarity
+    // cut-off or a best-vs-runner-up margin (sweep in Integration/README.md).
+    // z cannot exceed √(n−1) for n entries, so small stores use 0.9·√(n−1) as the threshold.
+    double ReinforceBoost = 0.2;
+    double ReinforceMinZ  = 3.75;
     double Shrinkage = 0.1;    // ridge = α·√(σ_max·σ_median); swept: 0.1 → probe σ=0.25 recall 1.00, σ=0.5 0.64
 
     void Store(const Eigen::VectorXd& key, int label, Kind k = Kind::Episodic, double salience = 1.0) {
@@ -125,20 +135,70 @@ public:
     }
 
     // Returns label of nearest entry by cosine (in whitened space once consolidated); -1 when empty.
+    // Pure lookup: never changes salience or age.
     int Recall(const Eigen::VectorXd& q, double* sim = nullptr) const {
-        const Eigen::VectorXd qn = Project(q);
-        int best = -1; double bs = -2;
-        for (auto& e : Entries) {
-            const double s = e.Key.dot(qn) * (0.9 + 0.1 * e.Salience);
-            if (s > bs) { bs = s; best = e.Label; }
+        const int i = Nearest(q, sim);
+        return i < 0 ? -1 : Entries[i].Label;
+    }
+
+    // Recall that strengthens what it retrieves (see ReinforceBoost / ReinforceMinZ).
+    // Weak matches are returned but not reinforced, so a false recall cannot entrench itself.
+    int RecallAndReinforce(const Eigen::VectorXd& q, double* sim = nullptr) {
+        double s = 0;
+        const int i = Nearest(q, &s);
+        if (sim) *sim = s;
+        if (i < 0) return -1;
+        if (s > 0 && RecallConfidence(q) >= ConfidenceThreshold()) {
+            Entry& e = Entries[i];
+            e.Salience += ReinforceBoost * (1.0 - e.Salience);
+            e.Stamp = Clock;
         }
-        if (sim) *sim = bs;
-        return best;
+        return Entries[i].Label;
+    }
+
+    // Cosine of cue q to every stored entry (in whitened space once consolidated), salience-weighted.
+    std::vector<double> Similarities(const Eigen::VectorXd& q) const {
+        const Eigen::VectorXd qn = Project(q);
+        std::vector<double> out; out.reserve(Entries.size());
+        for (auto& e : Entries) out.push_back(e.Key.dot(qn) * (0.9 + 0.1 * e.Salience));
+        return out;
+    }
+
+    // z-score of the best match among all stored entries for cue q (0 with fewer than 2 entries).
+    double RecallConfidence(const Eigen::VectorXd& q) const {
+        const std::vector<double> v = Similarities(q);
+        if (v.size() < 2) return 0.0;
+        double mean = 0, best = -2;
+        for (double x : v) { mean += x; best = std::max(best, x); }
+        mean /= v.size();
+        double var = 0;
+        for (double x : v) var += (x - mean) * (x - mean);
+        const double sd = std::sqrt(var / v.size());
+        return sd > 1e-12 ? (best - mean) / sd : 0.0;
+    }
+    double ConfidenceThreshold() const {
+        return std::min(ReinforceMinZ, 0.9 * std::sqrt(std::max<double>(0.0, double(Entries.size()) - 1.0)));
+    }
+
+    double SalienceOf(int label) const {
+        for (auto& e : Entries) if (e.Label == label) return e.Salience;
+        return 0.0;
     }
     size_t Size() const { return Entries.size(); }
     bool IsConsolidated() const { return Whitened; }
 
 private:
+    int Nearest(const Eigen::VectorXd& q, double* sim) const {
+        const Eigen::VectorXd qn = Project(q);
+        int best = -1; double bs = -2;
+        for (int i = 0; i < (int)Entries.size(); ++i) {
+            const double s = Entries[i].Key.dot(qn) * (0.9 + 0.1 * Entries[i].Salience);
+            if (s > bs) { bs = s; best = i; }
+        }
+        if (sim) *sim = bs;
+        return best;
+    }
+
     size_t LeastRetained() const {
         size_t worst = 0;
         for (size_t i = 1; i < Entries.size(); ++i)
