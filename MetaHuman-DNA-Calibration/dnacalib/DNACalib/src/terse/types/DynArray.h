@@ -67,14 +67,10 @@ class DynArray {
         template<typename TIterator>
         DynArray(TIterator start, TIterator end, const allocator_type& allocator = allocator_type{}) :
             DynArray{static_cast<std::size_t>(std::distance(start, end)), allocator} {
-
-            #if defined(_MSC_VER) && !defined(__clang__)
-                if (size() != 0ul) {
-                    std::copy(start, end, stdext::checked_array_iterator<value_type*>(data(), size()));
-                }
-            #else
+            // Sized to distance(start, end) by the delegated constructor; see assign().
+            if (start != end) {
                 std::copy(start, end, data());
-            #endif
+            }
         }
 
         ~DynArray() = default;
@@ -205,13 +201,12 @@ class DynArray {
         template<typename TIterator>
         void assign(TIterator start, TIterator end) {
             resize_uninitialized(static_cast<std::size_t>(std::distance(start, end)));
-            #if defined(_MSC_VER) && !defined(__clang__)
-                if (size() != 0ul) {
-                    std::copy(start, end, stdext::checked_array_iterator<value_type*>(data(), size()));
-                }
-            #else
+            // The buffer is sized to distance(start, end) above, so a plain copy is bounds-safe.
+            // (stdext::checked_array_iterator was removed from newer MSVC STL releases.)
+            // Empty ranges are skipped, as the old MSVC branch did, so data() may be null.
+            if (start != end) {
                 std::copy(start, end, data());
-            #endif
+            }
         }
 
     private:

@@ -156,24 +156,41 @@ static Probe Attention() {
 }
 
 // ── 6. Episodic memory: EchoSpace recall of reservoir-encoded sequences ───
+// Baseline: final-state key + raw cosine (the original EchoSpace path).
+// System:   trajectory key + consolidated (whitened) EchoSpace.
+// Scored at two cue-noise levels so the probe does not saturate.
 static Probe EpisodicMemory() {
     EchoReservoir r;
     std::normal_distribution<double> N(0, 1);
     const int items = 200, len = 20;
     std::vector<std::vector<double>> seqs(items, std::vector<double>(len));
     for (auto& s : seqs) for (auto& x : s) x = 0.5 * N(r.Random());
-    EchoSpace mem;
-    auto encode = [&](const std::vector<double>& s) { r.Reset(); for (double x : s) r.Step(x); return VectorXd(r.State()); };
-    for (int i = 0; i < items; ++i) mem.Store(encode(seqs[i]), i, EchoSpace::Kind::Episodic);
-    int ok = 0;
+
+    auto finalState = [&](const std::vector<double>& s) { r.Reset(); for (double x : s) r.Step(x); return VectorXd(r.State()); };
+    EchoSpace naive, mem;
     for (int i = 0; i < items; ++i) {
-        auto q = seqs[i];
-        for (auto& x : q) x += 0.25 * N(r.Random());      // corrupted cue (SNR ≈ 4)
-        ok += mem.Recall(encode(q)) == i;
+        naive.Store(finalState(seqs[i]), i);
+        mem.Store(r.EncodeTrajectory(seqs[i]), i);
     }
-    const double acc = double(ok) / items;
-    return {"episodic_memory", "Episodic memory (noisy cue → sequence recall, EchoSpace)", "recall accuracy",
-            acc, 1.0 / items, Clamp01((acc - 1.0 / items) / (1 - 1.0 / items)), "200 stored sequences, cue noise σ=0.25"};
+    mem.Consolidate();
+
+    double accSum = 0, naiveSum = 0; std::ostringstream n;
+    n << "200 stored sequences; recall (final-state+raw cosine -> trajectory+consolidated):";
+    for (double sigma : {0.25, 0.5}) {
+        int okNaive = 0, ok = 0;
+        for (int i = 0; i < items; ++i) {
+            auto q = seqs[i];
+            for (auto& x : q) x += sigma * N(r.Random());
+            okNaive += naive.Recall(finalState(q)) == i;
+            ok      += mem.Recall(r.EncodeTrajectory(q)) == i;
+        }
+        accSum += double(ok) / items; naiveSum += double(okNaive) / items;
+        n << " sigma=" << sigma << ": " << double(okNaive) / items << " -> " << double(ok) / items << ";";
+    }
+    const double acc = accSum / 2, accNaive = naiveSum / 2;
+    n << " whitening fitted on stored keys only";
+    return {"episodic_memory", "Episodic memory (noisy cue → sequence recall, EchoSpace)", "mean recall (σ=0.25, 0.5)",
+            acc, accNaive, Clamp01((acc - accNaive) / (1.0 - accNaive)), n.str()};
 }
 
 // ── 7. Continual learning: sequential tasks A → B → C without task labels ───
@@ -284,7 +301,7 @@ static Probe Embodied() {
         }
     }
     const double rate = got / acts, chance = 0.9 / A + 0.1 * (A - 1) / A;
-    std::ostringstream n; n << "EchoSpace consolidated " << agent.Memory.Size() << " episodes; "
+    std::ostringstream n; n << "EchoSpace holds " << agent.Memory.Size() << " episodes (" << agent.Consolidations() << " consolidations); "
                             << agent.Core.MinedPatterns().size() << " MOSES patterns";
     return {"closed_loop_agency", "Closed-loop contextual agency (12-step unified agent)", "reward rate (2nd half)",
             rate, chance, Clamp01((rate - chance) / (0.9 - chance)), n.str()};

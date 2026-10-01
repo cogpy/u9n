@@ -66,6 +66,50 @@ static void EchoSpaceRecall() {
     CHECK(m.Recall(Eigen::Vector3d(0.1, 0.9, 0)) == 2);
 }
 
+// Mirrors the reservoir failure mode: every key carries a large component in a shared
+// low-rank subspace with fresh random coefficients on each presentation, plus a small
+// private signature. Raw cosine is swamped by the shared part; consolidation must fix it.
+static void EchoSpaceConsolidationSeparatesSharedMode() {
+    std::mt19937 rng(5); std::normal_distribution<double> N(0, 1);
+    const int D = 64, M = 40, R = 3;
+    const Eigen::MatrixXd shared = Eigen::MatrixXd::NullaryExpr(D, R, [&] { return N(rng); });
+    auto sharedPart = [&] { return Eigen::VectorXd(shared * Eigen::VectorXd::NullaryExpr(R, [&] { return 5.0 * N(rng); })); };
+    std::vector<Eigen::VectorXd> priv(M);
+    EchoSpace raw, cons;
+    for (int i = 0; i < M; ++i) {
+        priv[i] = Eigen::VectorXd::NullaryExpr(D, [&] { return N(rng); });
+        const Eigen::VectorXd k = sharedPart() + priv[i];
+        raw.Store(k, i); cons.Store(k, i);
+    }
+    CHECK(cons.Consolidate());
+    int okRaw = 0, okCons = 0;
+    for (int i = 0; i < M; ++i) {
+        const Eigen::VectorXd q = sharedPart() + priv[i] + 0.3 * Eigen::VectorXd::NullaryExpr(D, [&] { return N(rng); });
+        okRaw += raw.Recall(q) == i; okCons += cons.Recall(q) == i;
+    }
+    CHECK(okCons >= M - 2);
+    CHECK(okCons > okRaw);
+}
+
+static void KeyStoredAfterConsolidationOutsideSpan() {
+    // A key orthogonal to the fitted span must stay reachable before the next consolidation.
+    EchoSpace m;
+    m.Store(Eigen::Vector3d(1, 0, 0), 0);
+    m.Store(Eigen::Vector3d(-1, 0, 0), 1);
+    CHECK(m.Consolidate());
+    m.Store(Eigen::Vector3d(0, 0, 1), 2);
+    CHECK(m.Recall(Eigen::Vector3d(0, 0, 1)) == 2);
+    CHECK(m.Recall(Eigen::Vector3d(1, 0, 0)) == 0);
+}
+
+static void TrajectoryKeyShape() {
+    ReservoirConfig c; c.Size = 16;
+    EchoReservoir r(c);
+    CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1)).size() == 160);
+    CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1), 4).size() == 48);   // t=4,8 and last
+    CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1), 0).size() == 160);  // stride 0 → every step
+}
+
 static void NanEchoParamCount() {
     NanEchoSpec s;
     CHECK(s.Params() > 45'000'000 && s.Params() < 55'000'000);
@@ -103,7 +147,81 @@ static void ContextualReadoutRetainsOldTask() {
     CHECK(after < before + 0.05);      // task A survives learning task B
 }
 
+static void EchoSpaceSalienceWeightedEviction() {
+    EchoSpace m;
+    m.Capacity = 3;
+    m.RetentionDecay = 1.0;                      // pure salience ranking
+    m.Store(Eigen::Vector3d(1, 0, 0), 0, EchoSpace::Kind::Episodic, 1.0);
+    m.Store(Eigen::Vector3d(0, 1, 0), 1, EchoSpace::Kind::Episodic, 0.1);
+    m.Store(Eigen::Vector3d(0, 0, 1), 2, EchoSpace::Kind::Episodic, 1.0);
+    m.Store(Eigen::Vector3d(1, 1, 0), 3, EchoSpace::Kind::Episodic, 0.5);
+    CHECK(m.Size() == 3);
+    CHECK(!m.Contains(1));                        // lowest salience evicted, not the oldest
+    CHECK(m.Contains(0) && m.Contains(2) && m.Contains(3));
+
+    // With decay, an old salient entry eventually loses to fresh mundane ones.
+    EchoSpace d;
+    d.Capacity = 2;
+    d.RetentionDecay = 0.5;
+    d.Store(Eigen::Vector3d(1, 0, 0), 0, EchoSpace::Kind::Episodic, 1.0);
+    for (int i = 1; i <= 6; ++i) d.Store(Eigen::Vector3d(0, 1, double(i)), i, EchoSpace::Kind::Episodic, 0.3);
+    CHECK(!d.Contains(0));
+
+    // Equal salience degrades to FIFO.
+    EchoSpace f;
+    f.Capacity = 2;
+    for (int i = 0; i < 3; ++i) f.Store(Eigen::Vector3d(1, double(i), 0), i);
+    CHECK(!f.Contains(0) && f.Contains(1) && f.Contains(2));
+}
+
+static void RecallReinforcesSalience() {
+    // A low-salience entry that keeps being recalled outlives a higher-salience one that is not.
+    EchoSpace m;
+    m.Capacity = 3;
+    m.RetentionDecay = 0.9;
+    m.Store(Eigen::Vector3d(1, 0, 0), 0, EchoSpace::Kind::Episodic, 0.2);   // used
+    m.Store(Eigen::Vector3d(0, 1, 0), 1, EchoSpace::Kind::Episodic, 0.6);   // never used
+    for (int i = 2; i < 10; ++i) {
+        CHECK(m.RecallAndReinforce(Eigen::Vector3d(1, 0.05, 0)) == 0);
+        m.Store(Eigen::Vector3d(0, 0.2 * i, 1), i, EchoSpace::Kind::Episodic, 0.5);
+    }
+    CHECK(m.Contains(0));
+    CHECK(!m.Contains(1));
+    CHECK(m.SalienceOf(0) > 0.8);                 // 0.2 → ~0.87 after 8 boosts of 0.2
+
+    // Weak matches are not reinforced; pure Recall never changes salience.
+    EchoSpace w;
+    w.Store(Eigen::Vector3d(1, 0, 0), 7, EchoSpace::Kind::Episodic, 0.4);
+    w.Store(Eigen::Vector3d(0, 1, 0), 8, EchoSpace::Kind::Episodic, 0.4);
+    w.RecallAndReinforce(Eigen::Vector3d(-1, 0, -0.1));   // cosine < 0 with everything
+    w.Recall(Eigen::Vector3d(1, 0, 0));
+    CHECK(std::abs(w.SalienceOf(7) - 0.4) < 1e-12 && std::abs(w.SalienceOf(8) - 0.4) < 1e-12);
+}
+
+static void AgentConsolidatesEpisodicMemory() {
+    UnifiedEchoAgent a(1, 7, /*memoryCapacity=*/64);
+    a.ConsolidateEvery = 16;
+    std::mt19937 rng(3); std::normal_distribution<double> N(0, 1);
+    Eigen::VectorXd key; int label = -1;
+    for (int t = 0; t < 12 * 120; ++t) {
+        a.Tick(Eigen::VectorXd::Constant(1, 0.5 * N(rng)), 0.0);
+        if (a.CurrentStep() == 12 && a.Torus.Coherence() > 0.5) { key = a.LastEpisodeKey(); label = (int)a.CyclesCompleted() - 1; }
+    }
+    CHECK(a.Memory.Size() <= 64);
+    CHECK(a.Consolidations() >= 1);
+    CHECK(a.Memory.IsConsolidated());
+    CHECK(label >= 0);
+    // A lightly corrupted copy of the most recent stored episode must come back to it.
+    Eigen::VectorXd cue = key + 0.02 * Eigen::VectorXd::NullaryExpr(key.size(), [&] { return N(rng); });
+    CHECK(a.RecallEpisode(cue) == label);
+}
+
 int main() {
+    KeyStoredAfterConsolidationOutsideSpan();
+    RecallReinforcesSalience();
+    EchoSpaceSalienceWeightedEviction();
+    AgentConsolidatesEpisodicMemory();
+    EchoSpaceConsolidationSeparatesSharedMode(); TrajectoryKeyShape();
     ContextualReadoutRetainsOldTask();
     ReservoirSpectralRadius(); EcanFocusesSalientCluster(); ThompsonPrefersRewardedArm(); MosesDeduplicates();
     ToroidLocksAntiPhase(); AdaptiveAttentionMatchesScheme(); EchoSpaceRecall(); NanEchoParamCount(); UnifiedCycleStreams();
