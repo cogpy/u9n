@@ -7,6 +7,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <random>
 #include <vector>
 #include <cmath>
@@ -53,6 +54,7 @@ public:
     // including the last). The final state alone forgets early inputs (fading memory);
     // the trajectory keeps the whole episode.
     Eigen::VectorXd EncodeTrajectory(const std::vector<double>& seq, int stride = 1) {
+        stride = std::max(stride, 1);   // stride ≤ 0 would divide by zero; treat as every step
         Reset();
         std::vector<Eigen::VectorXd> kept;
         for (int t = 0; t < (int)seq.size(); ++t) {

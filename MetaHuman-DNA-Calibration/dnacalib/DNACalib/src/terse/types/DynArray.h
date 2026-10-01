@@ -68,7 +68,9 @@ class DynArray {
         DynArray(TIterator start, TIterator end, const allocator_type& allocator = allocator_type{}) :
             DynArray{static_cast<std::size_t>(std::distance(start, end)), allocator} {
             // Sized to distance(start, end) by the delegated constructor; see assign().
-            std::copy(start, end, data());
+            if (start != end) {
+                std::copy(start, end, data());
+            }
         }
 
         ~DynArray() = default;
@@ -201,7 +203,10 @@ class DynArray {
             resize_uninitialized(static_cast<std::size_t>(std::distance(start, end)));
             // The buffer is sized to distance(start, end) above, so a plain copy is bounds-safe.
             // (stdext::checked_array_iterator was removed from newer MSVC STL releases.)
-            std::copy(start, end, data());
+            // Empty ranges are skipped, as the old MSVC branch did, so data() may be null.
+            if (start != end) {
+                std::copy(start, end, data());
+            }
         }
 
     private:

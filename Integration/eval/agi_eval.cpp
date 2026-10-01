@@ -190,7 +190,7 @@ static Probe EpisodicMemory() {
     const double acc = accSum / 2, accNaive = naiveSum / 2;
     n << " whitening fitted on stored keys only";
     return {"episodic_memory", "Episodic memory (noisy cue → sequence recall, EchoSpace)", "mean recall (σ=0.25, 0.5)",
-            acc, accNaive, Clamp01((acc - 1.0 / items) / (1 - 1.0 / items)), n.str()};
+            acc, accNaive, Clamp01((acc - accNaive) / (1.0 - accNaive)), n.str()};
 }
 
 // ── 7. Continual learning: sequential tasks A → B → C without task labels ───

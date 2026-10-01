@@ -91,11 +91,23 @@ static void EchoSpaceConsolidationSeparatesSharedMode() {
     CHECK(okCons > okRaw);
 }
 
+static void KeyStoredAfterConsolidationOutsideSpan() {
+    // A key orthogonal to the fitted span must stay reachable before the next consolidation.
+    EchoSpace m;
+    m.Store(Eigen::Vector3d(1, 0, 0), 0);
+    m.Store(Eigen::Vector3d(-1, 0, 0), 1);
+    CHECK(m.Consolidate());
+    m.Store(Eigen::Vector3d(0, 0, 1), 2);
+    CHECK(m.Recall(Eigen::Vector3d(0, 0, 1)) == 2);
+    CHECK(m.Recall(Eigen::Vector3d(1, 0, 0)) == 0);
+}
+
 static void TrajectoryKeyShape() {
     ReservoirConfig c; c.Size = 16;
     EchoReservoir r(c);
     CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1)).size() == 160);
     CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1), 4).size() == 48);   // t=4,8 and last
+    CHECK(r.EncodeTrajectory(std::vector<double>(10, 0.1), 0).size() == 160);  // stride 0 → every step
 }
 
 static void NanEchoParamCount() {
@@ -205,6 +217,7 @@ static void AgentConsolidatesEpisodicMemory() {
 }
 
 int main() {
+    KeyStoredAfterConsolidationOutsideSpan();
     RecallReinforcesSalience();
     EchoSpaceSalienceWeightedEviction();
     AgentConsolidatesEpisodicMemory();

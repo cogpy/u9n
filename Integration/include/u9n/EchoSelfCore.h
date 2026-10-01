@@ -74,6 +74,11 @@ public:
     // z cannot exceed √(n−1) for n entries, so small stores use 0.9·√(n−1) as the threshold.
     double ReinforceBoost = 0.2;
     double ReinforceMinZ  = 3.75;
+    // Weight of a key's component outside the last fitted span, relative to an in-span
+    // direction of median variance. 0 reproduces pure span projection, where a key stored after
+    // consolidation that is orthogonal to the span becomes unreachable; probe recall is identical
+    // for 0.25–2 (Integration/README.md).
+    double ResidualWeight = 1.0;
     double Shrinkage = 0.1;    // ridge = α·√(σ_max·σ_median); swept: 0.1 → probe σ=0.25 recall 1.00, σ=0.5 0.64
 
     void Store(const Eigen::VectorXd& key, int label, Kind k = Kind::Episodic, double salience = 1.0) {
@@ -120,15 +125,22 @@ public:
         Eigen::MatrixXd U = X * es.eigenvectors();             // D×M, column c has norm √ev_c
         // Centering makes the Gram matrix rank ≤ M−1; components at numerical zero carry
         // only round-off, which whitening would amplify without bound, so drop them.
-        int kept = 0;
-        for (int c = 0; c < M; ++c) {
-            const double sc = std::sqrt(std::max(ev[c], 0.0));
-            if (sc <= 1e-6 * top) { U.col(c).setZero(); continue; }
-            U.col(c) /= sc * (sc + ridge);
-            ++kept;
+        std::vector<int> keep;
+        for (int c = 0; c < M; ++c)
+            if (std::sqrt(std::max(ev[c], 0.0)) > 1e-6 * top) keep.push_back(c);
+        if (keep.empty()) return false;
+        Basis.resize(D, (Eigen::Index)keep.size());
+        Gain.resize((Eigen::Index)keep.size());
+        for (size_t j = 0; j < keep.size(); ++j) {
+            const double sc = std::sqrt(ev[keep[j]]);
+            Basis.col((Eigen::Index)j) = U.col(keep[j]) / sc;    // orthonormal direction
+            Gain[(Eigen::Index)j] = 1.0 / (sc + ridge);
         }
-        if (kept == 0) return false;
-        Whitener = U.transpose();
+        // Keys stored after this fit may point outside the fitted span; projecting only onto
+        // the span would collapse them (an orthogonal key maps to zero and becomes unreachable
+        // until the next consolidation). The residual is kept as extra coordinates, weighted
+        // like an in-span component of median variance.
+        ResidualGain = ResidualWeight / (scs[scs.size() / 2] + ridge);
         Whitened = true;
         for (auto& e : Entries) e.Key = Project(e.Raw);
         return true;
@@ -208,12 +220,18 @@ private:
 
     Eigen::VectorXd Project(const Eigen::VectorXd& k) const {
         if (!Whitened || k.size() != Mean.size()) return k.normalized();
-        return (Whitener * (k - Mean)).normalized();
+        const Eigen::VectorXd y = k - Mean;
+        const Eigen::VectorXd c = Basis.transpose() * y;
+        Eigen::VectorXd z(c.size() + y.size());
+        z << c.cwiseProduct(Gain), ResidualGain * (y - Basis * c);
+        return z.normalized();
     }
 
     std::vector<Entry> Entries;
     Eigen::VectorXd Mean;
-    Eigen::MatrixXd Whitener;
+    Eigen::MatrixXd Basis;          // D×r orthonormal principal directions of the stored keys
+    Eigen::VectorXd Gain;           // per-direction whitening gain 1/(σ_c + ridge)
+    double ResidualGain = 0.0;      // gain for the component outside the fitted span
     bool Whitened = false;
     long Clock = 0;
 };

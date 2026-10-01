@@ -22,7 +22,7 @@ wrap these classes directly.
 - **Perceiving** steps (1, 4, 7, 10) drive the reservoir and ECAN attention.
 - **Acting** steps (2, 5, 8, 11) produce STI-gated logits and a Thompson action.
 - **Reflecting** steps (3, 6, 9, 12) run MOSES mining, the toroid and the resonance log.
-- At sync points {1, 5, 9}, EchoSpace consolidates the state when the hemispheres are coherent.
+- At the end of each cycle (step 12), the four perceived states form one episode, which EchoSpace stores when the hemispheres are coherent. EchoSpace re-fits its whitening every `ConsolidateEvery` stored episodes (see "Episodic memory in the agent cycle" below).
 
 ## Build / run
 
@@ -45,7 +45,7 @@ The raw numbers are in [`AGI_EVALUATION_RESULTS.md`](AGI_EVALUATION_RESULTS.md),
 | Metacognition (coherence vs true error) | 0.77 | r = −0.77. Coherence tracks competence, but it is built partly from the same loss, so this overstates introspection. |
 | Working memory (MC) | 0.55 | MC ≈ 55 of a 512 ceiling, which is typical for tanh ESNs. |
 | Temporal prediction (NARMA-10) | 0.39 | NRMSE 0.50 against 0.82 for the linear baseline. A tuned ESN reaches about 0.2–0.4. |
-| Episodic memory (noisy cue recall) | 0.79 | **Improved** from 0.27. Recall is 1.00 at cue noise σ=0.25 and 0.59 at σ=0.5; the old path scored 0.28 and 0.08. See below. |
+| Episodic memory (noisy cue recall) | 0.75 | **Improved** from 0.27. Recall is 1.00 at cue noise σ=0.25 and 0.59 at σ=0.5; the old path scored 0.28 and 0.08. The score is measured from the old path as baseline. See below. |
 | Continual learning (3 sequential tasks) | 0.96 | **Fixed** with `ContextualReadout`. Worst-task NRMSE is 0.04; the single GTAngel Wout scores 0.75 on the same run. See below. |
 | Selective attention / toroid phase lock | 1.00 | These pass by construction: they confirm the dynamics are correct, not that the system is intelligent. |
 | Language & open-ended reasoning (NanEcho 48M) | N/A | No checkpoint or torch runtime here. At about 51 M parameters it would be a small nanoGPT at best. |
@@ -94,6 +94,7 @@ Recall with 200 stored 20-step sequences:
 
 The limits of the fix:
 
+- **Keys stored after a fit.** Projecting only onto the fitted span would collapse a later key that points outside it; an orthogonal key mapped to zero and could not be recalled until the next consolidation. The out-of-span residual is kept as extra coordinates, weighted like an in-span direction of median variance (`ResidualWeight`, default 1). Probe recall and recall of keys stored after a fit are identical for weights 0–2, and the orthogonal case is fixed for any weight above 0.
 - **High noise.** At σ = 0.5, noise is as large as the signal, and recall falls to 0.59. A shrinkage scaled only to σ_max reached 0.82 there but broke the dominant-shared-mode case. Getting both would need the shrinkage chosen per memory store (e.g. by held-out reconstruction) rather than one global constant.
 - **Consolidation is a batch step.** It costs O(M²·D + M³), so the agent amortises it instead of running it on every store (see below).
 
