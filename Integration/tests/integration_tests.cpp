@@ -216,7 +216,66 @@ static void AgentConsolidatesEpisodicMemory() {
     CHECK(a.RecallEpisode(cue) == label);
 }
 
+static void AugmentStacksSquares() {
+    Eigen::MatrixXd S(2, 3); S << 1, -2, 3, 0.5, 0, -1;
+    Eigen::MatrixXd A = u9n::EchoReservoir::Augment(S);
+    CHECK(A.rows() == 4 && A.cols() == 3);
+    CHECK(A.topRows(2).isApprox(S));
+    CHECK(A.bottomRows(2).isApprox(S.array().square().matrix()));
+}
+
+static void CycleReservoirIsRing() {
+    // The ring is orthogonal, so in the near-linear regime an input impulse keeps its shape
+    // and its norm shrinks by ~SpectralRadius per step (tanh' ≈ 1 at tiny gain).
+    ReservoirConfig c; c.Shape = Topology::Cycle; c.Size = 16; c.SpectralRadius = 0.9;
+    c.InputScale = 1e-3; c.LeakRate = 1.0;
+    EchoReservoir r(c), z(c);
+    r.Step(1.0); z.Step(0.0);
+    const double d0 = (r.State() - z.State()).norm();
+    for (int t = 0; t < 4; ++t) { r.Step(0.0); z.Step(0.0); }
+    const double ratio = (r.State() - z.State()).norm() / d0;
+    CHECK(d0 > 1e-4);
+    CHECK(ratio > 0.6 && ratio < 0.66);   // 0.9^4 = 0.656
+}
+
+static void ThompsonResetsOnRegimeChange() {
+    GTAngelCore core(5);
+    core.ChangeThreshold = 10.0;
+    std::mt19937 rng(9); std::uniform_real_distribution<double> U(0, 1);
+    std::array<double, 2> p{0.9, 0.1};
+    Eigen::VectorXd flat = Eigen::VectorXd::Zero(GTAngelCore::ActionCount);
+    for (int t = 0; t < 1000; ++t) { const int a = core.ThompsonSample(flat, 2); core.UpdateThompson(a, U(rng) < p[a] ? 1 : -1); }
+    const int before = core.ChangeResets();
+    CHECK(before <= 1);                 // stationary rewards: (almost) no false alarms
+    std::swap(p[0], p[1]);
+    int t = 0;
+    for (; t < 200 && core.ChangeResets() == before; ++t) { const int a = core.ThompsonSample(flat, 2); core.UpdateThompson(a, U(rng) < p[a] ? 1 : -1); }
+    CHECK(core.ChangeResets() > before);   // the swap is detected...
+    CHECK(t < 60);                          // ...quickly
+}
+
+static void SelfModelPredictsHardStates() {
+    // Two kinds of state: targets for states with x[0] > 0 carry noise, the rest are exact.
+    // After training, the self-model must expect more error in the noisy region.
+    GTAngelCore core;
+    std::mt19937 rng(4); std::normal_distribution<double> N(0, 1);
+    auto state = [&](double s) { Eigen::VectorXd x = 0.1 * Eigen::VectorXd::NullaryExpr(GTAngelCore::ReservoirSize, [&] { return N(rng); }); x[0] = s; return x; };
+    for (int t = 0; t < 4000; ++t) {
+        const double s = (t % 2) ? 0.8 : -0.8;
+        Eigen::VectorXd tgt = Eigen::VectorXd::Zero(GTAngelCore::ActionCount);
+        tgt[0] = s > 0 ? 0.5 * N(rng) : 0.0;
+        core.TrainWout(state(s), tgt);
+    }
+    double hard = 0, easy = 0;
+    for (int i = 0; i < 50; ++i) { hard += core.PredictErrorSq(state(0.8)); easy += core.PredictErrorSq(state(-0.8)); }
+    CHECK(hard > 20 * easy);   // observed ~200x
+}
+
 int main() {
+    SelfModelPredictsHardStates();
+    ThompsonResetsOnRegimeChange();
+    CycleReservoirIsRing();
+    AugmentStacksSquares();
     KeyStoredAfterConsolidationOutsideSpan();
     RecallReinforcesSalience();
     EchoSpaceSalienceWeightedEviction();
