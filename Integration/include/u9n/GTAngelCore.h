@@ -125,11 +125,32 @@ public:
         return best;
     }
 
-    void UpdateThompson(int a, double reward) {
-        if (a < 0 || a >= ActionCount) return;
+    // Change detection (u9n extension). With ChangeThreshold > 0, every update runs a
+    // per-arm Page-Hinkley test on the gap between the arm's posterior mean and the reward
+    // it just paid. Drift shrinks each step's evidence, so ordinary noise cancels out. When
+    // the accumulated shortfall exceeds the threshold, the world has changed: every posterior
+    // resets to the uniform prior so the sampler re-explores at once. Constant discounting
+    // instead forgets all the time, which makes the sampler over-explore when nothing changes.
+    double ChangeThreshold = 0.0;   // 0 → off
+    double ChangeDrift     = 0.05;
+    int ChangeResets() const { return Resets; }
+
+    // Returns true when this update triggered a change-point reset.
+    bool UpdateThompson(int a, double reward) {
+        if (a < 0 || a >= ActionCount) return false;
         const double r = std::clamp((reward + 1.0) / 2.0, 0.0, 1.0);
+        if (ChangeThreshold > 0) {
+            Ph[a] += Alpha[a] / (Alpha[a] + Beta[a]) - r - ChangeDrift;
+            PhMin[a] = std::min(PhMin[a], Ph[a]);
+            if (Ph[a] - PhMin[a] > ChangeThreshold) {
+                Alpha.fill(1.0); Beta.fill(1.0); Ph.fill(0.0); PhMin.fill(0.0);
+                ++Resets;
+                return true;
+            }
+        }
         Alpha[a] = std::min(Alpha[a] + r, 1000.0);
         Beta[a]  = std::min(Beta[a] + 1.0 - r, 1000.0);
+        return false;
     }
 
     // Discounting lets the policy track non-stationary rewards (u9n extension;
@@ -173,6 +194,8 @@ private:
     std::mt19937 Rng;
     std::array<double, ClusterCount> Sti{}, Lti{};
     std::array<double, ActionCount> Alpha{}, Beta{};
+    std::array<double, ActionCount> Ph{}, PhMin{};   // Page-Hinkley statistics per arm
+    int Resets = 0;
     std::vector<Pattern> Patterns;
     Eigen::MatrixXd Wout;
     double WoutLoss = 1.0;

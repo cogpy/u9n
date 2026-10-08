@@ -153,12 +153,13 @@ static Probe DelayedParity() {
 // ── 4. Decision making under non-stationarity: GTAngel Thompson policy ────
 static Probe Bandit() {
     const int A = 10, T = 4000, runs = 20;
-    double regretTS = 0, regretRnd = 0;
+    double regretTS = 0, regretRnd = 0; int resets = 0;
     for (int run = 0; run < runs; ++run) {
         std::mt19937 rng(100 + run);
         std::uniform_real_distribution<double> U(0, 1);
         std::vector<double> p(A); for (auto& x : p) x = U(rng) * 0.8 + 0.1;
         GTAngelCore core(run);
+        core.ChangeThreshold = 10.0;
         VectorXd flat = VectorXd::Zero(GTAngelCore::ActionCount);
         for (int t = 0; t < T; ++t) {
             if (t == T / 2) { std::shuffle(p.begin(), p.end(), rng); }   // regime change
@@ -166,14 +167,16 @@ static Probe Bandit() {
             const int a = core.ThompsonSample(flat, A);
             const double r = U(rng) < p[a] ? 1.0 : -1.0;
             core.UpdateThompson(a, r);
-            core.DiscountThompson(0.995);
             regretTS  += best - p[a];
             regretRnd += best - p[std::uniform_int_distribution<int>(0, A - 1)(rng)];
         }
+        resets += core.ChangeResets();
     }
     return {"adaptive_decision", "Adaptive decision-making (non-stationary 10-arm bandit)", "cumulative regret / run",
             regretTS / runs, regretRnd / runs, Clamp01(1.0 - regretTS / regretRnd),
-            "GTAngel Thompson sampler + discounting; baseline = uniform random; arms reshuffled mid-run"};
+            "GTAngel Thompson sampler + Page-Hinkley change-point reset (threshold 10, drift 0.05; "
+            + std::to_string(resets) + " resets over " + std::to_string(runs) + " runs, 1 true change each); "
+            "baseline = uniform random; arms reshuffled mid-run"};
 }
 
 // ── 5. Selective attention: ECAN tracks the salient cluster ───────────────

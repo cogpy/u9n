@@ -238,7 +238,24 @@ static void CycleReservoirIsRing() {
     CHECK(ratio > 0.6 && ratio < 0.66);   // 0.9^4 = 0.656
 }
 
+static void ThompsonResetsOnRegimeChange() {
+    GTAngelCore core(5);
+    core.ChangeThreshold = 10.0;
+    std::mt19937 rng(9); std::uniform_real_distribution<double> U(0, 1);
+    std::array<double, 2> p{0.9, 0.1};
+    Eigen::VectorXd flat = Eigen::VectorXd::Zero(GTAngelCore::ActionCount);
+    for (int t = 0; t < 1000; ++t) { const int a = core.ThompsonSample(flat, 2); core.UpdateThompson(a, U(rng) < p[a] ? 1 : -1); }
+    const int before = core.ChangeResets();
+    CHECK(before <= 1);                 // stationary rewards: (almost) no false alarms
+    std::swap(p[0], p[1]);
+    int t = 0;
+    for (; t < 200 && core.ChangeResets() == before; ++t) { const int a = core.ThompsonSample(flat, 2); core.UpdateThompson(a, U(rng) < p[a] ? 1 : -1); }
+    CHECK(core.ChangeResets() > before);   // the swap is detected...
+    CHECK(t < 60);                          // ...quickly
+}
+
 int main() {
+    ThompsonResetsOnRegimeChange();
     CycleReservoirIsRing();
     AugmentStacksSquares();
     KeyStoredAfterConsolidationOutsideSpan();
