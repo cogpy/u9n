@@ -46,6 +46,7 @@ public:
         Alpha.fill(1.0);
         Beta.fill(1.0);
         Wout = Eigen::MatrixXd::Zero(ActionCount, ReservoirSize);
+        Wmeta = Eigen::VectorXd::Zero(2 * ReservoirSize + 1);
     }
 
     // ── 1. ECAN ────────────────────────────────────────────────────────────
@@ -97,9 +98,18 @@ public:
     }
 
     // ── 3. Online Wout ─────────────────────────────────────────────────────
+    // Prospective self-model (u9n extension): a second-order readout over [x; x⊙x; 1] predicts
+    // log of the readout's own squared error *before* the target is seen. Coherence only knows
+    // the loss after the fact (an EMA); this asks "how wrong am I about to be, in this state?".
+    double MetaRate = 0.2;
+    double PredictErrorSq(const Eigen::VectorXd& x) const { return std::exp(Wmeta.dot(MetaFeatures(x))); }
+
     void TrainWout(const Eigen::VectorXd& x, const Eigen::VectorXd& target) {
         Eigen::VectorXd err = Wout * x - target;
-        const double loss = err.squaredNorm() / ActionCount + RidgeLambda * Wout.squaredNorm();
+        const double e2 = err.squaredNorm() / ActionCount;            // error before this update
+        const Eigen::VectorXd f = MetaFeatures(x);
+        Wmeta += MetaRate * (std::log(e2 + 1e-8) - Wmeta.dot(f)) * f / f.squaredNorm();
+        const double loss = e2 + RidgeLambda * Wout.squaredNorm();
         Wout -= LearningRate * (err * x.transpose() + RidgeLambda * Wout);
         WoutLoss = WoutLoss * 0.99 + loss * 0.01;
         ++WoutSamples;
@@ -180,6 +190,12 @@ public:
     const Eigen::MatrixXd& Readout() const { return Wout; }
 
 private:
+    static Eigen::VectorXd MetaFeatures(const Eigen::VectorXd& x) {
+        Eigen::VectorXd f(2 * x.size() + 1);
+        f << x, x.array().square().matrix(), 1.0;
+        return f;
+    }
+    Eigen::VectorXd Wmeta;
     static double Jaccard(const std::array<bool, ClusterCount>& a, const std::array<bool, ClusterCount>& b) {
         int inter = 0, uni = 0;
         for (int i = 0; i < ClusterCount; ++i) { inter += a[i] && b[i]; uni += a[i] || b[i]; }

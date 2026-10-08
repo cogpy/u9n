@@ -254,7 +254,25 @@ static void ThompsonResetsOnRegimeChange() {
     CHECK(t < 60);                          // ...quickly
 }
 
+static void SelfModelPredictsHardStates() {
+    // Two kinds of state: targets for states with x[0] > 0 carry noise, the rest are exact.
+    // After training, the self-model must expect more error in the noisy region.
+    GTAngelCore core;
+    std::mt19937 rng(4); std::normal_distribution<double> N(0, 1);
+    auto state = [&](double s) { Eigen::VectorXd x = 0.1 * Eigen::VectorXd::NullaryExpr(GTAngelCore::ReservoirSize, [&] { return N(rng); }); x[0] = s; return x; };
+    for (int t = 0; t < 4000; ++t) {
+        const double s = (t % 2) ? 0.8 : -0.8;
+        Eigen::VectorXd tgt = Eigen::VectorXd::Zero(GTAngelCore::ActionCount);
+        tgt[0] = s > 0 ? 0.5 * N(rng) : 0.0;
+        core.TrainWout(state(s), tgt);
+    }
+    double hard = 0, easy = 0;
+    for (int i = 0; i < 50; ++i) { hard += core.PredictErrorSq(state(0.8)); easy += core.PredictErrorSq(state(-0.8)); }
+    CHECK(hard > 20 * easy);   // observed ~200x
+}
+
 int main() {
+    SelfModelPredictsHardStates();
     ThompsonResetsOnRegimeChange();
     CycleReservoirIsRing();
     AugmentStacksSquares();

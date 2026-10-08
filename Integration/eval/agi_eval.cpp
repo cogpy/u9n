@@ -290,33 +290,43 @@ static Probe ContinualLearning() {
             worst2, worst1, Clamp01(1.0 - worst2), n.str()};
 }
 
-// ── 8. Metacognition: does GTAngel coherence track real competence? ───────
+// ── 8. Metacognition: does the agent know how wrong it is about to be? ─────
+static double Pearson(const std::vector<double>& a, const std::vector<double>& b) {
+    const int m = (int)a.size();
+    double ma = 0, mb = 0; for (int i = 0; i < m; ++i) { ma += a[i]; mb += b[i]; } ma /= m; mb /= m;
+    double cv = 0, va = 0, vb = 0;
+    for (int i = 0; i < m; ++i) { cv += (a[i] - ma) * (b[i] - mb); va += std::pow(a[i] - ma, 2); vb += std::pow(b[i] - mb, 2); }
+    return cv / std::sqrt(va * vb + 1e-300);
+}
+
 static Probe Metacognition() {
     EchoReservoir r;
     GTAngelCore core;
     auto sig = [](int t) { return std::sin(0.13 * t) * std::cos(0.031 * t); };
-    std::vector<double> coh, err;
-    double se = 0, sv = 0;
+    std::vector<double> coh, err, self;
+    double se = 0, sv = 0, sp = 0;
     for (int t = 0; t < 10000; ++t) {
         r.Step(sig(t));
         const double y = sig(t + 2);
-        // Measure the prediction error *before* training on this sample (true held-out error).
+        // Self-prediction and true error are both taken *before* training on this sample.
         const double p = core.Readout().row(0).dot(r.State());
+        sp += core.PredictErrorSq(r.State()) * GTAngelCore::ActionCount;   // per-action mean → row-0 error
         se += (p - y) * (p - y); sv += y * y;
         VectorXd tgt = VectorXd::Zero(GTAngelCore::ActionCount); tgt[0] = y;
         core.TrainWout(r.State(), tgt);
         core.UpdateAttention(r.State());
         core.MinePatterns(r.State(), 1.0 - 2.0 * std::min(1.0, std::abs(p - y)));
-        if (t % 250 == 249) { coh.push_back(core.ComputeCoherence().Overall); err.push_back(std::sqrt(se / sv)); se = sv = 0; }
+        if (t % 250 == 249) {
+            coh.push_back(core.ComputeCoherence().Overall); err.push_back(std::sqrt(se / sv)); self.push_back(std::sqrt(sp / sv));
+            se = sv = sp = 0;
+        }
     }
-    const int m = (int)coh.size();
-    double mc = 0, me = 0; for (int i = 0; i < m; ++i) { mc += coh[i]; me += err[i]; } mc /= m; me /= m;
-    double cv = 0, vc = 0, ve = 0;
-    for (int i = 0; i < m; ++i) { cv += (coh[i] - mc) * (err[i] - me); vc += std::pow(coh[i] - mc, 2); ve += std::pow(err[i] - me, 2); }
-    const double corr = cv / std::sqrt(vc * ve + 1e-300);
-    return {"metacognition", "Metacognitive self-monitoring (coherence vs true error)", "Pearson r(coherence, held-out NRMSE)",
-            corr, 0.0, Clamp01(-corr),
-            "calibrated self-model => strongly negative r; coherence shares the loss EMA, so this upper-bounds introspection"};
+    const double rSelf = Pearson(self, err), rCoh = Pearson(coh, err);
+    std::ostringstream note;
+    note << "prospective self-model (error predicted from state before the target is seen); "
+            "retrospective coherence r = " << rCoh << " for comparison";
+    return {"metacognition", "Metacognitive self-monitoring (predicted vs true error)", "Pearson r(self-predicted NRMSE, held-out NRMSE)",
+            rSelf, 0.0, Clamp01(rSelf), note.str()};
 }
 
 // ── 9. Hemispheric integration: EchoSelf toroid phase lock ────────────────
