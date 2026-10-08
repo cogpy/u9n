@@ -216,7 +216,16 @@ static void AgentConsolidatesEpisodicMemory() {
     CHECK(a.RecallEpisode(cue) == label);
 }
 
+static void AugmentStacksSquares() {
+    Eigen::MatrixXd S(2, 3); S << 1, -2, 3, 0.5, 0, -1;
+    Eigen::MatrixXd A = u9n::EchoReservoir::Augment(S);
+    CHECK(A.rows() == 4 && A.cols() == 3);
+    CHECK(A.topRows(2).isApprox(S));
+    CHECK(A.bottomRows(2).isApprox(S.array().square().matrix()));
+}
+
 int main() {
+    AugmentStacksSquares();
     KeyStoredAfterConsolidationOutsideSpan();
     RecallReinforcesSalience();
     EchoSpaceSalienceWeightedEviction();

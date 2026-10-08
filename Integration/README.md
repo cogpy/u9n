@@ -44,7 +44,7 @@ The raw numbers are in [`AGI_EVALUATION_RESULTS.md`](AGI_EVALUATION_RESULTS.md),
 | Adaptive decision-making (non-stationary bandit) | 0.79 | Good. Discounted Thompson recovers after the regime shift. |
 | Metacognition (coherence vs true error) | 0.77 | r = −0.77. Coherence tracks competence, but it is built partly from the same loss, so this overstates introspection. |
 | Working memory (MC) | 0.55 | MC ≈ 55 of a 512 ceiling, which is typical for tanh ESNs. |
-| Temporal prediction (NARMA-10) | 0.39 | NRMSE 0.50 against 0.82 for the linear baseline. A tuned ESN reaches about 0.2–0.4. |
+| Temporal prediction (NARMA-10) | 0.90 | **Improved** from 0.39. NRMSE 0.078 against 0.81 for the linear baseline. The probe uses a quadratic readout `[x; x²]` and picks leak, input gain and ridge on a validation slice of the training data. The default leak of 0.3 blurs NARMA's 10-step lag window; validation picks leak 1.0. |
 | Episodic memory (noisy cue recall) | 0.75 | **Improved** from 0.27. Recall is 1.00 at cue noise σ=0.25 and 0.59 at σ=0.5; the old path scored 0.28 and 0.08. The score is measured from the old path as baseline. See below. |
 | Continual learning (3 sequential tasks) | 0.96 | **Fixed** with `ContextualReadout`. Worst-task NRMSE is 0.04; the single GTAngel Wout scores 0.75 on the same run. See below. |
 | Selective attention / toroid phase lock | 1.00 | These pass by construction: they confirm the dynamics are correct, not that the system is intelligent. |

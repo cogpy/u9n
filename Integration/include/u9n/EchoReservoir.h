@@ -84,6 +84,13 @@ public:
         A.diagonal().array() += ridge;
         return (A.ldlt().solve(Sb * Y.transpose())).transpose();
     }
+    // Quadratic readout features [S; S⊙S]: a linear readout over them is a second-order
+    // polynomial in the state, enough for multiplicative targets (u(t-9)·u(t) in NARMA).
+    static Eigen::MatrixXd Augment(const Eigen::MatrixXd& S) {
+        Eigen::MatrixXd A(2 * S.rows(), S.cols());
+        A << S, S.array().square().matrix();
+        return A;
+    }
     static Eigen::MatrixXd Predict(const Eigen::MatrixXd& Wout, const Eigen::MatrixXd& S) {
         Eigen::MatrixXd Sb(S.rows() + 1, S.cols());
         Sb << S, Eigen::RowVectorXd::Ones(S.cols());

@@ -61,29 +61,51 @@ static Probe MemoryCapacity() {
 
 // ── 2. Temporal prediction: NARMA-10 ──────────────────────────────────────
 static Probe Narma10() {
-    EchoReservoir r;
+    std::mt19937 rng(42);
     std::uniform_real_distribution<double> U(0.0, 0.5);
-    const int T = 6000, wash = 200, train = 4000;
+    const int T = 6000, wash = 200, train = 4000, fit = 3000;   // fit/validate split inside train
     std::vector<double> u(T), y(T, 0.0);
-    for (auto& x : u) x = U(r.Random());
+    for (auto& x : u) x = U(rng);
     for (int t = 9; t < T - 1; ++t) {
         double s = 0; for (int i = 0; i < 10; ++i) s += y[t - i];
         y[t + 1] = 0.3 * y[t] + 0.05 * y[t] * s + 1.5 * u[t - 9] * u[t] + 0.1;
     }
-    MatrixXd S = r.Harvest(Scalars(u), wash);
-    MatrixXd Y(1, S.cols());
-    for (int t = 0; t < S.cols(); ++t) Y(0, t) = y[t + wash];
-    const int te = int(S.cols()) - train;
-    MatrixXd W = EchoReservoir::FitRidge(S.leftCols(train), Y.leftCols(train), 1e-6);
-    const double esn = Nrmse(EchoReservoir::Predict(W, S.rightCols(te)), Y.rightCols(te));
+    MatrixXd Y(1, T - wash);
+    for (int t = 0; t < Y.cols(); ++t) Y(0, t) = y[t + wash];
+    const int te = int(Y.cols()) - train;
+
+    // Timescale self-selection: the default leak (0.3) integrates over ~3 steps and smears a
+    // 10-step lag window, so the reservoir picks leak / input gain / ridge on a validation
+    // slice of the training data. The test segment is never seen during selection.
+    struct Pick { double Leak, Gain, Ridge, Val; } best{0.3, 0.5, 1e-6, 1e300};
+    for (double leak : {0.3, 0.6, 1.0})
+        for (double gain : {0.05, 0.1, 0.5}) {
+            ReservoirConfig c; c.LeakRate = leak; c.SpectralRadius = 0.95; c.InputScale = gain;
+            EchoReservoir r(c);
+            MatrixXd F = EchoReservoir::Augment(r.Harvest(Scalars(u), wash));
+            for (double ridge : {1e-8, 1e-6}) {
+                MatrixXd W = EchoReservoir::FitRidge(F.leftCols(fit), Y.leftCols(fit), ridge);
+                const double v = Nrmse(EchoReservoir::Predict(W, F.middleCols(fit, train - fit)),
+                                       Y.middleCols(fit, train - fit));
+                if (v < best.Val) best = {leak, gain, ridge, v};
+            }
+        }
+    ReservoirConfig c; c.LeakRate = best.Leak; c.SpectralRadius = 0.95; c.InputScale = best.Gain;
+    EchoReservoir r(c);
+    MatrixXd F = EchoReservoir::Augment(r.Harvest(Scalars(u), wash));
+    MatrixXd W = EchoReservoir::FitRidge(F.leftCols(train), Y.leftCols(train), best.Ridge);
+    const double esn = Nrmse(EchoReservoir::Predict(W, F.rightCols(te)), Y.rightCols(te));
 
     // Baseline: linear model on the last 10 raw inputs (no reservoir).
-    MatrixXd L(10, S.cols());
-    for (int t = 0; t < S.cols(); ++t) for (int i = 0; i < 10; ++i) L(i, t) = u[t + wash - i];
+    MatrixXd L(10, Y.cols());
+    for (int t = 0; t < Y.cols(); ++t) for (int i = 0; i < 10; ++i) L(i, t) = u[t + wash - i];
     MatrixXd WL = EchoReservoir::FitRidge(L.leftCols(train), Y.leftCols(train), 1e-6);
     const double lin = Nrmse(EchoReservoir::Predict(WL, L.rightCols(te)), Y.rightCols(te));
+    std::ostringstream note;
+    note << "baseline = linear regression on 10 lagged inputs; quadratic readout [x; x^2]; selected on validation: leak="
+         << best.Leak << " gain=" << best.Gain << " ridge=" << best.Ridge << " (val NRMSE " << best.Val << ")";
     return {"temporal_prediction", "Temporal prediction (NARMA-10)", "test NRMSE", esn, lin,
-            Clamp01((lin - esn) / lin), "baseline = linear regression on 10 lagged inputs"};
+            Clamp01((lin - esn) / lin), note.str()};
 }
 
 // ── 3. Nonlinear temporal reasoning: delayed parity ───────────────────────
