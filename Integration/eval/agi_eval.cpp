@@ -135,19 +135,62 @@ static Probe Narma10() {
 
 // ── 3. Nonlinear temporal reasoning: delayed parity ───────────────────────
 static Probe DelayedParity() {
-    EchoReservoir r;
+    std::mt19937 rng(42);
     std::bernoulli_distribution B(0.5);
-    const int T = 6000, wash = 200, train = 4000;
-    std::vector<double> u(T); for (auto& x : u) x = B(r.Random()) ? 1.0 : -1.0;
-    MatrixXd S = r.Harvest(Scalars(u), wash);
-    MatrixXd Y(1, S.cols());
-    for (int t = 0; t < S.cols(); ++t) Y(0, t) = u[t + wash - 1] * u[t + wash - 2] * u[t + wash - 3];
-    const int te = int(S.cols()) - train;
-    MatrixXd P = EchoReservoir::Predict(EchoReservoir::FitRidge(S.leftCols(train), Y.leftCols(train), 1e-6), S.rightCols(te));
-    int ok = 0; for (int t = 0; t < te; ++t) ok += (P(0, t) > 0) == (Y(0, train + t) > 0);
-    const double acc = double(ok) / te;
+    const int T = 6000, wash = 200, train = 4000, fit = 3000, maxBits = 9;
+    std::vector<double> u(T); for (auto& x : u) x = B(rng) ? 1.0 : -1.0;
+    const int C = T - wash;
+    auto parity = [&](int bits) {
+        MatrixXd Y(1, C);
+        for (int t = 0; t < C; ++t) { double p = 1; for (int k = 1; k <= bits; ++k) p *= u[t + wash - k]; Y(0, t) = p; }
+        return Y;
+    };
+    auto accuracy = [](const MatrixXd& P, const MatrixXd& Y) {
+        int ok = 0; for (int t = 0; t < P.cols(); ++t) ok += (P(0, t) > 0) == (Y(0, t) > 0);
+        return double(ok) / P.cols();
+    };
+
+    // Regime self-selection on a validation slice of training data (test unseen). The default
+    // leak (0.3) smears consecutive ±1 symbols together, which destroys the sign products
+    // parity needs. Parity 3 alone saturates, so candidates are ranked by summed validation
+    // accuracy over parity 3, 5 and 7.
+    struct Pick { double Leak, Gain, Rho; bool Aug; double Val; } best{0.3, 0.5, 0.9, false, -1};
+    for (double leak : {0.3, 1.0})
+        for (auto [gain, rho] : {std::pair{0.5, 0.9}, std::pair{1.0, 0.9}, std::pair{2.0, 0.5}}) {
+            ReservoirConfig c; c.LeakRate = leak; c.InputScale = gain; c.SpectralRadius = rho;
+            EchoReservoir r(c);
+            const MatrixXd S = r.Harvest(Scalars(u), wash);
+            for (bool aug : {false, true}) {
+                const MatrixXd F = aug ? EchoReservoir::Augment(S) : S;
+                double v = 0;
+                for (int bits : {3, 5, 7}) {
+                    const MatrixXd Y = parity(bits);
+                    const MatrixXd W = EchoReservoir::FitRidge(F.leftCols(fit), Y.leftCols(fit), 1e-6);
+                    v += accuracy(EchoReservoir::Predict(W, F.middleCols(fit, train - fit)), Y.middleCols(fit, train - fit));
+                }
+                if (v > best.Val) best = {leak, gain, rho, aug, v};
+            }
+        }
+    ReservoirConfig c; c.LeakRate = best.Leak; c.InputScale = best.Gain; c.SpectralRadius = best.Rho;
+    EchoReservoir r(c);
+    MatrixXd F = r.Harvest(Scalars(u), wash);
+    if (best.Aug) F = EchoReservoir::Augment(F);
+    const int te = C - train;
+    std::vector<double> acc(maxBits + 1, 0.0);
+    int depth = 0;
+    for (int bits = 1; bits <= maxBits; ++bits) {
+        const MatrixXd Y = parity(bits);
+        const MatrixXd W = EchoReservoir::FitRidge(F.leftCols(train), Y.leftCols(train), 1e-6);
+        acc[bits] = accuracy(EchoReservoir::Predict(W, F.rightCols(te)), Y.rightCols(te));
+        if (acc[bits] >= 0.95 && depth == bits - 1) depth = bits;
+    }
+    std::ostringstream note;
+    note << "chance = 0.5; selected on validation: leak=" << best.Leak << " gain=" << best.Gain << " rho=" << best.Rho
+         << (best.Aug ? " +[x;x^2]" : "") << "; test accuracy by parity order:";
+    for (int bits = 3; bits <= maxBits; ++bits) note << " " << bits << ":" << acc[bits];
+    note << "; deepest order solved (>=0.95 for all orders up to it): " << depth;
     return {"relational_reasoning", "Nonlinear temporal reasoning (3-bit delayed parity)", "test accuracy",
-            acc, 0.5, Clamp01((acc - 0.5) / 0.5), "chance = 0.5; linear readouts cannot solve parity without a nonlinear reservoir"};
+            acc[3], 0.5, Clamp01((acc[3] - 0.5) / 0.5), note.str()};
 }
 
 // ── 4. Decision making under non-stationarity: GTAngel Thompson policy ────
