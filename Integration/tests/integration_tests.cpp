@@ -224,7 +224,22 @@ static void AugmentStacksSquares() {
     CHECK(A.bottomRows(2).isApprox(S.array().square().matrix()));
 }
 
+static void CycleReservoirIsRing() {
+    // The ring is orthogonal, so in the near-linear regime an input impulse keeps its shape
+    // and its norm shrinks by ~SpectralRadius per step (tanh' ≈ 1 at tiny gain).
+    ReservoirConfig c; c.Shape = Topology::Cycle; c.Size = 16; c.SpectralRadius = 0.9;
+    c.InputScale = 1e-3; c.LeakRate = 1.0;
+    EchoReservoir r(c), z(c);
+    r.Step(1.0); z.Step(0.0);
+    const double d0 = (r.State() - z.State()).norm();
+    for (int t = 0; t < 4; ++t) { r.Step(0.0); z.Step(0.0); }
+    const double ratio = (r.State() - z.State()).norm() / d0;
+    CHECK(d0 > 1e-4);
+    CHECK(ratio > 0.6 && ratio < 0.66);   // 0.9^4 = 0.656
+}
+
 int main() {
+    CycleReservoirIsRing();
     AugmentStacksSquares();
     KeyStoredAfterConsolidationOutsideSpan();
     RecallReinforcesSalience();

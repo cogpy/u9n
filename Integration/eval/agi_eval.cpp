@@ -13,6 +13,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <tuple>
 
 using namespace u9n;
 using Eigen::MatrixXd;
@@ -36,27 +37,51 @@ static std::vector<VectorXd> Scalars(const std::vector<double>& u) {
 }
 
 // ── 1. Working memory: Jaeger memory capacity ─────────────────────────────
-static Probe MemoryCapacity() {
-    ReservoirConfig c; c.Size = 512; c.InputScale = 0.1; c.LeakRate = 1.0; c.SpectralRadius = 0.95;
-    EchoReservoir r(c);
-    std::uniform_real_distribution<double> U(-0.5, 0.5);
-    const int T = 5000, wash = 200, K = 150, train = 3500;
-    std::vector<double> u(T); for (auto& x : u) x = U(r.Random());
-    MatrixXd S = r.Harvest(Scalars(u), wash);
+// Σ_k r²(delay k) for k = 1..K; ridge readouts fit on [0, fit), scored on [fit, end).
+// Σ_k r²(delay k) for k = 1..K; ridge readouts fit on [0, fit), scored on [fit, end).
+// All K delay readouts share one Gram matrix, so they are fit in a single multi-target solve.
+static double DelayRecall(const MatrixXd& S, const std::vector<double>& u, int wash, int fit, int end, int K, double ridge) {
+    MatrixXd Y(K, S.cols());
+    for (int k = 1; k <= K; ++k) for (int t = 0; t < S.cols(); ++t) Y(k - 1, t) = u[t + wash - k];
+    MatrixXd W = EchoReservoir::FitRidge(S.leftCols(fit), Y.leftCols(fit), ridge);
+    MatrixXd P = EchoReservoir::Predict(W, S.middleCols(fit, end - fit));
+    MatrixXd Yt = Y.middleCols(fit, end - fit);
     double mc = 0;
-    for (int k = 1; k <= K; ++k) {
-        MatrixXd Y(1, S.cols());
-        for (int t = 0; t < S.cols(); ++t) Y(0, t) = u[t + wash - k];
-        MatrixXd W = EchoReservoir::FitRidge(S.leftCols(train), Y.leftCols(train), 1e-8);
-        MatrixXd P = EchoReservoir::Predict(W, S.rightCols(S.cols() - train));
-        MatrixXd Yt = Y.rightCols(S.cols() - train);
-        const double cov = ((P.array() - P.mean()) * (Yt.array() - Yt.mean())).mean();
-        const double r2 = cov * cov / ((P.array() - P.mean()).square().mean() * (Yt.array() - Yt.mean()).square().mean());
-        mc += r2;
+    for (int k = 0; k < K; ++k) {
+        const auto p = P.row(k).array() - P.row(k).mean(), y = Yt.row(k).array() - Yt.row(k).mean();
+        const double cov = (p * y).mean();
+        mc += cov * cov / (p.square().mean() * y.square().mean());
     }
-    // Theoretical ceiling for linear-ish reservoirs is N; practical tanh ESNs reach ~N/10..N/5.
+    return mc;
+}
+
+static Probe MemoryCapacity() {
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> U(-0.5, 0.5);
+    const int T = 5000, wash = 200, K = 150, train = 3500, fit = 2500;
+    std::vector<double> u(T); for (auto& x : u) x = U(rng);
+    const int C = T - wash;
+
+    // Shape/regime self-selection on a validation slice of the training data (test unseen):
+    // the classic sparse random ESN vs the simple cycle reservoir, each in a moderately
+    // nonlinear and a near-linear regime (small input gain, ρ → 1 maximises linear memory).
+    struct Pick { Topology Shape; double Rho, Gain, Ridge, Val; } best{Topology::Random, 0.95, 0.1, 1e-8, -1};
+    for (Topology shape : {Topology::Random, Topology::Cycle})
+        for (auto [rho, gain, ridge] : {std::tuple{0.95, 0.1, 1e-8}, std::tuple{0.99, 0.01, 1e-10}}) {
+            ReservoirConfig c; c.Shape = shape; c.Size = 512; c.LeakRate = 1.0; c.SpectralRadius = rho; c.InputScale = gain;
+            EchoReservoir r(c);
+            const double v = DelayRecall(r.Harvest(Scalars(u), wash), u, wash, fit, train, K, ridge);
+            if (v > best.Val) best = {shape, rho, gain, ridge, v};
+        }
+    ReservoirConfig c; c.Shape = best.Shape; c.Size = 512; c.LeakRate = 1.0; c.SpectralRadius = best.Rho; c.InputScale = best.Gain;
+    EchoReservoir r(c);
+    const double mc = DelayRecall(r.Harvest(Scalars(u), wash), u, wash, train, C, K, best.Ridge);
+    std::ostringstream note;
+    note << "score = MC / K (all 150 delays recalled perfectly); selected on validation: "
+         << (best.Shape == Topology::Cycle ? "cycle" : "random") << " rho=" << best.Rho << " gain=" << best.Gain
+         << " (val MC " << best.Val << ")";
     return {"working_memory", "Working memory (short-term trace)", "memory capacity MC (Σ r², delays 1..150)",
-            mc, 0.0, Clamp01(mc / 100.0), "normalised against 100 delays recalled perfectly; ceiling N=512"};
+            mc, 0.0, Clamp01(mc / K), note.str()};
 }
 
 // ── 2. Temporal prediction: NARMA-10 ──────────────────────────────────────

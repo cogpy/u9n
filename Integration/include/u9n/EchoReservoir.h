@@ -14,7 +14,13 @@
 
 namespace u9n {
 
+// Random: sparse random W (classic ESN). Cycle: simple cycle reservoir (Rodan & Tiňo 2011),
+// a ring x_i → x_{i+1} with every weight = SpectralRadius and input weights ±InputScale.
+// The ring is an orthogonal delay line, so near-linear operation keeps ~N steps of history.
+enum class Topology { Random, Cycle };
+
 struct ReservoirConfig {
+    Topology Shape        = Topology::Random;
     int    Size           = 512;
     int    InputDim       = 1;
     double SpectralRadius = 0.9;
@@ -32,12 +38,17 @@ public:
         std::uniform_real_distribution<double> U(-1.0, 1.0);
         std::uniform_real_distribution<double> P(0.0, 1.0);
         W = Eigen::MatrixXd::Zero(N, N);
-        for (int i = 0; i < N; ++i)
-            for (int j = 0; j < N; ++j)
-                if (P(Rng) < Cfg.Density) W(i, j) = U(Rng);
-        const double rho = SpectralRadiusOf(W);
-        if (rho > 1e-12) W *= Cfg.SpectralRadius / rho;
-        Win = Eigen::MatrixXd::NullaryExpr(N, Cfg.InputDim, [&] { return U(Rng) * Cfg.InputScale; });
+        if (Cfg.Shape == Topology::Cycle) {
+            for (int i = 0; i < N; ++i) W((i + 1) % N, i) = Cfg.SpectralRadius;
+            Win = Eigen::MatrixXd::NullaryExpr(N, Cfg.InputDim, [&] { return (P(Rng) < 0.5 ? -1.0 : 1.0) * Cfg.InputScale; });
+        } else {
+            for (int i = 0; i < N; ++i)
+                for (int j = 0; j < N; ++j)
+                    if (P(Rng) < Cfg.Density) W(i, j) = U(Rng);
+            const double rho = SpectralRadiusOf(W);
+            if (rho > 1e-12) W *= Cfg.SpectralRadius / rho;
+            Win = Eigen::MatrixXd::NullaryExpr(N, Cfg.InputDim, [&] { return U(Rng) * Cfg.InputScale; });
+        }
         Bias = Eigen::VectorXd::NullaryExpr(N, [&] { return U(Rng) * 0.1; });
         X = Eigen::VectorXd::Zero(N);
     }
