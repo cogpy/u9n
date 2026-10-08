@@ -217,28 +217,59 @@ static Probe EpisodicMemory() {
     for (auto& s : seqs) for (auto& x : s) x = 0.5 * N(r.Random());
 
     auto finalState = [&](const std::vector<double>& s) { r.Reset(); for (double x : s) r.Step(x); return VectorXd(r.State()); };
-    EchoSpace naive, mem;
-    for (int i = 0; i < items; ++i) {
-        naive.Store(finalState(seqs[i]), i);
-        mem.Store(r.EncodeTrajectory(seqs[i]), i);
-    }
-    mem.Consolidate();
+    EchoSpace naive;
+    for (int i = 0; i < items; ++i) naive.Store(finalState(seqs[i]), i);
 
-    double accSum = 0, naiveSum = 0; std::ostringstream n;
-    n << "200 stored sequences; recall (final-state+raw cosine -> trajectory+consolidated):";
+    // Encoder self-selection by rehearsal: the memory replays its own stored episodes under
+    // simulated corruption (its own RNG stream, σ=0.35) and keeps the encoder that recalls
+    // them best. The test cues are never seen. Candidates: the default leaky random ESN with
+    // whitening, and cycle reservoirs (orthogonal ring ⇒ near-isometric encoding of the input
+    // history) with raw cosine or whitening.
+    struct Enc { const char* Name; ReservoirConfig Cfg; bool Whiten; };
+    auto cyc = [](double gain, double rho) { ReservoirConfig c; c.Shape = Topology::Cycle; c.LeakRate = 1.0; c.InputScale = gain; c.SpectralRadius = rho; return c; };
+    const std::vector<Enc> encs = {{"random+whiten", ReservoirConfig{}, true},
+                                   {"cycle(0.1,0.9)", cyc(0.1, 0.9), false}, {"cycle(0.1,0.9)+whiten", cyc(0.1, 0.9), true},
+                                   {"cycle(0.1,0.8)", cyc(0.1, 0.8), false}, {"cycle(0.05,0.95)", cyc(0.05, 0.95), false}};
+    std::mt19937 rehearsal(777);
+    int bestEnc = 0, bestHits = -1;
+    for (int e = 0; e < (int)encs.size(); ++e) {
+        EchoReservoir enc(encs[e].Cfg); EchoSpace m;
+        for (int i = 0; i < items; ++i) m.Store(enc.EncodeTrajectory(seqs[i]), i);
+        if (encs[e].Whiten) m.Consolidate();
+        int hits = 0;
+        for (int i = 0; i < items; ++i) {
+            auto q = seqs[i]; for (auto& x : q) x += 0.35 * N(rehearsal);
+            hits += m.Recall(enc.EncodeTrajectory(q)) == i;
+        }
+        if (hits > bestHits) { bestHits = hits; bestEnc = e; }
+    }
+    EchoReservoir enc(encs[bestEnc].Cfg); EchoSpace mem;
+    for (int i = 0; i < items; ++i) mem.Store(enc.EncodeTrajectory(seqs[i]), i);
+    if (encs[bestEnc].Whiten) mem.Consolidate();
+
+    double accSum = 0, naiveSum = 0, rawSum = 0; std::ostringstream n;
+    n << "200 stored sequences; recall (final-state+raw cosine -> selected encoder; raw-input cosine ceiling):";
     for (double sigma : {0.25, 0.5}) {
-        int okNaive = 0, ok = 0;
+        int okNaive = 0, ok = 0, okRaw = 0;
         for (int i = 0; i < items; ++i) {
             auto q = seqs[i];
             for (auto& x : q) x += sigma * N(r.Random());
             okNaive += naive.Recall(finalState(q)) == i;
-            ok      += mem.Recall(r.EncodeTrajectory(q)) == i;
+            ok      += mem.Recall(enc.EncodeTrajectory(q)) == i;
+            // Ceiling reference: nearest stored raw sequence by cosine (no reservoir at all).
+            const VectorXd qv = Eigen::Map<const VectorXd>(q.data(), len);
+            int best = -1; double bs = -2;
+            for (int j = 0; j < items; ++j) {
+                const double c = qv.dot(Eigen::Map<const VectorXd>(seqs[j].data(), len)) / (qv.norm() * Eigen::Map<const VectorXd>(seqs[j].data(), len).norm());
+                if (c > bs) { bs = c; best = j; }
+            }
+            okRaw += best == i;
         }
-        accSum += double(ok) / items; naiveSum += double(okNaive) / items;
-        n << " sigma=" << sigma << ": " << double(okNaive) / items << " -> " << double(ok) / items << ";";
+        accSum += double(ok) / items; naiveSum += double(okNaive) / items; rawSum += double(okRaw) / items;
+        n << " sigma=" << sigma << ": " << double(okNaive) / items << " -> " << double(ok) / items << " (raw " << double(okRaw) / items << ");";
     }
     const double acc = accSum / 2, accNaive = naiveSum / 2;
-    n << " whitening fitted on stored keys only";
+    n << " encoder chosen by rehearsal: " << encs[bestEnc].Name << " (" << bestHits << "/200 at sigma=0.35)";
     return {"episodic_memory", "Episodic memory (noisy cue → sequence recall, EchoSpace)", "mean recall (σ=0.25, 0.5)",
             acc, accNaive, Clamp01((acc - accNaive) / (1.0 - accNaive)), n.str()};
 }
