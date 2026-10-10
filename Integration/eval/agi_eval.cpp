@@ -490,8 +490,10 @@ static Probe Language() {
     for (auto& c : sample) if (c == '\n' || c == '|') c = ' ';
     NanEchoSpec s;
     std::ostringstream n;
-    n << "u9n EchoLanguageModel (512-unit reservoir, quadratic readout, mixed with order-5 n-gram counts, lambda="
-      << lm.MixtureWeight() << "); test bpc: mixture " << bpc << ", echo only " << echoOnly << ", n-gram only " << ngramOnly
+    n << "u9n EchoLanguageModel (512-unit reservoir, quadratic readout, mixed with Witten-Bell order-12 n-gram counts "
+         "that keep learning while reading; echo weight per matched context depth 0..12:";
+    for (double w : lm.MixtureWeights()) n << " " << w;
+    n << "); test bpc: mixture " << bpc << ", echo only " << echoOnly << ", n-gram only " << ngramOnly
       << ", unigram baseline " << hUni << "; score = 1 - bpc/unigram; sample after 'What is ': \"" << sample
       << "\"; NanEcho " << s.Params() / 1e6 << "M itself not evaluated (no public checkpoint); "
       << "this measures next-character prediction, not open-ended reasoning";

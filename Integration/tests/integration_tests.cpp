@@ -290,7 +290,7 @@ static void LanguageModelLearnsSequence() {
     std::string train, val, test;
     for (int i = 0; i < 300; ++i) train += "the cat sat. ";
     for (int i = 0; i < 30; ++i) { val += "the cat sat. "; test += "the cat sat. "; }
-    LanguageModelConfig c; c.Size = 64;
+    LanguageModelConfig c; c.Size = 64; c.Order = 5;
     EchoLanguageModel lm(c);
     lm.Fit(train, train);
     lm.Calibrate(val);
@@ -298,12 +298,30 @@ static void LanguageModelLearnsSequence() {
     const double bpc = lm.BitsPerChar(test, &echo, &ngram);
     CHECK(lm.V() == 8);
     CHECK(bpc < 0.3);
-    CHECK(bpc <= std::min(echo, ngram) + 1e-9 || std::abs(lm.MixtureWeight()) < 1e-12 || std::abs(lm.MixtureWeight() - 1) < 1e-12);
+    CHECK(bpc <= std::max(echo, ngram) + 1e-9);   // the mixture never loses to its worse part
+    CHECK((int)lm.MixtureWeights().size() == c.Order + 1);
     std::mt19937 rng(1);
     CHECK(lm.Generate("the cat ", 5, rng) == "sat. ");
 }
 
+static void LanguageModelOnlineLearning() {
+    // A phrase absent from training but repeated in the evaluated text: online counting
+    // learns it on the first pass, so the repeats become cheap; frozen counts cannot.
+    std::string train;
+    for (int i = 0; i < 200; ++i) train += "one two three. ";
+    const std::string text = "zebra quokka! zebra quokka! zebra quokka! zebra quokka! ";
+    LanguageModelConfig on; on.Size = 32; on.Order = 6;
+    LanguageModelConfig off = on; off.Online = false;
+    EchoLanguageModel a(on), b(off);
+    a.Fit(train + text, train); b.Fit(train + text, train);
+    a.Calibrate(text); b.Calibrate(text);
+    double ea = 0, na = 0, eb = 0, nb = 0;
+    a.BitsPerChar(text, &ea, &na); b.BitsPerChar(text, &eb, &nb);
+    CHECK(na < nb - 1.0);
+}
+
 int main() {
+    LanguageModelOnlineLearning();
     LanguageModelLearnsSequence();
     BiasScaleControlsBias();
     SelfModelPredictsHardStates();
