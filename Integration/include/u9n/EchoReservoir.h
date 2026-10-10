@@ -29,6 +29,9 @@ struct ReservoirConfig {
     double Density        = 0.1;
     double Ridge          = 1e-6;
     unsigned Seed         = 42;
+    // Per-unit bias amplitude. Bias moves each unit off tanh's linear centre, adding
+    // even-order distortion; a near-linear delay line (Cycle) keeps far more memory at 0.
+    double BiasScale      = 0.1;
 };
 
 class EchoReservoir {
@@ -49,7 +52,7 @@ public:
             if (rho > 1e-12) W *= Cfg.SpectralRadius / rho;
             Win = Eigen::MatrixXd::NullaryExpr(N, Cfg.InputDim, [&] { return U(Rng) * Cfg.InputScale; });
         }
-        Bias = Eigen::VectorXd::NullaryExpr(N, [&] { return U(Rng) * 0.1; });
+        Bias = Eigen::VectorXd::NullaryExpr(N, [&] { return U(Rng) * Cfg.BiasScale; });
         X = Eigen::VectorXd::Zero(N);
     }
 

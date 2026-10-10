@@ -64,22 +64,33 @@ static Probe MemoryCapacity() {
 
     // Shape/regime self-selection on a validation slice of the training data (test unseen):
     // the classic sparse random ESN vs the simple cycle reservoir, each in a moderately
-    // nonlinear and a near-linear regime (small input gain, ρ → 1 maximises linear memory).
-    struct Pick { Topology Shape; double Rho, Gain, Ridge, Val; } best{Topology::Random, 0.95, 0.1, 1e-8, -1};
+    // nonlinear and a near-linear regime (small input gain, ρ → 1 maximises linear memory),
+    // with and without unit bias (bias pushes units off tanh's linear centre).
+    struct Pick { Topology Shape; double Rho, Gain, Ridge, Bias, Val; } best{Topology::Random, 0.95, 0.1, 1e-8, 0.1, -1};
+    auto make = [](Topology shape, double rho, double gain, double bias) {
+        ReservoirConfig c; c.Shape = shape; c.Size = 512; c.LeakRate = 1.0; c.SpectralRadius = rho; c.InputScale = gain; c.BiasScale = bias;
+        return c;
+    };
     for (Topology shape : {Topology::Random, Topology::Cycle})
-        for (auto [rho, gain, ridge] : {std::tuple{0.95, 0.1, 1e-8}, std::tuple{0.99, 0.01, 1e-10}}) {
-            ReservoirConfig c; c.Shape = shape; c.Size = 512; c.LeakRate = 1.0; c.SpectralRadius = rho; c.InputScale = gain;
-            EchoReservoir r(c);
-            const double v = DelayRecall(r.Harvest(Scalars(u), wash), u, wash, fit, train, K, ridge);
-            if (v > best.Val) best = {shape, rho, gain, ridge, v};
-        }
-    ReservoirConfig c; c.Shape = best.Shape; c.Size = 512; c.LeakRate = 1.0; c.SpectralRadius = best.Rho; c.InputScale = best.Gain;
-    EchoReservoir r(c);
+        for (auto [rho, gain, ridge] : {std::tuple{0.95, 0.1, 1e-8}, std::tuple{0.99, 0.01, 1e-10}})
+            for (double bias : {0.1, 0.0}) {
+                EchoReservoir r(make(shape, rho, gain, bias));
+                const double v = DelayRecall(r.Harvest(Scalars(u), wash), u, wash, fit, train, K, ridge);
+                if (v > best.Val) best = {shape, rho, gain, ridge, bias, v};
+            }
+    EchoReservoir r(make(best.Shape, best.Rho, best.Gain, best.Bias));
     const double mc = DelayRecall(r.Harvest(Scalars(u), wash), u, wash, train, C, K, best.Ridge);
+
+    // K = 150 saturates once the reservoir is a clean delay line, so also report the full
+    // capacity over delays 1..N (theoretical ceiling N = 512), with a longer washout.
+    const int N = 512, washN = 600;
+    EchoReservoir rN(make(best.Shape, best.Rho, best.Gain, best.Bias));
+    const double mcN = DelayRecall(rN.Harvest(Scalars(u), washN), u, washN, train - (washN - wash), C - (washN - wash), N, best.Ridge);
+
     std::ostringstream note;
     note << "score = MC / K (all 150 delays recalled perfectly); selected on validation: "
          << (best.Shape == Topology::Cycle ? "cycle" : "random") << " rho=" << best.Rho << " gain=" << best.Gain
-         << " (val MC " << best.Val << ")";
+         << " bias=" << best.Bias << " (val MC " << best.Val << "); full MC over delays 1..512 = " << mcN << " of N=512";
     return {"working_memory", "Working memory (short-term trace)", "memory capacity MC (Σ r², delays 1..150)",
             mc, 0.0, Clamp01(mc / K), note.str()};
 }
