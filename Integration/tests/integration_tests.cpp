@@ -3,7 +3,9 @@
 #include "u9n/EchoLanguageModel.h"
 #include "u9n/UnifiedEchoAgent.h"
 
+#include <array>
 #include <cstdio>
+#include <memory>
 #include <cstdlib>
 
 using namespace u9n;
@@ -320,7 +322,57 @@ static void LanguageModelOnlineLearning() {
     CHECK(na < nb - 1.0);
 }
 
+// Two cues, two actions, reward only (no imitation): the integrated agent must learn the mapping
+// from its own reward, then relearn it when the mapping flips. Returns late accuracy per phase.
+static std::array<double, 2> RewardOnlyRun(bool integrated, int* resets = nullptr) {
+    UnifiedEchoAgent a(1, 9, /*memoryCapacity=*/32);
+    a.Integrated = integrated;
+    std::mt19937 rng(2);
+    double reward = 0;
+    std::array<double, 2> acc{0, 0};
+    for (int phase = 0; phase < 2; ++phase) {
+        int hits = 0, n = 0;
+        for (int cyc = 0; cyc < 500; ++cyc) {
+            const int cue = std::uniform_int_distribution<int>(0, 1)(rng);
+            for (int step = 1; step <= 12; ++step) {
+                const int act = a.Tick(Eigen::VectorXd::Constant(1, cue ? 1.0 : -1.0), reward, 2);
+                if (act < 0) continue;
+                const bool ok = act == (cue ^ phase);
+                reward = ok ? 1.0 : -1.0;
+                if (cyc >= 400) { hits += ok; ++n; }
+            }
+        }
+        acc[phase] = double(hits) / n;
+    }
+    if (resets) *resets = a.ValueResets();
+    return acc;
+}
+
+static void AgentLearnsFromRewardAndRecovers() {
+    int resets = 0;
+    const auto on = RewardOnlyRun(true, &resets), off = RewardOnlyRun(false);
+    CHECK(on[0] > 0.85 && on[1] > 0.85);    // learns, and relearns after the flip
+    CHECK(off[0] < 0.7);                    // without integration there is no reward learning
+    CHECK(resets >= 1 && resets <= 4);      // the flip is detected without a storm of false alarms
+}
+
+static void AgentSpeaksThroughVoice() {
+    std::mt19937 rng(1);
+    UnifiedEchoAgent a;
+    CHECK(a.Say("hi", 3, rng).empty());     // no voice attached
+    std::string train;
+    for (int i = 0; i < 300; ++i) train += "the cat sat. ";
+    LanguageModelConfig c; c.Size = 32; c.Order = 5;
+    auto lm = std::make_shared<EchoLanguageModel>(c);
+    lm->Fit(train, train);
+    lm->Calibrate(train.substr(0, 390));
+    a.Voice = lm;
+    CHECK(a.Say("the cat ", 5, rng) == "sat. ");
+}
+
 int main() {
+    AgentLearnsFromRewardAndRecovers();
+    AgentSpeaksThroughVoice();
     LanguageModelOnlineLearning();
     LanguageModelLearnsSequence();
     BiasScaleControlsBias();

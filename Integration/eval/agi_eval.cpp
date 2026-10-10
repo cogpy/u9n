@@ -10,6 +10,7 @@
 #include "u9n/UnifiedEchoAgent.h"
 
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -428,10 +429,11 @@ static Probe Toroidal() {
 }
 
 // ── 10. Closed-loop embodiment: unified agent in a contextual bandit ──────
-static Probe Embodied() {
+// Averaged over three seeds: single runs of this agent vary by several points of reward rate.
+static double EmbodiedRun(unsigned seed, size_t* episodes, int* consolidations, size_t* patterns) {
     const int A = 4, T = 12000;
-    UnifiedEchoAgent agent(1, 11);
-    std::mt19937 rng(3);
+    UnifiedEchoAgent agent(1, seed);
+    std::mt19937 rng(seed * 3 + 3);
     std::uniform_real_distribution<double> U(0, 1);
     double reward = 0, got = 0; int acts = 0;
     for (int t = 0; t < T; ++t) {
@@ -446,11 +448,95 @@ static Probe Embodied() {
             agent.Core.TrainWout(agent.Reservoir.State(), tgt);
         }
     }
-    const double rate = got / acts, chance = 0.9 / A + 0.1 * (A - 1) / A;
-    std::ostringstream n; n << "EchoSpace holds " << agent.Memory.Size() << " episodes (" << agent.Consolidations() << " consolidations); "
-                            << agent.Core.MinedPatterns().size() << " MOSES patterns";
+    *episodes = agent.Memory.Size(); *consolidations = agent.Consolidations(); *patterns = agent.Core.MinedPatterns().size();
+    return got / acts;
+}
+
+static Probe Embodied() {
+    const int A = 4;
+    double rate = 0; size_t episodes = 0, patterns = 0; int consolidations = 0;
+    std::ostringstream runs;
+    for (unsigned seed : {11u, 12u, 13u}) {
+        const double r = EmbodiedRun(seed, &episodes, &consolidations, &patterns);
+        rate += r / 3; runs << (seed == 11u ? "" : "/") << r;
+    }
+    const double chance = 0.9 / A + 0.1 * (A - 1) / A;
+    std::ostringstream n; n << "mean of 3 seeds (" << runs.str() << "); EchoSpace holds " << episodes << " episodes ("
+                            << consolidations << " consolidations); " << patterns << " MOSES patterns";
     return {"closed_loop_agency", "Closed-loop contextual agency (12-step unified agent)", "reward rate (2nd half)",
             rate, chance, Clamp01((rate - chance) / (0.9 - chance)), n.str()};
+}
+
+// ── 12. Integrated agency: one agent, one episode, everything at once ──────────
+// A cue is shown once per 12-step cycle (step 1) and followed by three noise inputs; the agent
+// must act on it at step 11, ten steps later. Reward is the only teacher (no imitation channel);
+// the cue→action rule is rotated halfway through. One run exercises working memory (delay),
+// reward learning, change-point recovery and calibrated self-assessment together.
+struct EpisodeResult { double Acc[2] = {0, 0}; int Recovery = -1; double Auroc = 0.5; int Resets = 0; };
+static EpisodeResult RunIntegratedEpisode(bool integrated, unsigned seed) {
+    const int A = 4, cyclesPerRegime = 2500, window = 500;
+    // 128-episode store: consolidation stays on, but its O(M²·D) refits are not what this probe
+    // measures, and at the default 512 they would dominate its runtime.
+    UnifiedEchoAgent agent(1, seed, 128);
+    agent.Integrated = integrated;
+    std::mt19937 rng(seed * 7 + 5);
+    std::normal_distribution<double> N(0, 0.3);
+    double reward = 0;
+    int cue = 0, hits[2] = {0, 0}, n[2] = {0, 0};
+    std::deque<int> recent;
+    EpisodeResult r;
+    std::vector<std::pair<double, int>> conf;   // (confidence, correct) for delayed actions, late windows
+    for (int cyc = 0; cyc < 2 * cyclesPerRegime; ++cyc) {
+        const int regime = cyc / cyclesPerRegime, inRegime = cyc % cyclesPerRegime;
+        cue = std::uniform_int_distribution<int>(0, A - 1)(rng);
+        const int target = (cue + regime) % A;   // regime 1 rotates the rule
+        for (int step = 1; step <= 12; ++step) {
+            const double x = step == 1 ? (cue - 1.5) / 1.5 : N(rng);
+            const int act = agent.Tick(VectorXd::Constant(1, x), reward, A);
+            if (act < 0) continue;
+            reward = act == target ? 1.0 : -1.0;
+            if (step != 11) continue;                  // score only the delayed decision
+            const bool ok = act == target;
+            if (inRegime >= cyclesPerRegime - window) {
+                hits[regime] += ok; ++n[regime];
+                if (integrated) conf.push_back({agent.Confidence(), ok});
+            }
+            if (regime == 1) {
+                recent.push_back(ok); if ((int)recent.size() > 50) recent.pop_front();
+                int s = 0; for (int v : recent) s += v;
+                if (r.Recovery < 0 && recent.size() == 50 && s >= 0.6 * 50) r.Recovery = inRegime;
+            }
+        }
+    }
+    for (int k = 0; k < 2; ++k) r.Acc[k] = double(hits[k]) / std::max(n[k], 1);
+    // AUROC of confidence for correct vs wrong delayed decisions (ties count half).
+    long double pairs = 0, good = 0;
+    for (auto& [cp, okp] : conf) if (okp) for (auto& [cn, okn] : conf) if (!okn) { pairs += 1; good += cp > cn ? 1 : (cp == cn ? 0.5 : 0); }
+    if (pairs > 0) r.Auroc = double(good / pairs);
+    r.Resets = agent.ValueResets();
+    return r;
+}
+
+// Averaged over three seeds (single runs vary by several points); integration-off is one run.
+static Probe IntegratedAgency() {
+    EpisodeResult on;
+    on.Auroc = 0; on.Recovery = 0;
+    int recovered = 0;
+    for (unsigned seed : {21u, 22u, 23u}) {
+        const EpisodeResult r = RunIntegratedEpisode(true, seed);
+        for (int k = 0; k < 2; ++k) on.Acc[k] += r.Acc[k] / 3;
+        on.Auroc += r.Auroc / 3; on.Resets += r.Resets;
+        if (r.Recovery >= 0) { on.Recovery += r.Recovery; ++recovered; }
+    }
+    const EpisodeResult off = RunIntegratedEpisode(false, 21u);
+    const double acc = 0.5 * (on.Acc[0] + on.Acc[1]), chance = 0.25;
+    std::ostringstream n;
+    n << "mean of 3 seeds; delayed-cue contextual task, reward-only, rule rotated mid-run; late-window accuracy regime1/regime2: "
+      << on.Acc[0] << "/" << on.Acc[1] << " (agent with integration off: " << off.Acc[0] << "/" << off.Acc[1]
+      << "); recovery after rotation: " << (recovered ? std::to_string(on.Recovery / recovered) + " cycles" : std::string("never"))
+      << " (" << recovered << "/3 runs recovered); value resets " << on.Resets << " in 3 runs; confidence AUROC (correct vs wrong) " << on.Auroc;
+    return {"integrated_agency", "Integrated agency (memory + reward learning + change + self-model, one agent)",
+            "mean late-window accuracy on delayed decisions", acc, chance, Clamp01((acc - chance) / (1.0 - chance)), n.str()};
 }
 
 // ── 11. Language / open-ended reasoning: NanEcho 48M ──────────────────────
@@ -505,7 +591,7 @@ int main(int argc, char** argv) {
     const std::string md = argc > 1 ? argv[1] : "AGI_EVALUATION_RESULTS.md";
     const std::string js = argc > 2 ? argv[2] : "agi_evaluation_results.json";
     std::vector<Probe (*)()> fns = {MemoryCapacity, Narma10, DelayedParity, Bandit, Attention,
-                                    EpisodicMemory, ContinualLearning, Metacognition, Toroidal, Embodied, Language};
+                                    EpisodicMemory, ContinualLearning, Metacognition, Toroidal, Embodied, Language, IntegratedAgency};
     std::vector<Probe> ps;
     for (auto f : fns) { ps.push_back(f()); std::cerr << "✓ " << ps.back().Id << "\n"; }
 
