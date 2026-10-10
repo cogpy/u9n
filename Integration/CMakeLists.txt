@@ -5,6 +5,7 @@ target_link_libraries(u9n_integration INTERFACE Eigen3::Eigen)
 
 add_executable(DeepTreeEchoAGIEval eval/agi_eval.cpp)
 target_link_libraries(DeepTreeEchoAGIEval PRIVATE u9n_integration)
+target_compile_definitions(DeepTreeEchoAGIEval PRIVATE U9N_EVAL_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/eval/data")
 
 if(BUILD_TESTING)
     add_executable(U9nIntegrationTests tests/integration_tests.cpp)

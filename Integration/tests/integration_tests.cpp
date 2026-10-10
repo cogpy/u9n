@@ -1,5 +1,6 @@
 // integration_tests.cpp — dependency-free checks for the u9n integration layer.
 #include "u9n/ContextualReadout.h"
+#include "u9n/EchoLanguageModel.h"
 #include "u9n/UnifiedEchoAgent.h"
 
 #include <cstdio>
@@ -283,7 +284,27 @@ static void BiasScaleControlsBias() {
     CHECK(b.State().norm() > 0.0);
 }
 
+static void LanguageModelLearnsSequence() {
+    // A deterministic cycle "the cat sat. " carries ~0 bits per char once learned; uniform
+    // guessing over its 8 symbols costs log2(8) = 3.
+    std::string train, val, test;
+    for (int i = 0; i < 300; ++i) train += "the cat sat. ";
+    for (int i = 0; i < 30; ++i) { val += "the cat sat. "; test += "the cat sat. "; }
+    LanguageModelConfig c; c.Size = 64;
+    EchoLanguageModel lm(c);
+    lm.Fit(train, train);
+    lm.Calibrate(val);
+    double echo = 0, ngram = 0;
+    const double bpc = lm.BitsPerChar(test, &echo, &ngram);
+    CHECK(lm.V() == 8);
+    CHECK(bpc < 0.3);
+    CHECK(bpc <= std::min(echo, ngram) + 1e-9 || std::abs(lm.MixtureWeight()) < 1e-12 || std::abs(lm.MixtureWeight() - 1) < 1e-12);
+    std::mt19937 rng(1);
+    CHECK(lm.Generate("the cat ", 5, rng) == "sat. ");
+}
+
 int main() {
+    LanguageModelLearnsSequence();
     BiasScaleControlsBias();
     SelfModelPredictsHardStates();
     ThompsonResetsOnRegimeChange();
