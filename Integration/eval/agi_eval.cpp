@@ -6,6 +6,7 @@
 //
 // usage: DeepTreeEchoAGIEval [report.md] [report.json]
 #include "u9n/ContextualReadout.h"
+#include "u9n/EchoLanguageModel.h"
 #include "u9n/UnifiedEchoAgent.h"
 
 #include <cstdio>
@@ -453,13 +454,49 @@ static Probe Embodied() {
 }
 
 // ── 11. Language / open-ended reasoning: NanEcho 48M ──────────────────────
+// ── 11. Language modelling: character-level EchoLanguageModel on the EchoSelf corpus ──
+// The NanEcho 48M transformer has no reachable checkpoint (the 9cog/echoself-nanecho Hub repo
+// is not public) and no torch runtime here, so u9n's own language model is measured instead:
+// the reservoir echo readout mixed with episodic n-gram counts. Text: the four Deep Tree Echo
+// self-knowledge sets from 9cog/EchoSelf-48M data/ (introspection, identity, autognosis,
+// somatic), split by question/answer pair round-robin (8 train : 1 validation : 1 test).
+#ifndef U9N_EVAL_DATA_DIR
+#define U9N_EVAL_DATA_DIR "eval/data"
+#endif
 static Probe Language() {
+    std::ifstream f(std::string(U9N_EVAL_DATA_DIR) + "/echoself_corpus.txt");
+    if (!f) return {"language_reasoning", "Language modelling (char-level, EchoSelf corpus)", "bits per character",
+                    0, 0, -1, "corpus file eval/data/echoself_corpus.txt not found → not evaluated"};
+    std::stringstream ss; ss << f.rdbuf(); const std::string text = ss.str();
+    std::vector<std::string> lines; { std::stringstream ls(text); std::string l; while (std::getline(ls, l)) lines.push_back(l); }
+    std::string part[3];
+    for (size_t i = 0; i < lines.size(); ++i) { const int k = int(i / 2) % 10; part[k < 8 ? 0 : (k == 8 ? 1 : 2)] += lines[i] + "\n"; }
+
+    EchoLanguageModel lm;
+    lm.Fit(text, part[0]);
+    lm.Calibrate(part[1]);
+    double echoOnly = 0, ngramOnly = 0;
+    const double bpc = lm.BitsPerChar(part[2], &echoOnly, &ngramOnly);
+
+    // Baseline: unigram character frequencies of the training text (add-one), on the test text.
+    std::map<char, double> uni; for (char c : text) uni[c] = 1.0;
+    for (char c : part[0]) uni[c] += 1.0;
+    double tot = 0; for (auto& kv : uni) tot += kv.second;
+    double hUni = 0; for (size_t t = 1; t < part[2].size(); ++t) hUni -= std::log2(uni[part[2][t]] / tot);
+    hUni /= double(part[2].size() - 1);
+
+    std::mt19937 rng(7);
+    std::string sample = lm.Generate("What is ", 120, rng);
+    for (auto& c : sample) if (c == '\n' || c == '|') c = ' ';
     NanEchoSpec s;
     std::ostringstream n;
-    n << "architecture " << s.Layers << "L/" << s.Heads << "H/" << s.Embed << "d ≈ " << s.Params() / 1e6
-      << "M params; no trained checkpoint or torch runtime in this build → not evaluated";
-    return {"language_reasoning", "Language & open-ended reasoning (NanEcho 48M)", "perplexity / benchmark",
-            0, 0, -1, n.str()};
+    n << "u9n EchoLanguageModel (512-unit reservoir, quadratic readout, mixed with order-5 n-gram counts, lambda="
+      << lm.MixtureWeight() << "); test bpc: mixture " << bpc << ", echo only " << echoOnly << ", n-gram only " << ngramOnly
+      << ", unigram baseline " << hUni << "; score = 1 - bpc/unigram; sample after 'What is ': \"" << sample
+      << "\"; NanEcho " << s.Params() / 1e6 << "M itself not evaluated (no public checkpoint); "
+      << "this measures next-character prediction, not open-ended reasoning";
+    return {"language_reasoning", "Language modelling (char-level, EchoSelf corpus)", "test bits per character",
+            bpc, hUni, Clamp01(1.0 - bpc / hUni), n.str()};
 }
 
 int main(int argc, char** argv) {
