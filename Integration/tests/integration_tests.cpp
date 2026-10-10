@@ -271,7 +271,20 @@ static void SelfModelPredictsHardStates() {
     CHECK(hard > 20 * easy);   // observed ~200x
 }
 
+static void BiasScaleControlsBias() {
+    // With zero bias and zero input the state stays exactly at the origin.
+    ReservoirConfig c; c.Size = 32; c.BiasScale = 0.0;
+    EchoReservoir r(c);
+    for (int t = 0; t < 10; ++t) r.Step(0.0);
+    CHECK(r.State().norm() == 0.0);
+    c.BiasScale = 0.1;
+    EchoReservoir b(c);
+    for (int t = 0; t < 10; ++t) b.Step(0.0);
+    CHECK(b.State().norm() > 0.0);
+}
+
 int main() {
+    BiasScaleControlsBias();
     SelfModelPredictsHardStates();
     ThompsonResetsOnRegimeChange();
     CycleReservoirIsRing();
