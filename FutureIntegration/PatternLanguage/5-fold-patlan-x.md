@@ -209,7 +209,7 @@ Experimental draft of 4-fold "translation" of selected patterns from [Christophe
 | p1185 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1185.php">Appropriate configuration for perspective interaction</a> |<br>
 | p1186 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1186.php">Appropriate configuration for perspective inactivity</a> |<br>
 | p1187 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1187.php">Appropriate configuration for interaction of complementary perspectives</a> |<br>
-| p1188 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1188.php">Occupiable sites for perspective inactivity</a> |<br></td><td><p>
+| p1188 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1188.php">Occupiable sites for perspective inactivity</a> |<br>
 | p1189 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1189.php">Context for forms of perspective presentation</a> |<br>
 | p1190 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1190.php">Variation in size of perspective contexts</a> |<br>
 | p1191 | <a href="https://www.laetusinpraesens.org/docs80s/pattern/p1191.php">Appropriate proportions of perspective contexts</a> |<br>
