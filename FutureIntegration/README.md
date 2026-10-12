@@ -16,6 +16,8 @@ FutureIntegration/
 │   ├── PatternsList-APL(1).md
 │   ├── PATTERNS002-007-THEMORPHOLOGICALCONDITIONSFORLIFE.md
 │   ├── 5-foldPatternLanguage(1).md
+│   ├── 5-fold-pattern-names.md     # A/P/S/C/E name lists (A001–E253)
+│   ├── 5-fold-pattern-names.csv
 │   ├── laetusinpraesens*.csv       # Pattern catalogs
 │   └── timeless-way-italics-only.pdf
 ├── Communication/                   # Communication system integrations
@@ -92,6 +94,8 @@ FutureIntegration/
 2. **TheTimelessWayofBuilding.md**: Core pattern language philosophy
 
 3. **Pattern catalogs** (CSV files): Extensive pattern databases from laetusinpraesens.org
+
+4. **5-fold-pattern-names.md**: Analogous name lists for the 253 five-fold patterns — Archetypal (`A001`–`A253`, identical to `p1001`–`p1253`), Physical (`P001`–`P253`, Alexander's titles), Social, Conceptual, and Experiential.
 
 ## Current Pattern Language Implementation
 
