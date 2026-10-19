@@ -152,7 +152,7 @@ Until this change every improvement lived in a probe: each one tuned its own res
 - **Self-model.** One row per action predicts the log squared value error before reward arrives. `Confidence()` reports it for the action taken, and the exploration temperature (0.01 to 0.3) rises when the agent is unsure of its best option. A single state-level row gave AUROC 0.52; per-action rows give 0.66.
 - **Voice.** An optional `EchoLanguageModel` can be attached (`Voice`), and `Say(prompt, n, rng)` speaks through it. Nothing is scored on it yet.
 
-Unit tests cover reward-only learning and relearning after a rule flip: 0.98 / 1.00 with integration on, 0.52 with it off, and exactly one detected change. They also cover the voice. No existing probe score dropped. Settings were chosen on 6-seed means: an earlier single-seed tuning turned out to be partly seed luck. The full evaluation now takes about 3.5 minutes.
+Unit tests cover reward-only learning and relearning after a rule flip: 0.98 / 1.00 with integration on, 0.52 with it off, and exactly one detected change. They also cover the voice. No existing probe score dropped. Settings were chosen on 6-seed means: an earlier single-seed tuning turned out to be partly seed luck. The evaluation runs its probes, and the seeds within a probe, concurrently. Each one seeds its own random generator, so the output is identical to a sequential run. On 4 cores the full evaluation takes about 1 minute; sequentially it took about 3 minutes.
 
 #### Tuning round (6-seed means on the integrated probe)
 
@@ -168,7 +168,7 @@ Tried and not adopted:
 - **Fewer features.** Thinning the main-reservoir part of the features did not help.
 - **Smaller echo spectral radius.** Dropping it to 0.9 made both tasks worse.
 
-**Known limitation.** An input held constant across steps accumulates in the memory channel. With ρ 0.99 it sums about the last 100 inputs (feature norm about 37 against about 6 for the main state), and value estimates then go badly wrong. Cue-then-noise tasks are fine. Persistent inputs need input normalisation or event (change) coding for the echo channel.
+**Persistent inputs (corrected).** The previous round listed persistent inputs as a limitation, which overstated it. A constant input does pile up in the memory channel: with ρ 0.99 the echo norm reaches about 37, against about 6 for the main state. In a noisy-reward test, the value *magnitudes* were then biased. Decisions are not hurt, though. With the cue held through the whole cycle, the agent reaches 0.987 accuracy on 6 seeds, because the cue is still present when it acts. Three remedies for the echo channel were tried: change coding, input mean removal, and feature standardisation. On the cue-then-noise probe they score 0.849–0.854, against 0.851 for the current design. On the persistent-cue task they score 0.892–0.969, against 0.987. The echo channel is therefore unchanged.
 
 ### Verdict
 
