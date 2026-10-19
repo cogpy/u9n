@@ -7,15 +7,19 @@
 //   episodic p_n(c | last k chars): Witten-Bell interpolated character n-gram counts up to
 //            order k, held sparsely under 64-bit context hashes. With Online set, the counts
 //            keep learning while reading: each character is predicted first, then counted.
-//   mixture  p(c) = λ_d p_e + (1-λ_d) p_n, where d is the longest context the counts have
-//            seen. Deep matches are verbatim recall and earn trust; shallow ones defer to the
-//            echo. Each λ_d is fitted on validation text.
+//   mixture  log p(c) = g_d,e · log p_e(c) + g_d,n · log p_n(c) − log Z, a geometric (product-of-
+//            experts) blend whose weight pair g_d is chosen by d, the longest context the counts
+//            have seen. Where the experts agree the product sharpens; where one is unsure it
+//            flattens. g_d starts at the best linear weight λ_d, is fitted by gradient descent on
+//            validation text, and keeps descending while reading (predict first, then step):
+//            ∂(−log p(y))/∂g_k = E_p[log p_k] − log p_k(y).
 // The reservoir carries a smooth, fading trace of the whole history; the counts recall
 // exact phrases verbatim. Each covers the other's blind spot.
 #pragma once
 
 #include "EchoReservoir.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -32,7 +36,8 @@ struct LanguageModelConfig {
     int Size = 512;
     double LeakRate = 1.0, InputScale = 0.5, SpectralRadius = 0.95, Ridge = 1e-2;
     int Order = 12;        // longest n-gram context, in characters
-    bool Online = true;    // counts learn from text as it is read (predict first, then count)
+    bool Online = true;    // counts and mixer weights learn from text as it is read
+    double MixRate = 0.005; int MixEpochs = 3;   // gradient step and validation passes for g_d
     unsigned Seed = 42;
 };
 
@@ -40,7 +45,7 @@ class EchoLanguageModel {
 public:
     using Config = LanguageModelConfig;
 
-    explicit EchoLanguageModel(const Config& cfg = {}) : Cfg(cfg), Lambda(cfg.Order + 1, 0.5) {}
+    explicit EchoLanguageModel(const Config& cfg = {}) : Cfg(cfg), Lambda(cfg.Order + 1, 0.5), G(cfg.Order + 1, {0.5, 0.5}) {}
 
     // Builds the alphabet from `alphabetText` (should cover train/val/test), then fits the
     // readout and the n-gram counts on `train`. Documents are separated by '\n'.
@@ -71,8 +76,8 @@ public:
         for (size_t t = 0; t < train.size(); ++t) Count(Base, train, t);
     }
 
-    // Picks β (echo temperature) on validation text, then each depth's mixture weight λ_d.
-    // The loss separates over depth buckets, so each λ_d is a 1-D search.
+    // Picks β (echo temperature) on validation text, then each depth's linear weight λ_d (a
+    // 1-D search per depth bucket), then fits the geometric weights g_d starting from (λ_d, 1−λ_d).
     void Calibrate(const std::string& val) {
         const auto e = EchoLogits(val);
         double best = 1e300;
@@ -87,25 +92,32 @@ public:
             for (int k = 0; k <= 20; ++k) {
                 const double lam = k / 20.0;
                 double bits = 0;
-                for (const auto& p : s) if (p.Depth == d) bits -= std::log2(std::max(lam * p.Echo + (1 - lam) * p.Ngram, 1e-300));
+                for (const auto& p : s) if (p.Depth == d) bits -= std::log2(std::max(lam * p.Pe[p.Y] + (1 - lam) * p.Pn[p.Y], 1e-300));
                 if (bits < bestBits) { bestBits = bits; Lambda[d] = lam; }
             }
+            G[d] = {Lambda[d], 1 - Lambda[d]};
         }
+        for (int ep = 0; ep < Cfg.MixEpochs; ++ep) for (const auto& p : s) Mix(p, G[p.Depth], Cfg.MixRate);
     }
 
-    // Mean bits per character of the mixture on `text` (and of each component, if asked).
-    double BitsPerChar(const std::string& text, double* echoOnly = nullptr, double* ngramOnly = nullptr) const {
+    // Mean bits per character of the mixture on `text` (and of each component and of the linear
+    // λ_d blend, if asked). With Online set, g_d keeps learning on a copy, so the model is unchanged.
+    double BitsPerChar(const std::string& text, double* echoOnly = nullptr, double* ngramOnly = nullptr,
+                       double* linear = nullptr) const {
         const auto s = Score(text, EchoLogits(text));
-        double mix = 0, echo = 0, ngram = 0;
+        auto g = G;
+        double mix = 0, echo = 0, ngram = 0, lin = 0;
         for (const auto& p : s) {
             const double lam = Lambda[p.Depth];
-            mix -= std::log2(std::max(lam * p.Echo + (1 - lam) * p.Ngram, 1e-300));
-            echo -= std::log2(std::max(p.Echo, 1e-300));
-            ngram -= std::log2(std::max(p.Ngram, 1e-300));
+            mix -= std::log2(std::max(Mix(p, g[p.Depth], Cfg.Online ? Cfg.MixRate : 0.0)[p.Y], 1e-300));
+            lin -= std::log2(std::max(lam * p.Pe[p.Y] + (1 - lam) * p.Pn[p.Y], 1e-300));
+            echo -= std::log2(std::max(p.Pe[p.Y], 1e-300));
+            ngram -= std::log2(std::max(p.Pn[p.Y], 1e-300));
         }
         const double n = (double)std::max<size_t>(s.size(), 1);
         if (echoOnly) *echoOnly = echo / n;
         if (ngramOnly) *ngramOnly = ngram / n;
+        if (linear) *linear = lin / n;
         return mix / n;
     }
 
@@ -116,14 +128,11 @@ public:
         for (char c : prompt) Res->Step(OneHot(c));
         const Table none;
         for (int k = 0; k < count; ++k) {
-            const Eigen::VectorXd pe = Softmax(Beta * (W * Feature(Res->State())));
-            std::vector<double> p(V());
-            for (int y = 0; y < V(); ++y) {
-                int depth = 0;
-                const double pn = Ngram(s, s.size(), y, none, &depth);
-                p[y] = Lambda[depth] * pe[y] + (1 - Lambda[depth]) * pn;
-            }
-            const char c = Chars[std::discrete_distribution<int>(p.begin(), p.end())(rng)];
+            Point pt{Softmax(Beta * (W * Feature(Res->State()))), Eigen::VectorXd(), 0, 0};
+            pt.Pn = Ngram(s, s.size(), none, &pt.Depth);
+            auto g = G[pt.Depth];
+            const Eigen::VectorXd q = Mix(pt, g, 0.0);
+            const char c = Chars[std::discrete_distribution<int>(q.data(), q.data() + q.size())(rng)];
             s += c;
             Res->Step(OneHot(c));
         }
@@ -132,14 +141,16 @@ public:
 
     int V() const { return (int)Chars.size(); }
     double Temperature() const { return Beta; }
-    // λ_d per matched context depth d = 0..Order (weight on the echo).
+    // λ_d per matched context depth d = 0..Order (linear weight on the echo).
     const std::vector<double>& MixtureWeights() const { return Lambda; }
+    // g_d = (echo, counts) exponents of the geometric mixture, per matched depth, after calibration.
+    const std::vector<std::array<double, 2>>& GeometricWeights() const { return G; }
 
 private:
     // Sparse counts for one context: (symbol, count) pairs plus the total.
     struct Ctx { double Total = 0; std::vector<std::pair<int, double>> N; };
     using Table = std::unordered_map<std::uint64_t, Ctx>;
-    struct Point { double Echo, Ngram; int Depth; };
+    struct Point { Eigen::VectorXd Pe, Pn; int Y, Depth; };   // full distributions at one position
 
     int Features() const { return 2 * Cfg.Size + 1; }
     int Index(char c) const { auto it = Id.find((unsigned char)c); return it == Id.end() ? 0 : it->second; }
@@ -170,36 +181,41 @@ private:
             if (!found) c.N.emplace_back(y, 1.0);
         }
     }
-    // Witten-Bell probability of symbol y at position t, over Base plus an online overlay.
-    // Interpolates from order 0 upward while the context has been seen; *depth = deepest seen.
-    double Ngram(const std::string& s, size_t t, int y, const Table& online, int* depth) const {
-        double p = 1.0 / V();
+    // Witten-Bell distribution at position t, over Base plus an online overlay. Interpolates from
+    // order 0 upward while the context has been seen; *depth = deepest seen. A symbol counts as
+    // one type however many tables hold it.
+    Eigen::VectorXd Ngram(const std::string& s, size_t t, const Table& online, int* depth) const {
+        Eigen::VectorXd p = Eigen::VectorXd::Constant(V(), 1.0 / V()), n(V());
         *depth = 0;
         for (int o = 0; o <= Cfg.Order && o <= (int)t; ++o) {
             const std::uint64_t k = Key(s, t, o);
             const auto b = Base.find(k), u = online.find(k);
-            const Ctx* cs[2] = {b == Base.end() ? nullptr : &b->second, u == online.end() ? nullptr : &u->second};
-            double total = 0, ny = 0, types = 0;
-            for (const Ctx* c : cs) if (c) total += c->Total;
+            double total = 0;
+            n.setZero();
+            for (const Ctx* c : {b == Base.end() ? nullptr : &b->second, u == online.end() ? nullptr : &u->second})
+                if (c) { total += c->Total; for (const auto& [sym, cnt] : c->N) n[sym] += cnt; }
             if (total == 0) break;
-            for (int which = 0; which < 2; ++which) {
-                if (!cs[which]) continue;
-                for (const auto& [sym, n] : cs[which]->N) {
-                    if (sym == y) ny += n;
-                    // a symbol counts as a new type unless the other table already has it
-                    bool dup = false;
-                    if (which == 1 && cs[0]) for (const auto& [s0, n0] : cs[0]->N) if (s0 == sym) { dup = true; break; }
-                    types += !dup;
-                }
-            }
-            const double lam = total / (total + types);
-            p = lam * ny / total + (1 - lam) * p;
+            const double types = (double)(n.array() > 0).count(), lam = total / (total + types);
+            p = lam * n / total + (1 - lam) * p;
             *depth = o;
         }
         return p;
     }
+    // Geometric mixture at one position under weights g; with rate > 0, then steps g down the
+    // gradient of −log p(y).
+    Eigen::VectorXd Mix(const Point& pt, std::array<double, 2>& g, double rate) const {
+        const Eigen::ArrayXd le = pt.Pe.array().max(1e-12).log(), ln = pt.Pn.array().max(1e-12).log();
+        Eigen::ArrayXd z = g[0] * le + g[1] * ln;
+        z = (z - z.maxCoeff()).exp();
+        z /= z.sum();
+        if (rate > 0) {
+            g[0] -= rate * ((z * le).sum() - le[pt.Y]);
+            g[1] -= rate * ((z * ln).sum() - ln[pt.Y]);
+        }
+        return z.matrix();
+    }
 
-    // Per-position echo and n-gram probabilities of the true next char, with matched depth.
+    // Per-position echo and n-gram distributions of the next char, with the true char and depth.
     // Online counting runs on a fresh overlay per call, so evaluation never alters Base.
     std::vector<Point> Score(const std::string& text, const std::vector<Eigen::VectorXd>& e) const {
         std::vector<Point> out;
@@ -207,10 +223,9 @@ private:
         Table online;
         if (Cfg.Online && !text.empty()) Count(online, text, 0);
         for (size_t i = 0; i < e.size(); ++i) {
-            const int y = Index(text[i + 1]);
-            int depth = 0;
-            const double pn = Ngram(text, i + 1, y, online, &depth);
-            out.push_back({Softmax(Beta * e[i])[y], pn, depth});
+            Point p{Softmax(Beta * e[i]), Eigen::VectorXd(), Index(text[i + 1]), 0};
+            p.Pn = Ngram(text, i + 1, online, &p.Depth);
+            out.push_back(std::move(p));
             if (Cfg.Online) Count(online, text, i + 1);
         }
         return out;
@@ -238,6 +253,7 @@ private:
     Table Base;
     double Beta = 12.0;
     std::vector<double> Lambda;
+    std::vector<std::array<double, 2>> G;
 };
 
 } // namespace u9n

@@ -9,11 +9,13 @@
 #include "u9n/EchoLanguageModel.h"
 #include "u9n/UnifiedEchoAgent.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <deque>
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -569,11 +571,28 @@ static Probe Language() {
     std::string part[3];
     for (size_t i = 0; i < lines.size(); ++i) { const int k = int(i / 2) % 10; part[k < 8 ? 0 : (k == 8 ? 1 : 2)] += lines[i] + "\n"; }
 
-    EchoLanguageModel lm;
-    lm.Fit(text, part[0]);
+    // Echo leak rate chosen on validation: calibrate on one half of the validation pairs, score
+    // the other half. Candidates run concurrently.
+    std::string valA, valB;
+    { std::stringstream vs(part[1]); std::string l; for (int i = 0; std::getline(vs, l); ++i) ((i / 2) % 2 ? valB : valA) += l + "\n"; }
+    const std::vector<double> leaks = {0.2, 0.3, 0.5, 1.0};
+    std::vector<std::future<std::unique_ptr<EchoLanguageModel>>> trial;
+    for (double leak : leaks)
+        trial.push_back(std::async(std::launch::async, [&, leak] {
+            LanguageModelConfig c; c.LeakRate = leak;
+            auto m = std::make_unique<EchoLanguageModel>(c);
+            m->Fit(text, part[0]); m->Calibrate(valA);
+            return m;
+        }));
+    std::vector<std::unique_ptr<EchoLanguageModel>> models;
+    std::vector<double> valBits;
+    for (auto& t : trial) { models.push_back(t.get()); valBits.push_back(models.back()->BitsPerChar(valB)); }
+    const size_t pick = size_t(std::min_element(valBits.begin(), valBits.end()) - valBits.begin());
+
+    EchoLanguageModel& lm = *models[pick];   // readout already fitted on train; recalibrate on all of validation
     lm.Calibrate(part[1]);
-    double echoOnly = 0, ngramOnly = 0;
-    const double bpc = lm.BitsPerChar(part[2], &echoOnly, &ngramOnly);
+    double echoOnly = 0, ngramOnly = 0, linear = 0;
+    const double bpc = lm.BitsPerChar(part[2], &echoOnly, &ngramOnly, &linear);
 
     // Baseline: unigram character frequencies of the training text (add-one), on the test text.
     std::map<char, double> uni; for (char c : text) uni[c] = 1.0;
@@ -587,10 +606,13 @@ static Probe Language() {
     for (auto& c : sample) if (c == '\n' || c == '|') c = ' ';
     NanEchoSpec s;
     std::ostringstream n;
-    n << "u9n EchoLanguageModel (512-unit reservoir, quadratic readout, mixed with Witten-Bell order-12 n-gram counts "
-         "that keep learning while reading; echo weight per matched context depth 0..12:";
-    for (double w : lm.MixtureWeights()) n << " " << w;
-    n << "); test bpc: mixture " << bpc << ", echo only " << echoOnly << ", n-gram only " << ngramOnly
+    n << "u9n EchoLanguageModel (512-unit reservoir, quadratic readout; Witten-Bell order-12 n-gram counts; "
+         "geometric mixture log p = g_e log p_e + g_n log p_n with weights per matched context depth, fitted on "
+         "validation and still learning while reading, like the counts); echo leak selected on validation:";
+    for (size_t i = 0; i < leaks.size(); ++i) n << " " << leaks[i] << "->" << valBits[i];
+    n << " (chose " << leaks[pick] << "); g at depth 0/4/8/12:";
+    for (int d : {0, 4, 8, 12}) n << " (" << lm.GeometricWeights()[d][0] << "," << lm.GeometricWeights()[d][1] << ")";
+    n << "; test bpc: mixture " << bpc << ", linear blend " << linear << ", echo only " << echoOnly << ", n-gram only " << ngramOnly
       << ", unigram baseline " << hUni << "; score = 1 - bpc/unigram; sample after 'What is ': \"" << sample
       << "\"; NanEcho " << s.Params() / 1e6 << "M itself not evaluated (no public checkpoint); "
       << "this measures next-character prediction, not open-ended reasoning";
