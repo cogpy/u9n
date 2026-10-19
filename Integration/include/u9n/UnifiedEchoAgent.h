@@ -15,7 +15,8 @@
 //   value learning — the agent learns from its own reward: Q = Wq·[echo; main; 1] by recursive
 //                    least squares on the action taken; actions are sampled from
 //                    softmax((gated logits + Q) / T);
-//   change points  — Page-Hinkley on the agent's own value shortfall; an alarm clears Wq;
+//   change points  — Page-Hinkley on the agent's own value shortfall; an alarm clears Wq
+//                    (the state covariance P is kept: the inputs did not change, the rule did);
 //   self-model     — per action, a readout predicts the log squared value error before reward
 //                    arrives; Confidence() reports it for the action taken, and low confidence
 //                    in the best option raises the exploration temperature;
@@ -44,11 +45,11 @@ public:
     static constexpr int EchoSize = 256;
     double ValueForget = 0.999;          // RLS forgetting factor for the value readout
     bool Boltzmann = true;               // integrated: sample softmax((logits + Q)/T), not Thompson
-    double TempMin = 0.02, TempMax = 0.5; // exploration temperature range (confident → unsure)
+    double TempMin = 0.01, TempMax = 0.3; // exploration temperature range (confident → unsure)
     // Change detection on the agent's own contextual prediction: per-action Page-Hinkley on
     // the shortfall Q_a − r. (GTAngel's detector compares reward with a context-free Beta
     // mean, which fires on every context switch inside a contextual task.)
-    double ChangeThreshold = 40.0, ChangeDrift = 1.0;
+    double ChangeThreshold = 40.0, ChangeDrift = 0.8;
 
     explicit UnifiedEchoAgent(int inputDim = 1, unsigned seed = 42, size_t memoryCapacity = 512)
         : Reservoir(MakeCfg(inputDim, seed)), Echo(MakeEchoCfg(inputDim, seed)), Core(seed + 1), Rng(seed + 13) {
@@ -169,7 +170,7 @@ private:
             Ph[LastAction] += -err - ChangeDrift;
             PhMin[LastAction] = std::min(PhMin[LastAction], Ph[LastAction]);
             if (Ph[LastAction] - PhMin[LastAction] > ChangeThreshold) {
-                Wq.setZero(); P = Eigen::MatrixXd::Identity(Features(), Features()) * 100.0;
+                Wq.setZero();
                 Ph.fill(0.0); PhMin.fill(0.0); ++Resets;
                 return;
             }
