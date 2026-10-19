@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -456,9 +457,15 @@ static Probe Embodied() {
     const int A = 4;
     double rate = 0; size_t episodes = 0, patterns = 0; int consolidations = 0;
     std::ostringstream runs;
-    for (unsigned seed : {11u, 12u, 13u}) {
-        const double r = EmbodiedRun(seed, &episodes, &consolidations, &patterns);
-        rate += r / 3; runs << (seed == 11u ? "" : "/") << r;
+    struct Run { double Rate; size_t Episodes, Patterns; int Consolidations; };
+    std::vector<std::future<Run>> jobs;
+    for (unsigned seed : {11u, 12u, 13u})
+        jobs.push_back(std::async(std::launch::async, [seed] {
+            Run r{}; r.Rate = EmbodiedRun(seed, &r.Episodes, &r.Consolidations, &r.Patterns); return r; }));
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        const Run r = jobs[i].get();
+        rate += r.Rate / 3; runs << (i ? "/" : "") << r.Rate;
+        episodes = r.Episodes; consolidations = r.Consolidations; patterns = r.Patterns;   // last seed's, as before
     }
     const double chance = 0.9 / A + 0.1 * (A - 1) / A;
     std::ostringstream n; n << "mean of 3 seeds (" << runs.str() << "); EchoSpace holds " << episodes << " episodes ("
@@ -522,13 +529,17 @@ static Probe IntegratedAgency() {
     EpisodeResult on;
     on.Auroc = 0; on.Recovery = 0;
     int recovered = 0;
-    for (unsigned seed : {21u, 22u, 23u}) {
-        const EpisodeResult r = RunIntegratedEpisode(true, seed);
+    // The four episodes are independent; run them concurrently.
+    std::vector<std::future<EpisodeResult>> runs;
+    for (unsigned seed : {21u, 22u, 23u}) runs.push_back(std::async(std::launch::async, RunIntegratedEpisode, true, seed));
+    auto offRun = std::async(std::launch::async, RunIntegratedEpisode, false, 21u);
+    for (auto& job : runs) {
+        const EpisodeResult r = job.get();
         for (int k = 0; k < 2; ++k) on.Acc[k] += r.Acc[k] / 3;
         on.Auroc += r.Auroc / 3; on.Resets += r.Resets;
         if (r.Recovery >= 0) { on.Recovery += r.Recovery; ++recovered; }
     }
-    const EpisodeResult off = RunIntegratedEpisode(false, 21u);
+    const EpisodeResult off = offRun.get();
     const double acc = 0.5 * (on.Acc[0] + on.Acc[1]), chance = 0.25;
     std::ostringstream n;
     n << "mean of 3 seeds; delayed-cue contextual task, reward-only, rule rotated mid-run; late-window accuracy regime1/regime2: "
@@ -593,7 +604,11 @@ int main(int argc, char** argv) {
     std::vector<Probe (*)()> fns = {MemoryCapacity, Narma10, DelayedParity, Bandit, Attention,
                                     EpisodicMemory, ContinualLearning, Metacognition, Toroidal, Embodied, Language, IntegratedAgency};
     std::vector<Probe> ps;
-    for (auto f : fns) { ps.push_back(f()); std::cerr << "✓ " << ps.back().Id << "\n"; }
+    // Probes are independent (each seeds its own RNG), so they run concurrently; results are
+    // collected in listing order and are identical to a sequential run.
+    std::vector<std::future<Probe>> jobs;
+    for (auto f : fns) jobs.push_back(std::async(std::launch::async, f));
+    for (auto& j : jobs) { ps.push_back(j.get()); std::cerr << "✓ " << ps.back().Id << "\n"; }
 
     double sum = 0; int k = 0;
     for (auto& p : ps) if (p.Score >= 0) { sum += p.Score; ++k; }
