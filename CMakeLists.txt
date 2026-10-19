@@ -91,10 +91,14 @@ if(BUILD_TESTING OR BUILD_E2E_TESTS)
     find_package(Threads REQUIRED)
     if(NOT GTest_FOUND)
         include(FetchContent)
+        # Release archive rather than a git clone: no dependency on the runner's git, whose
+        # version string CMake's ExternalProject failed to parse on windows-latest.
+        if(POLICY CMP0135)  # CMake >= 3.24: extracted files get extraction-time timestamps
+            cmake_policy(SET CMP0135 NEW)
+        endif()
         FetchContent_Declare(
             googletest
-            GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG v1.14.0
+            URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
         )
         set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(googletest)
