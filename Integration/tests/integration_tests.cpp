@@ -306,6 +306,25 @@ static void LanguageModelLearnsSequence() {
     CHECK(lm.Generate("the cat ", 5, rng) == "sat. ");
 }
 
+static void LanguageModelGeometricMixture() {
+    // A noisy source: words drawn at random, so neither expert is certain. The geometric blend
+    // (fitted on validation, still learning while reading) should do at least as well as the
+    // best linear blend of the same two experts.
+    const char* words[] = {"the cat ", "a dog ", "my bird ", "one fish "};
+    std::mt19937 g(5);
+    auto make = [&](int n) { std::string s; for (int i = 0; i < n; ++i) { s += words[g() % 4]; s += (g() % 3 ? "sat. " : "ran. "); } return s; };
+    const std::string train = make(600), val = make(80), test = make(80);
+    LanguageModelConfig c; c.Size = 64; c.Order = 6;
+    EchoLanguageModel lm(c);
+    lm.Fit(train + val + test, train);
+    lm.Calibrate(val);
+    double echo = 0, ngram = 0, linear = 0;
+    const double bpc = lm.BitsPerChar(test, &echo, &ngram, &linear);
+    CHECK((int)lm.GeometricWeights().size() == c.Order + 1);
+    CHECK(bpc < std::min(echo, ngram));
+    CHECK(bpc <= linear + 0.01);
+}
+
 static void LanguageModelOnlineLearning() {
     // A phrase absent from training but repeated in the evaluated text: online counting
     // learns it on the first pass, so the repeats become cheap; frozen counts cannot.
@@ -374,6 +393,7 @@ int main() {
     AgentLearnsFromRewardAndRecovers();
     AgentSpeaksThroughVoice();
     LanguageModelOnlineLearning();
+    LanguageModelGeometricMixture();
     LanguageModelLearnsSequence();
     BiasScaleControlsBias();
     SelfModelPredictsHardStates();
