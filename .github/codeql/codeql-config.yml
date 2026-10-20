@@ -1,0 +1,22 @@
+# CodeQL configuration for the c-cpp analysis (see .github/workflows/codeql.yml).
+#
+# For compiled languages paths-ignore only filters *results*: what gets extracted
+# is decided by what the manual build compiles. The workflow therefore builds only
+# first-party CMake targets; this list keeps any vendored header those targets pull
+# in (Eigen, Unreal Engine sources, ...) out of the alerts.
+name: "u9n c-cpp CodeQL config"
+
+paths-ignore:
+  # Unreal Engine source tree (~94K C/C++ files)
+  - Engine/**
+  # Eigen, taskflow and other ReservoirEcho dependencies
+  - ReservoirEcho/external/**
+  # Epic's MetaHuman DNA Calibration tooling
+  - MetaHuman-DNA-Calibration/**
+  # Any other vendored dependency directory
+  - "**/external/**"
+  - "**/External/**"
+  - "**/3rdparty/**"
+  - "**/3rd-party/**"
+  - "**/third_party/**"
+  - "**/ThirdParty/**"
