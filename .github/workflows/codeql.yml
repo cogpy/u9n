@@ -95,8 +95,8 @@ jobs:
         # queries: security-extended,security-and-quality
 
     # Manual build for c-cpp: only first-party targets are compiled, so only their
-    # sources (and the headers they include) are extracted. The ReservoirEcho
-    # subdirectory is configured by the root CMakeLists but none of its targets are built.
+    # sources (and the headers they include) are extracted. From ReservoirEcho only the
+    # reservoircpp_cpp libraries are built; its external/ dependencies are never compiled.
     - name: Install C++ build dependencies
       if: matrix.language == 'c-cpp'
       run: |
@@ -112,6 +112,8 @@ jobs:
           -DBUILD_TESTING=ON \
           -DBUILD_E2E_TESTS=ON
         cmake --build "$RUNNER_TEMP/codeql-build" --parallel "$(nproc)" --target \
+          reservoircpp_core \
+          deep_tree_echo \
           DeepTreeEchoAGIEval \
           U9nIntegrationTests \
           DeepTreeEchoUnitTests \
