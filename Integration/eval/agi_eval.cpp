@@ -131,11 +131,51 @@ static Probe Narma10() {
                 if (v < best.Val) best = {leak, gain, ridge, v};
             }
         }
-    ReservoirConfig c; c.LeakRate = best.Leak; c.SpectralRadius = 0.95; c.InputScale = best.Gain;
-    EchoReservoir r(c);
-    MatrixXd F = EchoReservoir::Augment(r.Harvest(Scalars(u), wash));
-    MatrixXd W = EchoReservoir::FitRidge(F.leftCols(train), Y.leftCols(train), best.Ridge);
-    const double esn = Nrmse(EchoReservoir::Predict(W, F.rightCols(te)), Y.rightCols(te));
+    // Deep echo: NARMA-10 is a recursion, y(t+1) = 0.3y + 0.05y·Σy + 1.5u(t-9)u(t) + 0.1, so
+    // its map from inputs is of higher order than a quadratic readout of u-driven states can
+    // express. Level k of a cascade is driven by [u, ŷ_{k-1}], the estimate read out from levels
+    // 0..k-1 (fitted on the fit slice only, so nothing downstream sees validation or test
+    // targets). Each level can then form products of the estimate with itself and with the
+    // input. All levels share the selected leak and gain; levels above the first have 256 units
+    // (512 cost 4× the solve time for 0.002 NRMSE). The final readout spans every level. Depth
+    // (up to 4) is selected on validation; each level's ridges reuse one Gram matrix.
+    const int maxLevels = 4;
+    std::vector<double> depthVal;
+    MatrixXd Fall(0, Y.cols()), yhat, Wbest;
+    double esn = 0; int depth = 1;
+    for (int k = 0; k < maxLevels; ++k) {
+        ReservoirConfig c; c.LeakRate = best.Leak; c.SpectralRadius = 0.95; c.InputScale = best.Gain;
+        c.InputDim = k ? 2 : 1; c.Seed = 42 + 35 * k;
+        if (k) c.Size = 256;
+        std::vector<VectorXd> in(T);
+        for (int t = 0; t < T; ++t) {
+            VectorXd v(c.InputDim); v[0] = u[t];
+            if (k) v[1] = t >= wash ? yhat(0, t - wash) : 0.0;
+            in[t] = v;
+        }
+        EchoReservoir r(c);
+        const MatrixXd F = EchoReservoir::Augment(r.Harvest(in, wash));
+        MatrixXd G(Fall.rows() + F.rows() + 1, F.cols());
+        G << Fall, F, Eigen::RowVectorXd::Ones(F.cols());
+        Fall = G.topRows(G.rows() - 1);
+        const MatrixXd A = G.leftCols(fit) * G.leftCols(fit).transpose(), B = G.leftCols(fit) * Y.leftCols(fit).transpose();
+        double bv = 1e300; MatrixXd Wfit;
+        for (double ridge : {1e-10, 1e-8, 1e-6, 1e-4}) {
+            MatrixXd Ar = A; Ar.diagonal().array() += ridge;
+            const MatrixXd W = Ar.ldlt().solve(B).transpose();
+            const double v = Nrmse(W * G.middleCols(fit, train - fit), Y.middleCols(fit, train - fit));
+            if (v < bv) { bv = v; Wfit = W; best.Ridge = ridge; }
+        }
+        yhat = Wfit * G;
+        depthVal.push_back(bv);
+        if (k == 0 || bv < depthVal[depth - 1]) {
+            depth = k + 1;
+            MatrixXd At = A + G.middleCols(fit, train - fit) * G.middleCols(fit, train - fit).transpose();
+            At.diagonal().array() += best.Ridge;
+            Wbest = At.ldlt().solve(G.leftCols(train) * Y.leftCols(train).transpose()).transpose();
+            esn = Nrmse(Wbest * G.rightCols(te), Y.rightCols(te));
+        }
+    }
 
     // Baseline: linear model on the last 10 raw inputs (no reservoir).
     MatrixXd L(10, Y.cols());
@@ -144,7 +184,10 @@ static Probe Narma10() {
     const double lin = Nrmse(EchoReservoir::Predict(WL, L.rightCols(te)), Y.rightCols(te));
     std::ostringstream note;
     note << "baseline = linear regression on 10 lagged inputs; quadratic readout [x; x^2]; selected on validation: leak="
-         << best.Leak << " gain=" << best.Gain << " ridge=" << best.Ridge << " (val NRMSE " << best.Val << ")";
+         << best.Leak << " gain=" << best.Gain << " (val NRMSE " << best.Val << "); deep echo, level k driven by [u, estimate "
+         "from levels below], val NRMSE by depth:";
+    for (size_t k = 0; k < depthVal.size(); ++k) note << " " << k + 1 << ":" << depthVal[k];
+    note << "; chose depth " << depth;
     return {"temporal_prediction", "Temporal prediction (NARMA-10)", "test NRMSE", esn, lin,
             Clamp01((lin - esn) / lin), note.str()};
 }
