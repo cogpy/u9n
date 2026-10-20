@@ -375,6 +375,37 @@ static void AgentLearnsFromRewardAndRecovers() {
     CHECK(resets >= 1 && resets <= 4);      // the flip is detected without a storm of false alarms
 }
 
+// A cue among 4 shown only at step 1, then noise; reward only. The decision at step 11 needs the
+// cue from ten steps back, which the cycle frame holds on fixed coordinates. Confidence must
+// also tell correct decisions from wrong ones (it is the self-assessed chance of reward).
+static void AgentActsOnDelayedCue() {
+    double acc = 0, gap = 0;
+    for (unsigned seed : {3u, 4u, 5u}) {
+        UnifiedEchoAgent a(1, seed, 32);
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> noise(0, 0.3);
+        double reward = 0, cOk = 0, cBad = 0;
+        int hits = 0, n = 0, nOk = 0, nBad = 0;
+        const int A = 4, C = 1000;
+        for (int cyc = 0; cyc < C; ++cyc) {
+            const int cue = std::uniform_int_distribution<int>(0, A - 1)(rng);
+            for (int step = 1; step <= 12; ++step) {
+                const double x = step == 1 ? (cue - 1.5) / 1.5 : noise(rng);
+                const int act = a.Tick(Eigen::VectorXd::Constant(1, x), reward, A);
+                if (act < 0) continue;
+                reward = act == cue ? 1.0 : -1.0;
+                if (cyc < C - 200) continue;
+                if (step == 11) { hits += act == cue; ++n; }
+                (act == cue ? cOk : cBad) += a.Confidence(); ++(act == cue ? nOk : nBad);
+            }
+        }
+        acc += double(hits) / n / 3;
+        gap += (cOk / nOk - cBad / std::max(nBad, 1)) / 3;
+    }
+    CHECK(acc > 0.78);   // 0.83 with the cycle frame; 0.67 without it
+    CHECK(gap > 0.1);    // 0.18; 0.04 when confidence tracked only the value error
+}
+
 static void AgentSpeaksThroughVoice() {
     std::mt19937 rng(1);
     UnifiedEchoAgent a;
@@ -391,6 +422,7 @@ static void AgentSpeaksThroughVoice() {
 
 int main() {
     AgentLearnsFromRewardAndRecovers();
+    AgentActsOnDelayedCue();
     AgentSpeaksThroughVoice();
     LanguageModelOnlineLearning();
     LanguageModelGeometricMixture();
