@@ -52,6 +52,7 @@ jobs:
         - language: c-cpp
           build-mode: manual
           config-file: ./.github/codeql/codeql-config.yml
+          queries: security-and-quality
         - language: csharp
           build-mode: none
         - language: go
@@ -87,6 +88,7 @@ jobs:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
         config-file: ${{ matrix.config-file }}
+        queries: ${{ matrix.queries }}
         # If you wish to specify custom queries, you can do so here or in a config file.
         # By default, queries listed here will override any specified in a config file.
         # Prefix the list here with "+" to use these queries and those in the config file.
@@ -95,8 +97,8 @@ jobs:
         # queries: security-extended,security-and-quality
 
     # Manual build for c-cpp: only first-party targets are compiled, so only their
-    # sources (and the headers they include) are extracted. The ReservoirEcho
-    # subdirectory is configured by the root CMakeLists but none of its targets are built.
+    # sources (and the headers they include) are extracted. From ReservoirEcho only the
+    # reservoircpp_cpp libraries are built; its external/ dependencies are never compiled.
     - name: Install C++ build dependencies
       if: matrix.language == 'c-cpp'
       run: |
@@ -112,6 +114,8 @@ jobs:
           -DBUILD_TESTING=ON \
           -DBUILD_E2E_TESTS=ON
         cmake --build "$RUNNER_TEMP/codeql-build" --parallel "$(nproc)" --target \
+          reservoircpp_core \
+          deep_tree_echo \
           DeepTreeEchoAGIEval \
           U9nIntegrationTests \
           DeepTreeEchoUnitTests \

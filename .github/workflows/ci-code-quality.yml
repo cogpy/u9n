@@ -145,7 +145,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [cpp, python]
+        # C/C++ is analyzed by .github/workflows/codeql.yml (first-party targets only).
+        language: [python]
 
     steps:
       - name: Checkout repository
@@ -158,15 +159,6 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: +security-and-quality
-
-      - name: Build C++ for analysis
-        if: matrix.language == 'cpp'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
-          cd ReservoirEcho/reservoircpp_cpp
-          rm -rf build CMakeCache.txt CMakeFiles && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
-          cmake --build build --parallel $(nproc) || true
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
