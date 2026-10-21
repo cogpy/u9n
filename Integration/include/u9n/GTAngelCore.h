@@ -139,21 +139,36 @@ public:
     // per-arm Page-Hinkley test on the gap between the arm's posterior mean and the reward
     // it just paid. Drift shrinks each step's evidence, so ordinary noise cancels out. When
     // the accumulated shortfall exceeds the threshold, the world has changed: every posterior
-    // resets to the uniform prior so the sampler re-explores at once. Constant discounting
-    // instead forgets all the time, which makes the sampler over-explore when nothing changes.
+    // restarts from the uniform prior so the sampler re-explores at once. The restart is placed
+    // at the estimated change point, not at the alarm: the statistic's last minimum marks where
+    // the shortfall began, and the pulls since then (already from the new world) are replayed
+    // into the fresh posteriors. Constant discounting instead forgets all the time, which makes
+    // the sampler over-explore when nothing changes.
     double ChangeThreshold = 0.0;   // 0 → off
     double ChangeDrift     = 0.05;
     int ChangeResets() const { return Resets; }
+    static constexpr size_t ReplayLimit = 4096;   // most recent pulls kept for the restart
+    // Evidence behind arm a's posterior, in pulls (0 right after a restart with nothing replayed).
+    double Evidence(int a) const { return Alpha[a] + Beta[a] - 2.0; }
 
     // Returns true when this update triggered a change-point reset.
     bool UpdateThompson(int a, double reward) {
         if (a < 0 || a >= ActionCount) return false;
         const double r = std::clamp((reward + 1.0) / 2.0, 0.0, 1.0);
         if (ChangeThreshold > 0) {
+            Pulls.emplace_back(a, r);
+            if (Pulls.size() > ReplayLimit) Pulls.pop_front();
+            ++Clock;
             Ph[a] += Alpha[a] / (Alpha[a] + Beta[a]) - r - ChangeDrift;
-            PhMin[a] = std::min(PhMin[a], Ph[a]);
+            if (Ph[a] <= PhMin[a]) { PhMin[a] = Ph[a]; Onset[a] = Clock; }
             if (Ph[a] - PhMin[a] > ChangeThreshold) {
                 Alpha.fill(1.0); Beta.fill(1.0); Ph.fill(0.0); PhMin.fill(0.0);
+                const size_t since = (size_t)std::min<long>(Clock - Onset[a], (long)Pulls.size());
+                for (size_t i = Pulls.size() - since; i < Pulls.size(); ++i) {
+                    Alpha[Pulls[i].first] += Pulls[i].second;
+                    Beta[Pulls[i].first] += 1.0 - Pulls[i].second;
+                }
+                Pulls.clear(); Onset.fill(Clock);
                 ++Resets;
                 return true;
             }
@@ -211,6 +226,9 @@ private:
     std::array<double, ClusterCount> Sti{}, Lti{};
     std::array<double, ActionCount> Alpha{}, Beta{};
     std::array<double, ActionCount> Ph{}, PhMin{};   // Page-Hinkley statistics per arm
+    std::array<long, ActionCount> Onset{};           // pull count at each arm's last minimum
+    std::deque<std::pair<int, double>> Pulls;        // (arm, reward in [0,1]) since the last restart
+    long Clock = 0;
     int Resets = 0;
     std::vector<Pattern> Patterns;
     Eigen::MatrixXd Wout;
