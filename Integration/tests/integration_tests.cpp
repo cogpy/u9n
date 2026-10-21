@@ -255,6 +255,11 @@ static void ThompsonResetsOnRegimeChange() {
     for (; t < 200 && core.ChangeResets() == before; ++t) { const int a = core.ThompsonSample(flat, 2); core.UpdateThompson(a, U(rng) < p[a] ? 1 : -1); }
     CHECK(core.ChangeResets() > before);   // the swap is detected...
     CHECK(t < 60);                          // ...quickly
+    // The restart sits at the estimated change point: pulls made after the swap but before the
+    // alarm are replayed into the fresh posteriors (16 for 13 since the swap here: the estimate
+    // can land a few pulls early), while the ~1000 pulls of the old world are dropped.
+    const double kept = core.Evidence(0) + core.Evidence(1);
+    CHECK(kept >= 0.5 * t && kept < 50);
 }
 
 static void SelfModelPredictsHardStates() {

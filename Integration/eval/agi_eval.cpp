@@ -276,7 +276,7 @@ static Probe Bandit() {
     }
     return {"adaptive_decision", "Adaptive decision-making (non-stationary 10-arm bandit)", "cumulative regret / run",
             regretTS / runs, regretRnd / runs, Clamp01(1.0 - regretTS / regretRnd),
-            "GTAngel Thompson sampler + Page-Hinkley change-point reset (threshold 10, drift 0.05; "
+            "GTAngel Thompson sampler + Page-Hinkley change-point restart (threshold 10, drift 0.05; posteriors restart at the estimated change point, replaying the pulls since it; "
             + std::to_string(resets) + " resets over " + std::to_string(runs) + " runs, 1 true change each); "
             "baseline = uniform random; arms reshuffled mid-run"};
 }
