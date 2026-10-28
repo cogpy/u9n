@@ -97,11 +97,17 @@ void UDiaryInsightBlogLoop::BeginPlay()
         UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: NeurochemicalSimulationComponent not found"));
     }
 
-    const FString ModelError = UEchoModelClient::Get()->ConfigurationError();
-    if (!ModelError.IsEmpty())
+    UEchoModelClient::Get()->Resolve(FOnEchoModelReply::CreateLambda([](bool bOk, const FString& Info)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: %s; no diary entries, insights or blog posts will be written"), *ModelError);
-    }
+        if (bOk)
+        {
+            UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: narrative written by %s"), *Info);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: %s; no diary entries, insights or blog posts until a model is available"), *Info);
+        }
+    }));
 
     StartNarrativeLoop();
 }
