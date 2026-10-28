@@ -186,7 +186,7 @@ struct FSalienceLandscape
  * Affordance - Available action possibility
  */
 USTRUCT(BlueprintType)
-struct FAffordance
+struct FWisdomAffordance
 {
     GENERATED_BODY()
 
@@ -229,7 +229,7 @@ struct FAffordanceLandscape
 
     /** Available affordances */
     UPROPERTY(BlueprintReadWrite)
-    TArray<FAffordance> Affordances;
+    TArray<FWisdomAffordance> Affordances;
 
     /** Currently selected affordance */
     UPROPERTY(BlueprintReadWrite)
@@ -281,7 +281,7 @@ struct FOpponentProcessState
  * Knowing State
  */
 USTRUCT(BlueprintType)
-struct FKnowingState
+struct FWisdomKnowingState
 {
     GENERATED_BODY()
 
@@ -356,7 +356,7 @@ struct FWisdomDimensionState
  * Relevance Realization State
  */
 USTRUCT(BlueprintType)
-struct FRelevanceRealizationState
+struct FWisdomRelevanceState
 {
     GENERATED_BODY()
 
@@ -399,7 +399,7 @@ struct FWisdomState
 
     /** Knowing states */
     UPROPERTY(BlueprintReadWrite)
-    TArray<FKnowingState> KnowingStates;
+    TArray<FWisdomKnowingState> KnowingStates;
 
     /** Cognitive virtues */
     UPROPERTY(BlueprintReadWrite)
@@ -411,7 +411,7 @@ struct FWisdomState
 
     /** Relevance realization */
     UPROPERTY(BlueprintReadWrite)
-    FRelevanceRealizationState RelevanceRealization;
+    FWisdomRelevanceState RelevanceRealization;
 
     /** Overall wisdom level (0-1) */
     UPROPERTY(BlueprintReadWrite)
@@ -512,7 +512,7 @@ public:
 
     /** Get best affordance */
     UFUNCTION(BlueprintCallable, Category = "Wisdom|Affordance")
-    FAffordance GetBestAffordance() const;
+    FWisdomAffordance GetBestAffordance() const;
 
     /** Select affordance for action */
     UFUNCTION(BlueprintCallable, Category = "Wisdom|Affordance")
@@ -544,7 +544,7 @@ public:
 
     /** Get knowing state */
     UFUNCTION(BlueprintCallable, Category = "Wisdom|Knowing")
-    FKnowingState GetKnowingState(EKnowingType Type) const;
+    FWisdomKnowingState GetKnowingState(EKnowingType Type) const;
 
     /** Update knowing strength */
     UFUNCTION(BlueprintCallable, Category = "Wisdom|Knowing")
@@ -596,7 +596,7 @@ public:
 
     /** Get relevance realization state */
     UFUNCTION(BlueprintCallable, Category = "Wisdom|Relevance")
-    FRelevanceRealizationState GetRelevanceRealizationState() const;
+    FWisdomRelevanceState GetRelevanceRealizationState() const;
 
     /** Assess relevance accuracy */
     UFUNCTION(BlueprintCallable, Category = "Wisdom|Relevance")

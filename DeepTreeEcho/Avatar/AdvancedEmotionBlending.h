@@ -182,7 +182,7 @@ struct FEmotionTransition
  * Expression target for emotion-to-expression mapping
  */
 USTRUCT(BlueprintType)
-struct FExpressionTarget
+struct FEmotionBlendTarget
 {
     GENERATED_BODY()
 
@@ -237,7 +237,7 @@ struct FEmotionExpressionRule
 
     /** Expression target when rule is active */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FExpressionTarget ExpressionTarget;
+    FEmotionBlendTarget ExpressionTarget;
 
     /** Rule priority */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -270,7 +270,7 @@ struct FEmotionBlendingState
 
     /** Current expression target */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FExpressionTarget CurrentExpression;
+    FEmotionBlendTarget CurrentExpression;
 
     /** Active rules */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -483,7 +483,7 @@ public:
 
     /** Get current expression target */
     UFUNCTION(BlueprintPure, Category = "EmotionBlending|State")
-    FExpressionTarget GetCurrentExpression() const;
+    FEmotionBlendTarget GetCurrentExpression() const;
 
     /** Get emotional stability */
     UFUNCTION(BlueprintPure, Category = "EmotionBlending|State")
@@ -552,6 +552,6 @@ protected:
     void EvaluateExpressionRules();
     void DecayLayers(float DeltaTime);
     float EvaluateTransitionCurve(float T, EEmotionTransitionCurve Curve);
-    FExpressionTarget BlendExpressionTargets(const TArray<FExpressionTarget>& Targets, const TArray<float>& Weights);
+    FEmotionBlendTarget BlendExpressionTargets(const TArray<FEmotionBlendTarget>& Targets, const TArray<float>& Weights);
     void ModulateByEchobeat(int32 Step);
 };

@@ -585,7 +585,7 @@ void UDeepTreeEchoIntegration::FeedWisdomToSubsystems()
     }
 
     float WisdomLevel = WisdomCultivation->GetOverallWisdomLevel();
-    FRelevanceRealizationState RelevanceState = WisdomCultivation->GetRelevanceRealizationState();
+    FWisdomRelevanceState RelevanceState = WisdomCultivation->GetRelevanceRealizationState();
 
     // Feed to Cognitive Cycle
     if (CognitiveCycleManager)

@@ -198,29 +198,29 @@ ESys6PentadStage USys6LCMClockSynchronizer::GetPentadStage() const
     return ClockState.PentadStage;
 }
 
-FDoubleStepDelayState USys6LCMClockSynchronizer::GetDelayState() const
+FSys6LCMDelayState USys6LCMClockSynchronizer::GetDelayState() const
 {
     return ClockState.DelayState;
 }
 
-FDoubleStepDelayState USys6LCMClockSynchronizer::GetDelayPatternForStep(int32 Step) const
+FSys6LCMDelayState USys6LCMClockSynchronizer::GetDelayPatternForStep(int32 Step) const
 {
     return ComputeDelayState(Step);
 }
 
 bool USys6LCMClockSynchronizer::ValidateDelayPattern(int32 Step, ESys6DyadPhase ExpectedDyad, ESys6TriadState ExpectedTriad) const
 {
-    FDoubleStepDelayState State = ComputeDelayState(Step);
+    FSys6LCMDelayState State = ComputeDelayState(Step);
     return (State.DyadPhase == ExpectedDyad && State.TriadState == ExpectedTriad);
 }
 
-TArray<FDoubleStepDelayState> USys6LCMClockSynchronizer::GetFullDelayPattern() const
+TArray<FSys6LCMDelayState> USys6LCMClockSynchronizer::GetFullDelayPattern() const
 {
-    TArray<FDoubleStepDelayState> Pattern;
+    TArray<FSys6LCMDelayState> Pattern;
 
     for (int32 i = 0; i < 4; ++i)
     {
-        FDoubleStepDelayState State;
+        FSys6LCMDelayState State;
         State.PatternStep = i + 1;
         State.InternalState = DELAY_PATTERN_INTERNAL_STATE[i];
         State.DyadPhase = (DELAY_PATTERN_DYAD[i] == 0) ? ESys6DyadPhase::PhaseA : ESys6DyadPhase::PhaseB;
@@ -316,7 +316,7 @@ bool USys6LCMClockSynchronizer::IsPairEntangled(int32 Thread1, int32 Thread2) co
     return false;
 }
 
-FCubicConcurrencyState USys6LCMClockSynchronizer::GetConcurrencyState() const
+FSys6LCMConcurrencyState USys6LCMClockSynchronizer::GetConcurrencyState() const
 {
     return ConcurrencyState;
 }
@@ -657,9 +657,9 @@ ESys6PentadStage USys6LCMClockSynchronizer::ComputePentadStage(int32 Step) const
     }
 }
 
-FDoubleStepDelayState USys6LCMClockSynchronizer::ComputeDelayState(int32 Step) const
+FSys6LCMDelayState USys6LCMClockSynchronizer::ComputeDelayState(int32 Step) const
 {
-    FDoubleStepDelayState State;
+    FSys6LCMDelayState State;
 
     int32 PatternStep = Step % 4;
     State.PatternStep = PatternStep + 1;

@@ -160,7 +160,7 @@ TArray<float> UDeepTreeEchoCore::GenerateActionOutput()
     // Get output from acting stream (Stream 2)
     if (ReservoirSystem)
     {
-        FCognitiveStreamState ActingStream = ReservoirSystem->GetStreamState(2);
+        FReservoirStreamState ActingStream = ReservoirSystem->GetStreamState(2);
         ActionOutput = ActingStream.ReservoirState.ActivationState;
     }
 

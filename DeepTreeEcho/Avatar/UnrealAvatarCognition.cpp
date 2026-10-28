@@ -333,13 +333,19 @@ void UUnrealAvatarCognition::ProcessEchobeatsState(const FEchobeatsFullState& Ec
 
 void UUnrealAvatarCognition::ProcessSys6State(const FSys6FullState& Sys6State)
 {
-    State.CurrentSys6Step = Sys6State.CurrentStep;
-    State.EntelechyLevel = Sys6State.Entelechy;
+    State.CurrentSys6Step = Sys6State.GlobalStep;
 
-    // Update extended cognition based on sys6 state
-    State.E4State.Add(TEXT("Extended"), Sys6State.Coherence);
+    // Entelechy and coherence are tracked by the sys6 avatar integration, not the raw operad state
+    if (Sys6Avatar)
+    {
+        const FSys6AvatarCognitiveState Sys6Cognitive = Sys6Avatar->GetCognitiveState();
+        State.EntelechyLevel = Sys6Cognitive.EntelechyLevel;
 
-    OnCognitiveStateChanged.Broadcast(TEXT("Sys6Step"), (float)Sys6State.CurrentStep);
+        // Update extended cognition based on sys6 state
+        State.E4State.Add(TEXT("Extended"), Sys6Cognitive.Coherence);
+    }
+
+    OnCognitiveStateChanged.Broadcast(TEXT("Sys6Step"), (float)Sys6State.GlobalStep);
 }
 
 void UUnrealAvatarCognition::Update4EState(const TMap<FString, float>& E4Values)

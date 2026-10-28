@@ -10,26 +10,10 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Sound/SoundBase.h"
 #include "../Echobeats/EchobeatsStreamEngine.h"
-#include "../Core/Sys6AvatarIntegration.h"
+#include "Sys6AvatarIntegration.h"
 #include "UnrealAvatarCognition.generated.h"
 
 struct FEchoCharacterReaction;
-
-/**
- * Avatar expression channel
- */
-UENUM(BlueprintType)
-enum class EAvatarExpressionChannel : uint8
-{
-    Facial      UMETA(DisplayName = "Facial Expression"),
-    Body        UMETA(DisplayName = "Body Language"),
-    Gesture     UMETA(DisplayName = "Gesture"),
-    Gaze        UMETA(DisplayName = "Gaze Direction"),
-    Posture     UMETA(DisplayName = "Posture"),
-    Breathing   UMETA(DisplayName = "Breathing Pattern"),
-    Voice       UMETA(DisplayName = "Voice Modulation"),
-    Aura        UMETA(DisplayName = "Emotional Aura")
-};
 
 /**
  * Emotion state for avatar

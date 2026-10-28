@@ -6,11 +6,11 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Cognitive/EmotionalState.h"
 #include "Enhanced4ECognition.generated.h"
 
 // Forward declarations
 struct FCognitiveState;
-struct FEmotionalState;
 struct FNeurochemicalState;
 
 /**

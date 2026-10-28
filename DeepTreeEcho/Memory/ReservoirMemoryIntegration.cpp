@@ -614,7 +614,7 @@ int64 UReservoirMemoryIntegration::EncodeEpisodeWithContext(const FString& Label
     // Capture all stream states
     for (int32 i = 1; i <= 3; ++i)
     {
-        FCognitiveStreamState StreamState = Reservoir->GetStreamState(i);
+        FReservoirStreamState StreamState = Reservoir->GetStreamState(i);
         Context.StreamStates.Add(StreamState.ReservoirState.ActivationState);
     }
 
@@ -1081,7 +1081,7 @@ TArray<float> UReservoirMemoryIntegration::GetCurrentReservoirState(int32 Stream
     }
     else if (StreamID >= 1 && StreamID <= 3)
     {
-        FCognitiveStreamState StreamState = Reservoir->GetStreamState(StreamID);
+        FReservoirStreamState StreamState = Reservoir->GetStreamState(StreamID);
         return StreamState.ReservoirState.ActivationState;
     }
 

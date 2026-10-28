@@ -2,36 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
+#include "Cognitive/EmotionalState.h"
 #include "ExpressionSynthesizer.generated.h"
 
-// Emotional state rendered by the synthesizer. It must come from the character model's
-// reactions; the synthesizer only renders it.
-USTRUCT(BlueprintType)
-struct FEmotionalState
-{
-    GENERATED_BODY()
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Happiness = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Surprise = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Sadness = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Anger = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Fear = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Disgust = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emotions")
-    float Excitement = 0.0f;
-};
+// The emotional state rendered by the synthesizer (FEmotionalState) must come from the
+// character model's reactions; the synthesizer only renders it.
 
 /**
  * Renders an emotional state as Live2D Cubism parameters (plus blinking/breathing idle

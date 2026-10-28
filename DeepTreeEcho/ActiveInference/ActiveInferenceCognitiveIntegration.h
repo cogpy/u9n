@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "../4ECognition/E4ECognitionMode.h"
 #include "ActiveInferenceCognitiveIntegration.generated.h"
 
 // Forward declarations
@@ -17,18 +18,6 @@ class USys6OperadEngine;
 class UTensionalCouplingDynamics;
 class UCognitiveMemoryManager;
 class UPredictiveAdaptationEngine;
-
-/**
- * 4E Cognition mode
- */
-UENUM(BlueprintType)
-enum class E4ECognitionMode : uint8
-{
-    Embodied        UMETA(DisplayName = "Embodied"),
-    Embedded        UMETA(DisplayName = "Embedded"),
-    Enacted         UMETA(DisplayName = "Enacted"),
-    Extended        UMETA(DisplayName = "Extended")
-};
 
 /**
  * Cognitive integration phase

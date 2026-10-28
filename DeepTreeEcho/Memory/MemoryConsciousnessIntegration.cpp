@@ -1075,7 +1075,7 @@ TArray<float> UMemoryConsciousnessIntegration::ComputeStreamEmbedding(EConscious
 
     // Get stream state from reservoir
     int32 StreamID = static_cast<int32>(Stream) + 1;
-    FCognitiveStreamState StreamState = ReservoirComponent->GetStreamState(StreamID);
+    FReservoirStreamState StreamState = ReservoirComponent->GetStreamState(StreamID);
 
     return StreamState.ReservoirState.ActivationState;
 }

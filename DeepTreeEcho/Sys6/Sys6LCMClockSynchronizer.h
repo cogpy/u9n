@@ -62,7 +62,7 @@ enum class EEntanglementOrder : uint8
  * Double-step delay pattern state
  */
 USTRUCT(BlueprintType)
-struct FDoubleStepDelayState
+struct FSys6LCMDelayState
 {
     GENERATED_BODY()
 
@@ -121,7 +121,7 @@ struct FLCMClockState
 
     /** Double-step delay state */
     UPROPERTY(BlueprintReadOnly)
-    FDoubleStepDelayState DelayState;
+    FSys6LCMDelayState DelayState;
 
     /** Timestamp */
     UPROPERTY(BlueprintReadOnly)
@@ -186,7 +186,7 @@ struct FThreadSyncState
  * Cubic concurrency state
  */
 USTRUCT(BlueprintType)
-struct FCubicConcurrencyState
+struct FSys6LCMConcurrencyState
 {
     GENERATED_BODY()
 
@@ -358,7 +358,7 @@ public:
 
     /** Get double-step delay state */
     UFUNCTION(BlueprintPure, Category = "State")
-    FDoubleStepDelayState GetDelayState() const;
+    FSys6LCMDelayState GetDelayState() const;
 
     // ========================================
     // PUBLIC API - DOUBLE-STEP DELAY PATTERN
@@ -366,7 +366,7 @@ public:
 
     /** Get delay pattern for step */
     UFUNCTION(BlueprintPure, Category = "DelayPattern")
-    FDoubleStepDelayState GetDelayPatternForStep(int32 Step) const;
+    FSys6LCMDelayState GetDelayPatternForStep(int32 Step) const;
 
     /** Validate delay pattern */
     UFUNCTION(BlueprintPure, Category = "DelayPattern")
@@ -374,7 +374,7 @@ public:
 
     /** Get all delay pattern states */
     UFUNCTION(BlueprintPure, Category = "DelayPattern")
-    TArray<FDoubleStepDelayState> GetFullDelayPattern() const;
+    TArray<FSys6LCMDelayState> GetFullDelayPattern() const;
 
     // ========================================
     // PUBLIC API - ENTANGLEMENT
@@ -406,7 +406,7 @@ public:
 
     /** Get cubic concurrency state */
     UFUNCTION(BlueprintPure, Category = "Concurrency")
-    FCubicConcurrencyState GetConcurrencyState() const;
+    FSys6LCMConcurrencyState GetConcurrencyState() const;
 
     /** Get thread sync state */
     UFUNCTION(BlueprintPure, Category = "Concurrency")
@@ -485,7 +485,7 @@ protected:
     // Internal state
     FLCMClockState ClockState;
     FEntanglementState EntanglementState;
-    FCubicConcurrencyState ConcurrencyState;
+    FSys6LCMConcurrencyState ConcurrencyState;
     bool bIsPaused = false;
     float AccumulatedTime = 0.0f;
     float StepDuration = 0.0f;
@@ -502,5 +502,5 @@ protected:
     ESys6DyadPhase ComputeDyadPhase(int32 Step) const;
     ESys6TriadState ComputeTriadState(int32 Step) const;
     ESys6PentadStage ComputePentadStage(int32 Step) const;
-    FDoubleStepDelayState ComputeDelayState(int32 Step) const;
+    FSys6LCMDelayState ComputeDelayState(int32 Step) const;
 };

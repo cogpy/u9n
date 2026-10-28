@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "../4ECognition/E4ECognitionMode.h"
 #include "ExpressiveAnimationSystem.generated.h"
 
 struct FEchoCharacterReaction;
@@ -55,18 +56,6 @@ enum class EVocalizationType : uint8
     Paralinguistic  UMETA(DisplayName = "Paralinguistic"),
     Breathing       UMETA(DisplayName = "Breathing"),
     Silence         UMETA(DisplayName = "Silence")
-};
-
-/**
- * 4E cognition mode (Embodied, Embedded, Enacted, Extended)
- */
-UENUM(BlueprintType)
-enum class E4ECognitionMode : uint8
-{
-    Embodied        UMETA(DisplayName = "Embodied"),
-    Embedded        UMETA(DisplayName = "Embedded"),
-    Enacted         UMETA(DisplayName = "Enacted"),
-    Extended        UMETA(DisplayName = "Extended")
 };
 
 /**
