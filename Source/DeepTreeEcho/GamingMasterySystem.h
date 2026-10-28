@@ -9,6 +9,28 @@
 #include "GamingMasterySystem.generated.h"
 
 /**
+ * Companion coaching: advice, feedback and tips presented to the player by the Deep Tree Echo
+ * companion. Text broadcast through FOnCompanionCoaching is always written by the model
+ * (UEchoModelClient) from the real metrics; Topic is an internal label, not speech.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoaching, const FString&, Topic, const FString&, Text);
+
+/** A coaching request failed; Error is a system message, never shown as the companion's words. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoachingFailed, const FString&, Topic, const FString&, Error);
+
+namespace EchoCoaching
+{
+    /**
+     * Asks the model, speaking as the Deep Tree Echo gaming companion, for coaching on Topic.
+     * Instruction says what to produce; Metrics carries the real measurements it must be based
+     * on. Asynchronous: the model's text is broadcast on Ready, or the error on Failed (and
+     * logged). No text is ever composed locally, and nothing is broadcast once Owner is gone.
+     */
+    void Request(UObject* Owner, const FString& Topic, const FString& Instruction, const FString& Metrics,
+                 FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed);
+}
+
+/**
  * Skill Acquisition Phase
  * Based on Dreyfus model of skill acquisition
  */
@@ -600,9 +622,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gaming|Analysis")
     FReplayAnalysisResult AnalyzeReplay(const FString& ReplayPath);
 
-    /** Get improvement recommendations from analysis */
+    /**
+     * Ask the companion (model) for improvement recommendations based on a replay analysis.
+     * Result arrives on OnCoachingReady / OnCoachingFailed with topic "improvement_recommendations".
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Analysis")
-    TArray<FString> GetImprovementRecommendations(const FReplayAnalysisResult& Analysis) const;
+    void RequestImprovementRecommendations(const FReplayAnalysisResult& Analysis);
 
     /** Compare performance to expert benchmark */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Analysis")
@@ -656,9 +681,12 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Gaming|Flow")
     bool IsInFlowState() const;
 
-    /** Get flow optimization recommendations */
+    /**
+     * Ask the companion (model) for flow-state tips based on the current flow metrics.
+     * Result arrives on OnCoachingReady / OnCoachingFailed with topic "flow_optimization".
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Flow")
-    TArray<FString> GetFlowOptimizationTips() const;
+    void RequestFlowOptimizationTips();
 
     // ========================================
     // ML MODEL INTERFACE
@@ -703,6 +731,14 @@ public:
     DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTrainingComplete, const FTrainingSession&, Session);
     UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
     FOnTrainingComplete OnTrainingComplete;
+
+    /** Model-written coaching for the player (see EchoCoaching) */
+    UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
+    FOnCompanionCoaching OnCoachingReady;
+
+    /** A coaching request failed; nothing was said */
+    UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
+    FOnCompanionCoachingFailed OnCoachingFailed;
 
 private:
     // ========================================

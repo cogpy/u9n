@@ -370,8 +370,16 @@ public:
 
     // ===== Connection Management =====
 
+    /**
+     * No network transport to an AtomSpace server is implemented: atoms live only in this
+     * component's local cache. Connect therefore never reports a connection; it records an
+     * error (GetLastConnectionError) and returns false.
+     */
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Connection")
-    void Connect(const FString& Host = TEXT("localhost"), int32 Port = 17001);
+    bool Connect(const FString& Host = TEXT("localhost"), int32 Port = 17001);
+
+    UFUNCTION(BlueprintCallable, Category = "AtomSpace|Connection")
+    FString GetLastConnectionError() const { return LastConnectionError; }
 
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Connection")
     void Disconnect();
@@ -407,8 +415,15 @@ public:
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Diary")
     void StoreDiaryEntry(const FDiaryEntry& Entry);
 
+    /** Returns the stored entry, or a default entry with only EntryId set when not found (see TryGetDiaryEntry). */
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Diary")
     FDiaryEntry GetDiaryEntry(const FString& EntryId);
+
+    UFUNCTION(BlueprintCallable, Category = "AtomSpace|Diary")
+    bool TryGetDiaryEntry(const FString& EntryId, FDiaryEntry& OutEntry) const;
+
+    UFUNCTION(BlueprintCallable, Category = "AtomSpace|Diary")
+    TArray<FString> ListDiaryEntryIds() const;
 
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Diary")
     TArray<FDiaryEntry> GetRecentDiaryEntries(int32 Count = 10);
@@ -421,8 +436,15 @@ public:
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Insights")
     void StoreInsight(const FInsight& Insight);
 
+    /** Returns the stored insight, or a default insight with only InsightId set when not found (see TryGetInsight). */
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Insights")
     FInsight GetInsight(const FString& InsightId);
+
+    UFUNCTION(BlueprintCallable, Category = "AtomSpace|Insights")
+    bool TryGetInsight(const FString& InsightId, FInsight& OutInsight) const;
+
+    UFUNCTION(BlueprintCallable, Category = "AtomSpace|Insights")
+    TArray<FString> ListInsightIds() const;
 
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Insights")
     TArray<FInsight> GetRelatedInsights(const FString& Context, int32 MaxResults = 10);
@@ -457,11 +479,17 @@ public:
 
     // ===== Pattern Mining =====
 
+    /** Counts ConceptNode names occurring at least MinSupport times in the local cache (statistics only, no text). */
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Patterns")
-    TArray<FInsight> MinePatterns(int32 MinSupport = 2);
+    TMap<FString, int32> CountFrequentConcepts(int32 MinSupport = 2);
 
+    /**
+     * Measures how often atoms named ConceptA and ConceptB appear in the same link
+     * (Jaccard index over links touching either). Stores the result as a "cooccurs_with"
+     * EvaluationLink and returns it; returns -1 when either concept is absent.
+     */
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Patterns")
-    void DiscoverCorrelations(const FString& ConceptA, const FString& ConceptB);
+    float ComputeCooccurrence(const FString& ConceptA, const FString& ConceptB);
 
     // ===== Echo Resonance Integration =====
 
@@ -476,8 +504,9 @@ public:
 
     // ===== Synchronization =====
 
+    /** Returns false (and keeps pending changes) when there is no server connection. */
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Sync")
-    void SyncWithServer();
+    bool SyncWithServer();
 
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Sync")
     void EnableAutoSync(bool bEnable, float IntervalSeconds = 5.0f);
@@ -505,7 +534,7 @@ protected:
     void InitializeAvatarConcept();
     FString AtomToScheme(const FAtom& Atom);
     FAtom SchemeToAtom(const FString& Scheme);
-    void ProcessPendingChanges();
+    bool ProcessPendingChanges();
     FString GenerateUniqueId();
 
     // 9P-based communication
@@ -528,6 +557,9 @@ private:
     bool bUse9PConnection;
 
     UPROPERTY()
+    FString LastConnectionError;
+
+    UPROPERTY()
     UAvatar9PServer* P9Server;
 
     // ===== Local AtomSpace Cache =====
@@ -540,6 +572,14 @@ private:
 
     UPROPERTY()
     FAtomHandle AvatarConceptHandle;
+
+    /** Full diary entries (content included), keyed by EntryId. */
+    UPROPERTY()
+    TMap<FString, FDiaryEntry> DiaryStore;
+
+    /** Full insights (content included), keyed by InsightId. */
+    UPROPERTY()
+    TMap<FString, FInsight> InsightStore;
 
     // ===== Synchronization =====
 

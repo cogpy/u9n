@@ -3,9 +3,53 @@
 // Copyright (c) 2025 Deep Tree Echo Project
 
 #include "GamingMasterySystem.h"
+#include "EchoModelClient.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "FGamingMasterySystem"
+
+// ========================================
+// Companion coaching (model-written)
+// ========================================
+
+void EchoCoaching::Request(UObject* Owner, const FString& Topic, const FString& Instruction, const FString& Metrics,
+                           FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed)
+{
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"),
+        TEXT("You are Deep Tree Echo, an AI gaming companion coaching the player you play alongside. ")
+        TEXT("Speak directly to the player in your own voice, briefly and concretely. Base every statement ")
+        TEXT("strictly on the measurements provided; if they are insufficient, say what is missing.")));
+    Messages.Add(FEchoModelMessage(TEXT("user"),
+        FString::Printf(TEXT("Topic: %s\nMeasurements:\n%s\n\n%s"), *Topic, *Metrics, *Instruction)));
+
+    TWeakObjectPtr<UObject> WeakOwner(Owner);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakOwner, Topic, Ready, Failed](bool bSuccess, const FString& TextOrError)
+        {
+            if (!WeakOwner.IsValid())
+            {
+                return; // Ready/Failed belong to the owner
+            }
+
+            const FString Text = TextOrError.TrimStartAndEnd();
+            if (bSuccess && !Text.IsEmpty())
+            {
+                if (Ready)
+                {
+                    Ready->Broadcast(Topic, Text);
+                }
+                return;
+            }
+
+            const FString Error = bSuccess ? FString(TEXT("model reply was empty")) : TextOrError;
+            UE_LOG(LogTemp, Warning, TEXT("Deep Tree Echo coaching '%s' not produced: %s"), *Topic, *Error);
+            if (Failed)
+            {
+                Failed->Broadcast(Topic, Error);
+            }
+        }));
+}
 
 // ========================================
 // MCTS Node Structure
@@ -535,33 +579,47 @@ FReplayAnalysisResult UGamingMasterySystem::AnalyzeReplay(const FString& ReplayP
     // 4. Compare to optimal play
     // 5. Identify mistakes and good plays
     
-    UE_LOG(LogTemp, Log, TEXT("Analyzing replay: %s"), *ReplayPath);
-    
-    // Placeholder analysis
-    Result.OverallScore = 0.7f;
-    Result.SkillsToImprove.Add(TEXT("decision_making"));
-    Result.SkillsToImprove.Add(TEXT("resource_management"));
-    Result.RecommendedDrills.Add(TEXT("drill_timing"));
-    Result.RecommendedDrills.Add(TEXT("drill_positioning"));
+    // No replay loader exists yet, so nothing was analysed: return an empty result rather than
+    // fabricated scores, skills or drills.
+    UE_LOG(LogTemp, Error, TEXT("AnalyzeReplay(%s): replay analysis is not implemented (no replay loader); no results produced"), *ReplayPath);
     
     return Result;
 }
 
-TArray<FString> UGamingMasterySystem::GetImprovementRecommendations(const FReplayAnalysisResult& Analysis) const
+void UGamingMasterySystem::RequestImprovementRecommendations(const FReplayAnalysisResult& Analysis)
 {
-    TArray<FString> Recommendations;
-    
-    for (const FString& Skill : Analysis.SkillsToImprove)
+    const FString Topic = TEXT("improvement_recommendations");
+
+    if (Analysis.SkillsToImprove.Num() == 0 && Analysis.RecommendedDrills.Num() == 0 &&
+        Analysis.IdentifiedMistakes.Num() == 0 && Analysis.DecisionMetrics.Num() == 0 && Analysis.MechanicalMetrics.Num() == 0)
     {
-        Recommendations.Add(FString::Printf(TEXT("Practice %s with focused drills"), *Skill));
+        OnCoachingFailed.Broadcast(Topic, TEXT("replay analysis contains no data to base recommendations on"));
+        return;
     }
-    
-    for (const FString& Drill : Analysis.RecommendedDrills)
+
+    FString Metrics = FString::Printf(TEXT("replay: %s\noverall score: %.2f\n"), *Analysis.ReplayID, Analysis.OverallScore);
+    Metrics += FString::Printf(TEXT("skills to improve: %s\n"), *FString::Join(Analysis.SkillsToImprove, TEXT(", ")));
+    Metrics += FString::Printf(TEXT("recommended drills: %s\n"), *FString::Join(Analysis.RecommendedDrills, TEXT(", ")));
+    for (const auto& Pair : Analysis.IdentifiedMistakes)
     {
-        Recommendations.Add(FString::Printf(TEXT("Complete drill: %s"), *Drill));
+        Metrics += FString::Printf(TEXT("mistake at %.1fs: %s\n"), Pair.Key, *Pair.Value);
     }
-    
-    return Recommendations;
+    for (const auto& Pair : Analysis.IdentifiedGoodPlays)
+    {
+        Metrics += FString::Printf(TEXT("good play at %.1fs: %s\n"), Pair.Key, *Pair.Value);
+    }
+    for (const auto& Pair : Analysis.DecisionMetrics)
+    {
+        Metrics += FString::Printf(TEXT("decision %s: %.2f\n"), *Pair.Key, Pair.Value);
+    }
+    for (const auto& Pair : Analysis.MechanicalMetrics)
+    {
+        Metrics += FString::Printf(TEXT("mechanics %s: %.2f\n"), *Pair.Key, Pair.Value);
+    }
+
+    EchoCoaching::Request(this, Topic,
+        TEXT("Give the player a short list of concrete improvement recommendations from this replay analysis."),
+        Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 TMap<FString, float> UGamingMasterySystem::CompareToExpert(const FReplayAnalysisResult& Analysis) const
@@ -806,40 +864,18 @@ bool UGamingMasterySystem::IsInFlowState() const
     return FlowMetrics.FlowIntensity >= FlowEntryThreshold;
 }
 
-TArray<FString> UGamingMasterySystem::GetFlowOptimizationTips() const
+void UGamingMasterySystem::RequestFlowOptimizationTips()
 {
-    TArray<FString> Tips;
-    
-    if (FlowMetrics.AnxietyLevel > 0.5f)
-    {
-        Tips.Add(TEXT("Challenge level may be too high. Consider practicing fundamentals."));
-        Tips.Add(TEXT("Take short breaks to reduce stress."));
-    }
-    
-    if (FlowMetrics.BoredomLevel > 0.5f)
-    {
-        Tips.Add(TEXT("Challenge level may be too low. Try increasing difficulty."));
-        Tips.Add(TEXT("Set specific improvement goals for this session."));
-    }
-    
-    if (FlowMetrics.FocusLevel < 0.5f)
-    {
-        Tips.Add(TEXT("Focus seems low. Eliminate distractions."));
-        Tips.Add(TEXT("Try a brief warm-up routine before practice."));
-    }
-    
-    if (FlowMetrics.IntrinsicMotivation < 0.5f)
-    {
-        Tips.Add(TEXT("Consider why you enjoy this game. Reconnect with your goals."));
-        Tips.Add(TEXT("Try a different game mode or practice activity."));
-    }
-    
-    if (Tips.Num() == 0)
-    {
-        Tips.Add(TEXT("You're in a good state for learning. Keep it up!"));
-    }
-    
-    return Tips;
+    const FString Metrics = FString::Printf(
+        TEXT("flow intensity: %.2f (in flow: %s)\nchallenge-skill balance: %.2f\nfocus: %.2f\nintrinsic motivation: %.2f\n")
+        TEXT("anxiety: %.2f\nboredom: %.2f\ntime distortion: %.2f\ntime in flow: %.0fs\nsuggested difficulty adjustment: %+.2f\n"),
+        FlowMetrics.FlowIntensity, IsInFlowState() ? TEXT("yes") : TEXT("no"), FlowMetrics.ChallengeSkillBalance,
+        FlowMetrics.FocusLevel, FlowMetrics.IntrinsicMotivation, FlowMetrics.AnxietyLevel, FlowMetrics.BoredomLevel,
+        FlowMetrics.TimeDistortion, FlowMetrics.TimeInFlow, GetDifficultyAdjustment());
+
+    EchoCoaching::Request(this, TEXT("flow_optimization"),
+        TEXT("Give the player one to three tips to reach or stay in a flow state, based on these metrics."),
+        Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================

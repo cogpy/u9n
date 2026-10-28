@@ -550,9 +550,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Gaming")
     FString GetRecommendedAction(const TArray<float>& GameState);
 
-    /** Get attention focus recommendation */
+    /**
+     * Ask the companion (model) where the player should focus attention, based on the current
+     * salience map. Result arrives on OnCoachingReady / OnCoachingFailed (topic "attention_focus").
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Gaming")
-    FString GetAttentionFocusRecommendation() const;
+    void RequestAttentionFocusRecommendation();
 
     /** Get timing recommendation for action */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Gaming")
@@ -585,6 +588,14 @@ public:
     DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPredictionError, float, ErrorMagnitude, const FString&, Context);
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
     FOnPredictionError OnPredictionError;
+
+    /** Model-written coaching for the player (see EchoCoaching) */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnCompanionCoaching OnCoachingReady;
+
+    /** A coaching request failed; nothing was said */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnCompanionCoachingFailed OnCoachingFailed;
 
 private:
     // ========================================

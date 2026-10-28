@@ -122,12 +122,8 @@ void UUnrealGamingMasteryIntegration::ProcessInputAction(const FString& ActionNa
         GamingMasterySystem->UpdateSkillProficiency(ActionName, TimingQuality, 0.1f);
     }
 
-    // Broadcast skill execution analysis
-    FString Feedback = TimingQuality > 0.8f ? TEXT("Excellent timing!") :
-                       TimingQuality > 0.6f ? TEXT("Good execution") :
-                       TimingQuality > 0.4f ? TEXT("Room for improvement") :
-                       TEXT("Practice timing");
-    OnSkillExecutionAnalyzed.Broadcast(ActionName, TimingQuality, Feedback);
+    // Broadcast the measured execution quality (no canned feedback text)
+    OnSkillExecutionAnalyzed.Broadcast(ActionName, TimingQuality);
 }
 
 float UUnrealGamingMasteryIntegration::GetOptimizedInputTiming(const FString& ActionName) const
@@ -236,46 +232,35 @@ TMap<FString, float> UUnrealGamingMasteryIntegration::AnalyzeInputSequence(const
     return Analysis;
 }
 
-TArray<FString> UUnrealGamingMasteryIntegration::GetInputImprovementSuggestions() const
+void UUnrealGamingMasteryIntegration::RequestInputImprovementSuggestions()
 {
-    TArray<FString> Suggestions;
+    const FString Topic = TEXT("input_improvement");
+    if (InputHistory.Num() == 0)
+    {
+        OnCoachingFailed.Broadcast(Topic, TEXT("no inputs recorded yet"));
+        return;
+    }
 
-    // Analyze input history for patterns
+    // Measure average timing quality per input
     TMap<FString, float> InputQuality;
     TMap<FString, int32> InputCounts;
-
     for (const auto& Input : InputHistory)
     {
-        float Quality = AnalyzeInputTiming(Input.Key, Input.Value);
-
-        if (InputQuality.Contains(Input.Key))
-        {
-            InputQuality[Input.Key] += Quality;
-            InputCounts[Input.Key]++;
-        }
-        else
-        {
-            InputQuality.Add(Input.Key, Quality);
-            InputCounts.Add(Input.Key, 1);
-        }
+        InputQuality.FindOrAdd(Input.Key) += AnalyzeInputTiming(Input.Key, Input.Value);
+        InputCounts.FindOrAdd(Input.Key) += 1;
     }
 
-    // Find inputs with low average quality
+    FString Metrics = FString::Printf(TEXT("recent inputs analysed: %d\n"), InputHistory.Num());
     for (const auto& Pair : InputQuality)
     {
-        float AvgQuality = Pair.Value / InputCounts[Pair.Key];
-        if (AvgQuality < 0.6f)
-        {
-            Suggestions.Add(FString::Printf(TEXT("Practice %s timing (avg quality: %.1f%%)"), *Pair.Key, AvgQuality * 100.0f));
-        }
+        const int32 Count = InputCounts[Pair.Key];
+        Metrics += FString::Printf(TEXT("input %s: %d presses, average timing quality %.0f%%\n"),
+                                   *Pair.Key, Count, 100.0f * Pair.Value / Count);
     }
 
-    if (Suggestions.Num() == 0)
-    {
-        Suggestions.Add(TEXT("Input execution is good! Focus on strategic decision-making."));
-    }
-
-    return Suggestions;
+    EchoCoaching::Request(this, Topic,
+        TEXT("Give the player concise suggestions to improve their input execution, focusing on the weakest inputs."),
+        Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================
@@ -617,7 +602,8 @@ FString UUnrealGamingMasteryIntegration::PredictEnemyAttack(AActor* Enemy) const
         return MostLikely;
     }
 
-    return TEXT("attack");
+    // No opponent model: no prediction (never a fabricated one).
+    return TEXT("");
 }
 
 // ========================================
@@ -678,7 +664,8 @@ FString UUnrealGamingMasteryIntegration::GetAIDecisionRecommendation(UBlackboard
         return EchobeatsIntegration->GetIntegratedDecision();
     }
 
-    return TEXT("observe");
+    // No decision model: no recommendation (never a hard-coded default action).
+    return TEXT("");
 }
 
 void UUnrealGamingMasteryIntegration::UpdateBlackboardWithMasteryData(UBlackboardComponent* Blackboard)
@@ -1038,30 +1025,32 @@ void UUnrealGamingMasteryIntegration::ExitTrainingMode()
     UE_LOG(LogTemp, Log, TEXT("Exited training mode"));
 }
 
-FString UUnrealGamingMasteryIntegration::GetTrainingGuidance() const
+void UUnrealGamingMasteryIntegration::RequestTrainingGuidance()
 {
-    if (!bTrainingModeActive) return TEXT("");
-
-    // Get guidance based on current skill and performance
-    if (GamingMasterySystem)
+    const FString Topic = TEXT("training_guidance");
+    if (!bTrainingModeActive)
     {
-        FGamingSkillComponent Skill = GamingMasterySystem->GetSkill(CurrentTrainingSkill);
-
-        if (Skill.ProficiencyLevel < 0.3f)
-        {
-            return FString::Printf(TEXT("Focus on basic %s execution. Take your time."), *CurrentTrainingSkill);
-        }
-        else if (Skill.ProficiencyLevel < 0.6f)
-        {
-            return FString::Printf(TEXT("Good progress! Work on %s timing and consistency."), *CurrentTrainingSkill);
-        }
-        else
-        {
-            return FString::Printf(TEXT("Advanced training: Apply %s in varied situations."), *CurrentTrainingSkill);
-        }
+        OnCoachingFailed.Broadcast(Topic, TEXT("training mode is not active"));
+        return;
+    }
+    if (!GamingMasterySystem)
+    {
+        OnCoachingFailed.Broadcast(Topic, TEXT("GamingMasterySystem not available; no skill data"));
+        return;
     }
 
-    return TEXT("Practice the current skill");
+    const FGamingSkillComponent Skill = GamingMasterySystem->GetSkill(CurrentTrainingSkill);
+    const FString Metrics = FString::Printf(
+        TEXT("skill in training: %s (%s, category %s)\nproficiency: %.2f\nacquisition phase: %s\npractice hours: %.1f\n")
+        TEXT("deliberate practice sessions: %d\nrecent success rate: %.2f\ntraining difficulty: %.2f\n")
+        TEXT("combat accuracy: %.2f\nmovement efficiency: %.2f\n"),
+        *CurrentTrainingSkill, *Skill.SkillName, *Skill.Category, Skill.ProficiencyLevel,
+        *UEnum::GetValueAsString(Skill.AcquisitionPhase), Skill.PracticeHours, Skill.DeliberatePracticeSessions,
+        Skill.RecentSuccessRate, TrainingDifficulty, CombatAnalysis.Accuracy, MovementAnalysis.Efficiency);
+
+    EchoCoaching::Request(this, Topic,
+        TEXT("Guide the player on what to practise next for this skill and how."),
+        Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 void UUnrealGamingMasteryIntegration::SetTrainingDifficulty(float Difficulty)

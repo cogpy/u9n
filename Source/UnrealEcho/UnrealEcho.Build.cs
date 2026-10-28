@@ -16,11 +16,15 @@ public class UnrealEcho : ModuleRules
 		// Include paths for UnrealEcho components
 		PublicIncludePaths.AddRange(
 			new string[] {
+				UnrealEchoRoot,  // for "Audio/...", "Avatar/..." style includes
+				Path.Combine(UnrealEchoRoot, "9P"),
 				Path.Combine(UnrealEchoRoot, "Animation"),
 				Path.Combine(UnrealEchoRoot, "AssetManagement"),
+				Path.Combine(UnrealEchoRoot, "AtomSpace"),
 				Path.Combine(UnrealEchoRoot, "Audio"),
 				Path.Combine(UnrealEchoRoot, "Avatar"),
 				Path.Combine(UnrealEchoRoot, "Character"),
+				Path.Combine(UnrealEchoRoot, "Communication"),
 				Path.Combine(UnrealEchoRoot, "Consciousness"),
 				Path.Combine(UnrealEchoRoot, "Cosmetics"),
 				Path.Combine(UnrealEchoRoot, "DeepTreeEchoAvatar/Public"),
@@ -68,6 +72,8 @@ public class UnrealEcho : ModuleRules
 				"RHI",
 				"Renderer",
 				"Live2DCubismFramework",  // Cubism SDK dependency
+				"HTTP",  // AudioManagerComponent: TTS requests for model utterances
+				"Json",  // model reply parsing, 9P JSON responses
 			}
 		);
 

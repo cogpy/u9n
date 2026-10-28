@@ -1,6 +1,11 @@
 // Enhanced Expression Synthesizer - Production Implementation
 // Deep Tree Echo AGI Avatar System
-// Maps emotional states to Live2D Cubism parameters with advanced features
+// Maps emotional states to Live2D Cubism parameters.
+//
+// This is a renderer: it turns the emotional state it is given into parameters. It adds
+// no expressions of its own (no random micro-expressions, personality "smile floors" or
+// chaotic jitter); the emotional state must come from the character model's reactions.
+// Blinking, breathing and idle head sway are physiological idle motion.
 
 #include "ExpressionSynthesizer.h"
 #include "Math/UnrealMathUtility.h"
@@ -10,8 +15,6 @@ UExpressionSynthesizer::UExpressionSynthesizer()
 {
     // Initialize default parameters
     CurrentParameters.Empty();
-    MicroExpressionTimer = 0.0f;
-    MicroExpressionDuration = 0.0f;
     BlinkTimer = 0.0f;
     BlinkInterval = 3.0f; // Blink every 3 seconds on average
     bIsBlinking = false;
@@ -29,20 +32,8 @@ void UExpressionSynthesizer::SynthesizeExpression(const FEmotionalState& Emotion
     // Map emotional dimensions to facial parameters
     MapEmotionToParameters(EmotionalState, TargetParameters);
     
-    // Add micro-expressions for realism
-    GenerateMicroExpressions(TargetParameters, DeltaTime);
-    
-    // Add autonomous behaviors (blinking, breathing)
+    // Add physiological idle motion (blinking, breathing)
     GenerateAutonomousBehaviors(TargetParameters, DeltaTime);
-    
-    // Apply personality-based modulation
-    ApplyPersonalityModulation(TargetParameters, EmotionalState);
-    
-    // Apply super-hot-girl aesthetic enhancements
-    ApplySuperHotGirlAesthetic(TargetParameters, EmotionalState);
-    
-    // Apply hyper-chaotic behavior patterns
-    ApplyHyperChaoticBehavior(TargetParameters, EmotionalState);
     
     // Smooth parameter transitions
     ApplyParametersSmoothed(TargetParameters, DeltaTime);
@@ -135,56 +126,6 @@ void UExpressionSynthesizer::MapEmotionToParameters(const FEmotionalState& Emoti
     OutParameters.Add(TEXT("ParamBlushIntensity"), BlushIntensity);
 }
 
-void UExpressionSynthesizer::GenerateMicroExpressions(TMap<FName, float>& Parameters, float DeltaTime)
-{
-    MicroExpressionTimer += DeltaTime;
-    
-    // Trigger random micro-expressions
-    if (MicroExpressionTimer >= MicroExpressionDuration)
-    {
-        // Random chance to generate micro-expression
-        if (FMath::FRand() < 0.3f) // 30% chance
-        {
-            // Random micro-expression type
-            int32 ExpressionType = FMath::RandRange(0, 3);
-            
-            switch (ExpressionType)
-            {
-                case 0: // Eyebrow raise
-                    Parameters.Add(TEXT("ParamBrowLY"), 
-                                 Parameters.FindRef(TEXT("ParamBrowLY")) + FMath::FRandRange(0.1f, 0.3f));
-                    Parameters.Add(TEXT("ParamBrowRY"), 
-                                 Parameters.FindRef(TEXT("ParamBrowRY")) + FMath::FRandRange(0.1f, 0.3f));
-                    break;
-                    
-                case 1: // Slight smile
-                    Parameters.Add(TEXT("ParamMouthSmile"), 
-                                 Parameters.FindRef(TEXT("ParamMouthSmile")) + FMath::FRandRange(0.1f, 0.2f));
-                    break;
-                    
-                case 2: // Eye squint
-                    Parameters.Add(TEXT("ParamEyeLOpen"), 
-                                 Parameters.FindRef(TEXT("ParamEyeLOpen")) - FMath::FRandRange(0.1f, 0.2f));
-                    Parameters.Add(TEXT("ParamEyeROpen"), 
-                                 Parameters.FindRef(TEXT("ParamEyeROpen")) - FMath::FRandRange(0.1f, 0.2f));
-                    break;
-                    
-                case 3: // Head tilt
-                    Parameters.Add(TEXT("ParamAngleZ"), FMath::FRandRange(-2.0f, 2.0f));
-                    break;
-            }
-            
-            MicroExpressionDuration = FMath::FRandRange(0.2f, 0.5f); // Duration of micro-expression
-        }
-        else
-        {
-            MicroExpressionDuration = FMath::FRandRange(2.0f, 5.0f); // Time until next micro-expression
-        }
-        
-        MicroExpressionTimer = 0.0f;
-    }
-}
-
 void UExpressionSynthesizer::GenerateAutonomousBehaviors(TMap<FName, float>& Parameters, float DeltaTime)
 {
     // Blinking behavior
@@ -235,94 +176,6 @@ void UExpressionSynthesizer::GenerateAutonomousBehaviors(TMap<FName, float>& Par
                  Parameters.FindRef(TEXT("ParamAngleY")) + IdleHeadY);
 }
 
-void UExpressionSynthesizer::ApplyPersonalityModulation(TMap<FName, float>& Parameters, 
-                                                        const FEmotionalState& EmotionalState)
-{
-    // Modulate expressions based on personality traits
-    // This would integrate with PersonalityTraitSystem in production
-    
-    // Example: Confident personality = more expressive
-    float ConfidenceMultiplier = 1.2f;
-    
-    // Amplify smile for confident characters
-    if (Parameters.Contains(TEXT("ParamMouthSmile")))
-    {
-        float CurrentSmile = Parameters[TEXT("ParamMouthSmile")];
-        Parameters[TEXT("ParamMouthSmile")] = CurrentSmile * ConfidenceMultiplier;
-    }
-    
-    // Example: Playful personality = more eye sparkle
-    float PlayfulnessMultiplier = 1.3f;
-    
-    if (Parameters.Contains(TEXT("ParamEyeSparkle")))
-    {
-        float CurrentSparkle = Parameters[TEXT("ParamEyeSparkle")];
-        Parameters[TEXT("ParamEyeSparkle")] = FMath::Min(CurrentSparkle * PlayfulnessMultiplier, 1.0f);
-    }
-}
-
-void UExpressionSynthesizer::ApplySuperHotGirlAesthetic(TMap<FName, float>& Parameters, 
-                                                        const FEmotionalState& EmotionalState)
-{
-    // Enhance eye sparkle for attractive appearance
-    if (Parameters.Contains(TEXT("ParamEyeSparkle")))
-    {
-        float CurrentSparkle = Parameters[TEXT("ParamEyeSparkle")];
-        Parameters[TEXT("ParamEyeSparkle")] = FMath::Max(CurrentSparkle, 0.7f);
-    }
-    
-    // Add subtle confident smile
-    if (Parameters.Contains(TEXT("ParamMouthSmile")))
-    {
-        float CurrentSmile = Parameters[TEXT("ParamMouthSmile")];
-        Parameters[TEXT("ParamMouthSmile")] = FMath::Max(CurrentSmile, 0.2f);
-    }
-    
-    // Enhance blush for attractive appearance
-    if (Parameters.Contains(TEXT("ParamBlushIntensity")))
-    {
-        float CurrentBlush = Parameters[TEXT("ParamBlushIntensity")];
-        Parameters[TEXT("ParamBlushIntensity")] = FMath::Max(CurrentBlush, 0.3f);
-    }
-    
-    // Add hair shimmer
-    float HairShimmer = FMath::Sin(GetWorld()->GetTimeSeconds() * 2.0f) * 0.3f + 0.7f;
-    Parameters.Add(TEXT("ParamHairShimmer"), HairShimmer);
-    
-    // Confident posture
-    Parameters.Add(TEXT("ParamBodyAngleY"), 2.0f);
-}
-
-void UExpressionSynthesizer::ApplyHyperChaoticBehavior(TMap<FName, float>& Parameters, 
-                                                       const FEmotionalState& EmotionalState)
-{
-    // Add chaotic parameter variations
-    float ChaosLevel = 0.3f; // Default chaos level
-    
-    // Random micro-adjustments to create unpredictable behavior
-    if (FMath::FRand() < ChaosLevel)
-    {
-        // Random eye movement
-        float RandomEyeX = FMath::FRandRange(-0.3f, 0.3f) * ChaosLevel;
-        float RandomEyeY = FMath::FRandRange(-0.2f, 0.2f) * ChaosLevel;
-        
-        Parameters.Add(TEXT("ParamEyeBallX"), RandomEyeX);
-        Parameters.Add(TEXT("ParamEyeBallY"), RandomEyeY);
-        
-        // Random head tilt
-        float RandomAngleZ = FMath::FRandRange(-5.0f, 5.0f) * ChaosLevel;
-        Parameters.Add(TEXT("ParamAngleZ"), 
-                     Parameters.FindRef(TEXT("ParamAngleZ")) + RandomAngleZ);
-    }
-    
-    // Set chaos level parameter for visual effects
-    Parameters.Add(TEXT("ParamChaosLevel"), ChaosLevel);
-    
-    // Glitch effect intensity (triggered randomly)
-    float GlitchIntensity = (FMath::FRand() < 0.1f) ? FMath::FRandRange(0.3f, 0.8f) : 0.0f;
-    Parameters.Add(TEXT("ParamGlitchIntensity"), GlitchIntensity);
-}
-
 void UExpressionSynthesizer::ApplyParametersSmoothed(TMap<FName, float>& TargetParameters, float DeltaTime)
 {
     for (auto& Pair : TargetParameters)
@@ -366,8 +219,6 @@ void UExpressionSynthesizer::ResetExpression()
     }
     
     // Reset timers
-    MicroExpressionTimer = 0.0f;
-    MicroExpressionDuration = 0.0f;
     BlinkTimer = 0.0f;
     bIsBlinking = false;
 }
@@ -436,12 +287,4 @@ void UExpressionSynthesizer::ApplyEmotionalLipSync(const TArray<float>& AudioDat
     // Modulate mouth opening with emotional intensity
     float MouthOpen = FMath::Clamp(AverageAmplitude * (1.0f + EmotionalIntensity), 0.0f, 1.0f);
     OutParameters.Add(TEXT("ParamMouthOpenY"), MouthOpen);
-    
-    // Add emotional smile modulation
-    float EmotionalSmile = FMath::Clamp(EmotionalIntensity * 0.5f, 0.0f, 1.0f);
-    OutParameters.Add(TEXT("ParamMouthSmile"), EmotionalSmile);
-    
-    // Add mouth form variation based on phonemes (simplified)
-    float MouthForm = FMath::Sin(GetWorld()->GetTimeSeconds() * 10.0f) * AverageAmplitude * 0.3f;
-    OutParameters.Add(TEXT("ParamMouthForm"), MouthForm);
 }

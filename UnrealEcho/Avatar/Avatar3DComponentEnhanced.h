@@ -5,10 +5,15 @@
 #include "Animation/AnimInstance.h"
 #include "Avatar3DComponentEnhanced.generated.h"
 
+struct FEchoCharacterReaction;
+
 /**
  * Enhanced 3D Avatar Component for Deep Tree Echo
- * Implements super-hot-girl aesthetic and hyper-chaotic behavior patterns
- * Integrates with cognitive systems for emergent personality expression
+ * Implements super-hot-girl aesthetic rendering.
+ *
+ * The emotion shown is the last one chosen by the character model (received on
+ * FEchoReactionBus) or set explicitly by code relaying such a choice. The component
+ * never picks emotions, micro-expressions or effects by chance or on timers.
  */
 
 UENUM(BlueprintType)
@@ -158,9 +163,6 @@ public:
     void SetHyperChaoticBehavior(float ChaosFactor);
 
     UFUNCTION(BlueprintCallable, Category = "Avatar|Personality")
-    void TriggerChaoticMicroExpression();
-
-    UFUNCTION(BlueprintCallable, Category = "Avatar|Personality")
     void SetConfidenceLevel(float Confidence);
 
     UFUNCTION(BlueprintCallable, Category = "Avatar|Personality")
@@ -227,6 +229,7 @@ public:
 
     // ===== Lip Sync =====
 
+    /** Drive the mouth from a speech audio amplitude envelope (one value per LipSyncEnvelopeRate tick) */
     UFUNCTION(BlueprintCallable, Category = "Avatar|Speech")
     void StartLipSync(const TArray<float>& AudioData);
 
@@ -236,7 +239,20 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Avatar|Speech")
     void SetLipSyncEmotionalModulation(float EmotionalIntensity);
 
+    /** Only reactions for this character are applied; empty = apply every reaction on the bus */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction")
+    FString ReactionCharacterName;
+
+    /** Envelope samples per second consumed by StartLipSync */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Speech", meta = (ClampMin = "1.0"))
+    float LipSyncEnvelopeRate = 60.0f;
+
+    /** Apply a model-chosen reaction's emotion (unknown names are ignored) */
+    void ApplyCharacterReaction(const FEchoCharacterReaction& Reaction);
+
 protected:
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
     // ===== Internal State =====
 
     UPROPERTY(EditAnywhere, Category = "Avatar")
@@ -276,11 +292,14 @@ protected:
     UPROPERTY()
     float ChaosFactor;
 
-    UPROPERTY()
-    float ChaosTimer;
+    // ===== Lip Sync State =====
 
-    UPROPERTY()
-    float NextChaoticEventTime;
+    TArray<float> LipSyncEnvelope;
+    float LipSyncTime = 0.0f;
+    float LipSyncModulation = 1.0f;
+    bool bLipSyncActive = false;
+
+    FDelegateHandle ReactionHandle;
 
     // ===== Visual Effects State =====
 
@@ -299,14 +318,13 @@ protected:
     // ===== Internal Methods =====
 
     void UpdateEmotionalTransition(float DeltaTime);
-    void UpdateChaoticBehavior(float DeltaTime);
+    void UpdateLipSync(float DeltaTime);
     void UpdateGazeTracking(float DeltaTime);
     void UpdateHeadTracking(float DeltaTime);
     void UpdateVisualEffects(float DeltaTime);
     void UpdateMaterialParameters();
     void InitializeDynamicMaterials();
     void ApplyEmotionToFacialAnimation();
-    void TriggerRandomChaoticEvent();
     FVector CalculateGazeDirection() const;
     FRotator CalculateHeadRotation() const;
 };

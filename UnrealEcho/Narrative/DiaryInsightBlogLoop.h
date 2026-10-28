@@ -4,99 +4,243 @@
 #include "Components/ActorComponent.h"
 #include "DiaryInsightBlogLoop.generated.h"
 
+class UPersonalityTraitSystem;
+class UNeurochemicalSimulationComponent;
+
 /**
- * Narrative entry types
+ * Phase of the Diary-Insight-Blog loop. The timers only set the cadence at which the model is
+ * asked to write; every diary entry, insight and blog post is written by the model
+ * (UEchoModelClient) from the real observed state.
  */
 UENUM(BlueprintType)
-enum class ENarrativeEntryType : uint8
+enum class ENarrativePhase : uint8
 {
-    DiaryEntry UMETA(DisplayName = "Diary Entry"),
-    Insight UMETA(DisplayName = "Insight"),
-    BlogPost UMETA(DisplayName = "Blog Post"),
-    Reflection UMETA(DisplayName = "Reflection"),
-    Memory UMETA(DisplayName = "Memory")
+    Observation UMETA(DisplayName = "Observation"),
+    DiaryWriting UMETA(DisplayName = "Diary Writing"),
+    InsightGeneration UMETA(DisplayName = "Insight Generation"),
+    BlogPublishing UMETA(DisplayName = "Blog Publishing")
 };
 
 /**
- * Narrative entry structure
+ * One measured sample of the avatar's state. Only values actually read from the owner's
+ * components are stored; the bHas* flags say which sources were present.
  */
 USTRUCT(BlueprintType)
-struct FNarrativeEntry
+struct FNarrativeObservation
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ENarrativeEntryType EntryType;
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Timestamp = 0.0f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FString Title;
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    bool bHasNeurochemistry = false;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Happiness = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Excitement = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Calmness = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Anxiety = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Affection = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Focus = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Energy = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    bool bHasPersonality = false;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Confidence = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Playfulness = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Chaos = 0.0f;
+};
+
+/** A diary entry written by the model from a window of observations. */
+USTRUCT(BlueprintType)
+struct FNarrativeDiaryEntry
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FGuid EntryID;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Timestamp = 0.0f;
+
+    /** Model-written diary text. */
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
     FString Content;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FDateTime Timestamp;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** Model-chosen tags. */
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
     TArray<FString> Tags;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float EmotionalValence; // -1 to 1
+    /** Emotional valence (-1..1) the model assigned to its own entry. */
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Valence = 0.0f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Significance; // 0 to 1
+    /** Measured averages of the observations the entry was written from. */
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FNarrativeObservation MeasuredAverage;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FString> RelatedEntryIDs;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FString EntryID;
-
-    FNarrativeEntry()
-        : EntryType(ENarrativeEntryType::DiaryEntry)
-        , Title(TEXT(""))
-        , Content(TEXT(""))
-        , Timestamp(FDateTime::Now())
-        , EmotionalValence(0.0f)
-        , Significance(0.5f)
-        , EntryID(FGuid::NewGuid().ToString())
-    {}
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    int32 ObservationCount = 0;
 };
 
-/**
- * Insight generation parameters
- */
+/** An insight written by the model from recent diary entries. */
 USTRUCT(BlueprintType)
-struct FInsightGenerationParams
+struct FNarrativeInsight
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    int32 LookbackDays; // How many days to analyze
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FGuid InsightID;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float MinimumSignificance; // Minimum significance threshold
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Timestamp = 0.0f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FString> FocusTags; // Specific tags to focus on
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FString Title;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bIncludeEmotionalPatterns;
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FString Content;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bIncludeBehavioralPatterns;
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FString Category;
 
-    FInsightGenerationParams()
-        : LookbackDays(7)
-        , MinimumSignificance(0.5f)
-        , bIncludeEmotionalPatterns(true)
-        , bIncludeBehavioralPatterns(true)
-    {}
+    /** Significance (0..1) assigned by the model. */
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Significance = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    TArray<FGuid> SourceEntryIDs;
 };
 
+/** A blog post written by the model from significant insights. */
+USTRUCT(BlueprintType)
+struct FNarrativeBlogPost
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FGuid PostID;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float Timestamp = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FString Title;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FString Content;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    TArray<FString> Tags;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    TArray<FNarrativeInsight> SourceInsights;
+};
+
+USTRUCT(BlueprintType)
+struct FNarrativeLoopConfig
+{
+    GENERATED_BODY()
+
+    /** Seconds between requests to the model for a diary entry. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    float DiaryUpdateInterval = 60.0f;
+
+    /** Seconds between requests to the model for an insight. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    float InsightGenerationInterval = 300.0f;
+
+    /** Seconds between requests to the model for a blog post. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    float BlogPublishInterval = 900.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    int32 MaxDiaryEntries = 1000;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    int32 MaxInsights = 500;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    int32 MaxBlogPosts = 100;
+
+    /** Model-assigned significance an insight needs to be kept. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    float InsightThreshold = 0.7f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    bool bAutoPublish = true;
+};
+
+USTRUCT(BlueprintType)
+struct FNarrativeLoopState
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    ENarrativePhase CurrentPhase = ENarrativePhase::Observation;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    bool bIsActive = false;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float TimeSinceLastDiaryEntry = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float TimeSinceLastInsight = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    float TimeSinceLastBlogPost = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    int32 TotalDiaryEntries = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    int32 TotalInsights = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    int32 TotalBlogPosts = 0;
+
+    /** Last model/configuration error (system-level, never shown as the character's words). */
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FString LastError;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnNarrativeLoopStarted);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnNarrativeLoopStopped);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNarrativePhaseChanged, ENarrativePhase, OldPhase, ENarrativePhase, NewPhase);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDiaryEntryCreated, const FNarrativeDiaryEntry&, Entry);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNarrativeInsightGenerated, const FNarrativeInsight&, Insight);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnBlogPostPublished, const FNarrativeBlogPost&, Post);
+/** A model request failed; nothing was created for that phase. Error is a system message. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNarrativeGenerationFailed, ENarrativePhase, Phase, const FString&, Error);
+
 /**
- * Diary-Insight-Blog Narrative Loop Component
- * Implements the continuous self-reflection and narrative generation system
+ * Diary-Insight-Blog Narrative Loop Component.
+ *
+ * Samples the owner's real neurochemical/personality state, and on a fixed cadence asks the
+ * model to write a diary entry from those measurements, an insight from recent diary entries,
+ * and a blog post from significant insights. Requests are asynchronous. When the model is not
+ * configured or a request fails, nothing is created or published and the error is logged and
+ * broadcast through OnNarrativeGenerationFailed.
  */
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class UNREALENGINE_API UDiaryInsightBlogLoop : public UActorComponent
@@ -110,66 +254,8 @@ protected:
     virtual void BeginPlay() override;
 
 public:
-    virtual void TickComponent(float DeltaTime, ELevelTick TickType, 
+    virtual void TickComponent(float DeltaTime, ELevelTick TickType,
                                FActorComponentTickFunction* ThisTickFunction) override;
-
-    // ===== Diary Management =====
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Diary")
-    void WriteDiaryEntry(const FString& Title, const FString& Content, 
-                         float EmotionalValence, const TArray<FString>& Tags);
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Diary")
-    TArray<FNarrativeEntry> GetDiaryEntries(int32 Count = 10) const;
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Diary")
-    TArray<FNarrativeEntry> GetDiaryEntriesByDateRange(FDateTime StartDate, FDateTime EndDate) const;
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Diary")
-    TArray<FNarrativeEntry> GetDiaryEntriesByTag(const FString& Tag) const;
-
-    // ===== Insight Generation =====
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Insight")
-    void GenerateInsights(const FInsightGenerationParams& Params);
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Insight")
-    TArray<FNarrativeEntry> GetInsights(int32 Count = 5) const;
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Insight")
-    FNarrativeEntry GenerateInsightFromPattern(const TArray<FNarrativeEntry>& Entries);
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Insight")
-    void AnalyzeEmotionalPatterns();
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Insight")
-    void AnalyzeBehavioralPatterns();
-
-    // ===== Blog Post Creation =====
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Blog")
-    void CreateBlogPost(const FString& Title, const FString& Content, 
-                        const TArray<FString>& SourceInsightIDs);
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Blog")
-    TArray<FNarrativeEntry> GetBlogPosts(int32 Count = 5) const;
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Blog")
-    FNarrativeEntry SynthesizeBlogFromInsights(const TArray<FNarrativeEntry>& Insights);
-
-    // ===== Reflection and Meta-Cognition =====
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Reflection")
-    void PerformSelfReflection();
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Reflection")
-    FString GenerateNarrativeSummary(int32 DaysToSummarize = 7);
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Reflection")
-    TArray<FString> IdentifyRecurringThemes();
-
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Reflection")
-    float CalculateNarrativeCoherence() const;
 
     // ===== Loop Management =====
 
@@ -179,88 +265,115 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Narrative|Loop")
     void StopNarrativeLoop();
 
+    UFUNCTION(BlueprintPure, Category = "Narrative|Loop")
+    FNarrativeLoopState GetNarrativeState() const { return State; }
+
+    UFUNCTION(BlueprintCallable, Category = "Narrative|Config")
+    void SetDiaryUpdateInterval(float Interval);
+
+    UFUNCTION(BlueprintCallable, Category = "Narrative|Config")
+    void SetInsightGenerationInterval(float Interval);
+
+    UFUNCTION(BlueprintCallable, Category = "Narrative|Config")
+    void SetBlogPublishInterval(float Interval);
+
+    UFUNCTION(BlueprintCallable, Category = "Narrative|Config")
+    void SetAutoPublish(bool bEnabled);
+
+    /** Request a diary entry from the model on the next tick. */
     UFUNCTION(BlueprintCallable, Category = "Narrative|Loop")
-    void SetLoopInterval(float IntervalSeconds);
+    void ForceDiaryEntry();
 
+    /** Request an insight from the model on the next tick. */
     UFUNCTION(BlueprintCallable, Category = "Narrative|Loop")
-    bool IsLoopActive() const { return bLoopActive; }
+    void ForceInsightGeneration();
 
-    // ===== Query and Search =====
+    /** Request a blog post from the model on the next tick. */
+    UFUNCTION(BlueprintCallable, Category = "Narrative|Loop")
+    void ForceBlogPublish();
 
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Query")
-    TArray<FNarrativeEntry> SearchNarrative(const FString& SearchQuery) const;
+    // ===== Queries =====
 
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Query")
-    FNarrativeEntry GetEntryByID(const FString& EntryID) const;
+    UFUNCTION(BlueprintPure, Category = "Narrative|Query")
+    FNarrativeDiaryEntry GetMostRecentDiaryEntry() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Narrative|Query")
-    TArray<FNarrativeEntry> GetRelatedEntries(const FString& EntryID, int32 MaxDepth = 2) const;
+    UFUNCTION(BlueprintPure, Category = "Narrative|Query")
+    FNarrativeInsight GetMostRecentInsight() const;
+
+    UFUNCTION(BlueprintPure, Category = "Narrative|Query")
+    FNarrativeBlogPost GetMostRecentBlogPost() const;
+
+    UFUNCTION(BlueprintPure, Category = "Narrative|Query")
+    TArray<FNarrativeDiaryEntry> GetRecentDiaryEntries(int32 Count = 10) const;
+
+    UFUNCTION(BlueprintPure, Category = "Narrative|Query")
+    TArray<FNarrativeInsight> GetRecentInsights(int32 Count = 5) const;
+
+    UFUNCTION(BlueprintPure, Category = "Narrative|Query")
+    TArray<FNarrativeBlogPost> GetRecentBlogPosts(int32 Count = 5) const;
+
+    // ===== Events =====
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnNarrativeLoopStarted OnNarrativeLoopStarted;
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnNarrativeLoopStopped OnNarrativeLoopStopped;
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnNarrativePhaseChanged OnNarrativePhaseChanged;
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnDiaryEntryCreated OnDiaryEntryCreated;
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnNarrativeInsightGenerated OnInsightGenerated;
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnBlogPostPublished OnBlogPostPublished;
+
+    UPROPERTY(BlueprintAssignable, Category = "Narrative|Events")
+    FOnNarrativeGenerationFailed OnNarrativeGenerationFailed;
 
 protected:
-    // ===== Internal Methods =====
+    void UpdateNarrativePhase();
+    void ProcessCurrentPhase(float DeltaTime);
 
-    void UpdateNarrativeLoop(float DeltaTime);
-    void ProcessDiaryToInsight();
-    void ProcessInsightToBlog();
-    void MaintainNarrativeDatabase();
+    void ProcessObservation(float DeltaTime);
+    void ProcessDiaryWriting(float DeltaTime);
+    void ProcessInsightGeneration(float DeltaTime);
+    void ProcessBlogPublishing(float DeltaTime);
 
-    FString GenerateInsightContent(const TArray<FNarrativeEntry>& SourceEntries);
-    FString GenerateBlogContent(const TArray<FNarrativeEntry>& SourceInsights);
-    
-    TArray<FNarrativeEntry> FilterEntriesBySignificance(const TArray<FNarrativeEntry>& Entries, 
-                                                         float MinSignificance) const;
-    TArray<FNarrativeEntry> ClusterEntriesByTheme(const TArray<FNarrativeEntry>& Entries) const;
+    /** Averages only the sources that were actually present in the observations. */
+    static FNarrativeObservation AverageObservations(const TArray<FNarrativeObservation>& Observations);
+    static FString DescribeObservation(const FNarrativeObservation& Average, int32 Count);
+    FString BuildPersonaPrompt() const;
 
-    void SaveNarrativeToFile();
-    void LoadNarrativeFromFile();
+    void HandleDiaryReply(bool bSuccess, const FString& TextOrError, int32 ConsumedObservations, FNarrativeObservation Average);
+    void HandleInsightReply(bool bSuccess, const FString& TextOrError, TArray<FGuid> SourceEntryIDs);
+    void HandleBlogReply(bool bSuccess, const FString& TextOrError, TArray<FNarrativeInsight> SourceInsights);
+    void ReportFailure(ENarrativePhase Phase, const FString& Error);
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Narrative")
+    FNarrativeLoopConfig Config;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Narrative")
+    FNarrativeLoopState State;
 
 private:
-    // ===== Narrative Database =====
+    UPROPERTY()
+    UPersonalityTraitSystem* PersonalitySystem = nullptr;
 
     UPROPERTY()
-    TArray<FNarrativeEntry> AllEntries;
+    UNeurochemicalSimulationComponent* NeurochemicalSystem = nullptr;
 
-    UPROPERTY()
-    TMap<FString, FNarrativeEntry> EntryDatabase;
+    TArray<FNarrativeObservation> ObservationBuffer;
+    TArray<FNarrativeDiaryEntry> DiaryEntries;
+    TArray<FNarrativeInsight> Insights;
+    TArray<FNarrativeBlogPost> BlogPosts;
 
-    // ===== Loop State =====
-
-    UPROPERTY(EditAnywhere, Category = "Narrative")
-    bool bLoopActive;
-
-    UPROPERTY(EditAnywhere, Category = "Narrative")
-    float LoopInterval; // Seconds between loop iterations
-
-    float LoopTimer;
-
-    // ===== Configuration =====
-
-    UPROPERTY(EditAnywhere, Category = "Narrative")
-    int32 MaxEntriesInMemory;
-
-    UPROPERTY(EditAnywhere, Category = "Narrative")
-    float InsightGenerationThreshold;
-
-    UPROPERTY(EditAnywhere, Category = "Narrative")
-    int32 MinEntriesForInsight;
-
-    UPROPERTY(EditAnywhere, Category = "Narrative")
-    FString NarrativeSaveFilePath;
-
-    // ===== Statistics =====
-
-    UPROPERTY()
-    int32 TotalDiaryEntries;
-
-    UPROPERTY()
-    int32 TotalInsights;
-
-    UPROPERTY()
-    int32 TotalBlogPosts;
-
-    UPROPERTY()
-    FDateTime LastInsightGeneration;
-
-    UPROPERTY()
-    FDateTime LastBlogCreation;
+    /** One outstanding model request per phase. */
+    bool bDiaryRequestInFlight = false;
+    bool bInsightRequestInFlight = false;
+    bool bBlogRequestInFlight = false;
 };

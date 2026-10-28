@@ -666,7 +666,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Quality|Assessment")
     FAvatarQualityMetrics RunQualityCheck();
 
-    /** Get quality improvement suggestions */
+    /**
+     * Developer QA diagnostics for the avatar expression pipeline, one per measured metric below
+     * threshold (empty when all metrics pass). Tooling/log text for developers; never voiced by
+     * the character.
+     */
     UFUNCTION(BlueprintPure, Category = "Quality|Assessment")
     TArray<FString> GetQualityImprovementSuggestions() const;
 

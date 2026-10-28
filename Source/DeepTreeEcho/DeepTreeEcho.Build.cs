@@ -29,6 +29,7 @@ public class DeepTreeEcho : ModuleRules
 				Path.Combine(DeepTreeEchoRoot, "Integration"),
 				Path.Combine(DeepTreeEchoRoot, "Memory"),
 				Path.Combine(DeepTreeEchoRoot, "Metamodel"),
+				Path.Combine(DeepTreeEchoRoot, "Model"),
 				Path.Combine(DeepTreeEchoRoot, "Sensorimotor"),
 				Path.Combine(DeepTreeEchoRoot, "System5"),
 				Path.Combine(DeepTreeEchoRoot, "UnrealBridge"),
@@ -58,6 +59,7 @@ public class DeepTreeEcho : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"InputCore",
+				"Json",  // EchoModelClient's public header exposes FJsonObject
 			}
 		);
 
@@ -66,6 +68,8 @@ public class DeepTreeEcho : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				// EchoModelClient: characters speak only through a model endpoint
+				"HTTP",
 			}
 		);
 

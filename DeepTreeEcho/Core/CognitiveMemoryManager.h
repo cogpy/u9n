@@ -482,7 +482,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Memory|Optimization")
     void TrimUnusedMemory();
 
-    /** Get optimization suggestions */
+    /**
+     * Developer diagnostics for memory/cache/async tuning, computed from measured statistics.
+     * Engine-facing text for developers and logs; never voiced by a character.
+     */
     UFUNCTION(BlueprintPure, Category = "Memory|Optimization")
     TArray<FString> GetOptimizationSuggestions() const;
 

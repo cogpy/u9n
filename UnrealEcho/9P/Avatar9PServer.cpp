@@ -3,8 +3,35 @@
 #include "../Neurochemical/NeurochemicalSimulationComponent.h"
 #include "../Narrative/DiaryInsightBlogLoop.h"
 #include "../Avatar/Avatar3DComponent.h"
+#include "../AtomSpace/AvatarAtomSpaceClient.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Materials/MaterialInterface.h"
+#include "Misc/App.h"
+#include "Misc/DefaultValueHelper.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 DEFINE_LOG_CATEGORY_STATIC(Log9PServer, Log, All);
+
+namespace
+{
+    FString JsonToString(const TSharedRef<FJsonObject>& Object)
+    {
+        FString Out;
+        TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+            TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+        FJsonSerializer::Serialize(Object, Writer);
+        return Out;
+    }
+}
+
+FString UAvatar9PServer::FailRead(const FString& Error)
+{
+    LastPathError = Error;
+    return FString();
+}
 
 UAvatar9PServer::UAvatar9PServer()
 {
@@ -60,6 +87,7 @@ void UAvatar9PServer::Initialize()
         NeurochemicalSystem = Owner->FindComponentByClass<UNeurochemicalSimulationComponent>();
         NarrativeSystem = Owner->FindComponentByClass<UDiaryInsightBlogLoop>();
         AvatarComponent = Owner->FindComponentByClass<UAvatar3DComponent>();
+        AtomSpaceClient = Owner->FindComponentByClass<UAvatarAtomSpaceClient>();
     }
 
     // Build the namespace
@@ -187,24 +215,8 @@ void UAvatar9PServer::BuildNamespace()
     CognitiveDir.FullPath = NamespaceRoot + TEXT("/cognitive");
     CognitiveDir.bIsDirectory = true;
     CognitiveDir.bReadable = true;
-    CognitiveDir.Description = TEXT("Cognitive state and processing metrics");
+    CognitiveDir.Description = TEXT("Cognitive state (not available: no cognitive system is wired to this server)");
     NamespaceEntries.Add(CognitiveDir);
-
-    TArray<FString> CognitiveParams = {
-        TEXT("attention"), TEXT("memory_load"), TEXT("processing_state"),
-        TEXT("consciousness_stream"), TEXT("echo_resonance")
-    };
-
-    for (const FString& Param : CognitiveParams)
-    {
-        FAvatarNamespaceEntry CogEntry;
-        CogEntry.Name = Param;
-        CogEntry.FullPath = NamespaceRoot + TEXT("/cognitive/") + Param;
-        CogEntry.bIsDirectory = false;
-        CogEntry.bReadable = true;
-        CogEntry.Description = FString::Printf(TEXT("Cognitive parameter: %s"), *Param);
-        NamespaceEntries.Add(CogEntry);
-    }
 
     // Performance namespace
     FAvatarNamespaceEntry PerformanceDir;
@@ -316,12 +328,16 @@ F9PResponse UAvatar9PServer::HandleRead(const FString& Path, uint64 Offset, uint
     F9PResponse Response;
     Response.MessageType = E9PMessageType::Rread;
 
+    LastPathError.Reset();
     FString Content = ReadFromPath(Path);
 
     if (Content.IsEmpty())
     {
+        Response.MessageType = E9PMessageType::Rerror;
         Response.bSuccess = false;
-        Response.ErrorMessage = FString::Printf(TEXT("Path not found: %s"), *Path);
+        Response.ErrorMessage = LastPathError.IsEmpty()
+            ? FString::Printf(TEXT("Path not found: %s"), *Path)
+            : FString::Printf(TEXT("%s: %s"), *Path, *LastPathError);
         return Response;
     }
 
@@ -355,12 +371,16 @@ F9PResponse UAvatar9PServer::HandleWrite(const FString& Path, const TArray<uint8
     // Convert data to string
     FString Value = FString(ANSI_TO_TCHAR((const char*)Data.GetData()));
 
+    LastPathError.Reset();
     bool bSuccess = WriteToPath(Path, Value);
 
     Response.bSuccess = bSuccess;
     if (!bSuccess)
     {
-        Response.ErrorMessage = FString::Printf(TEXT("Failed to write to path: %s"), *Path);
+        Response.MessageType = E9PMessageType::Rerror;
+        Response.ErrorMessage = LastPathError.IsEmpty()
+            ? FString::Printf(TEXT("Failed to write to path: %s"), *Path)
+            : FString::Printf(TEXT("%s: %s"), *Path, *LastPathError);
     }
     else
     {
@@ -477,8 +497,27 @@ FString UAvatar9PServer::ReadFromPath(const FString& Path)
                 }
             }
         }
+        else if (SubNamespace == TEXT("batch"))
+        {
+            if (PathParts.Num() >= 4 && PathParts[3] == TEXT("results"))
+            {
+                return LastBatchResults.IsEmpty()
+                    ? FailRead(TEXT("no batch query has been run"))
+                    : LastBatchResults;
+            }
+        }
         else if (SubNamespace == TEXT("narrative"))
         {
+            if (PathParts.Num() == 4 && PathParts[3] == TEXT("diary"))
+            {
+                if (!AtomSpaceClient)
+                {
+                    return FailRead(TEXT("not available: no AtomSpace client holds diary entries"));
+                }
+                const TArray<FString> Ids = ListDiaryEntries();
+                // An empty directory is a valid read; return a newline so it is not treated as missing.
+                return Ids.Num() > 0 ? FString::Join(Ids, TEXT("\n")) : FString(TEXT("\n"));
+            }
             if (PathParts.Num() >= 5)
             {
                 if (PathParts[3] == TEXT("diary"))
@@ -536,8 +575,8 @@ bool UAvatar9PServer::WriteToPath(const FString& Path, const FString& Value)
         {
             if (PathParts.Num() >= 4 && PathParts[3] == TEXT("query"))
             {
-                // Process batch query - store results for later read
-                ProcessBatchQuery(Value);
+                // Process batch query - results are served from batch/results
+                LastBatchResults = ProcessBatchQuery(Value);
                 return true;
             }
         }
@@ -552,7 +591,7 @@ FString UAvatar9PServer::ReadPersonalityTrait(const FString& TraitName)
 {
     if (!PersonalitySystem)
     {
-        return TEXT("0.0");
+        return FailRead(TEXT("not available: no personality system"));
     }
 
     FSuperHotGirlTrait SHGTrait = PersonalitySystem->GetSuperHotGirlTrait();
@@ -595,7 +634,7 @@ FString UAvatar9PServer::ReadPersonalityTrait(const FString& TraitName)
         return FString::Printf(TEXT("%.4f"), HCTrait.GlitchEffectProbability);
     }
 
-    return TEXT("0.0");
+    return FailRead(FString::Printf(TEXT("unknown personality trait '%s'"), *TraitName));
 }
 
 bool UAvatar9PServer::WritePersonalityTrait(const FString& TraitName, float Value)
@@ -633,7 +672,7 @@ FString UAvatar9PServer::ReadPersonalityState()
 {
     if (!PersonalitySystem)
     {
-        return TEXT("{}");
+        return FailRead(TEXT("not available: no personality system"));
     }
 
     FSuperHotGirlTrait SHGTrait = PersonalitySystem->GetSuperHotGirlTrait();
@@ -661,7 +700,7 @@ FString UAvatar9PServer::ReadNeurochemicalLevel(const FString& ChemicalName)
 {
     if (!NeurochemicalSystem)
     {
-        return TEXT("0.5");
+        return FailRead(TEXT("not available: no neurochemical system"));
     }
 
     FNeurochemicalState State = NeurochemicalSystem->GetCurrentState();
@@ -703,7 +742,7 @@ FString UAvatar9PServer::ReadNeurochemicalLevel(const FString& ChemicalName)
         return FString::Printf(TEXT("%.4f"), State.AcetylcholineLevel);
     }
 
-    return TEXT("0.5");
+    return FailRead(FString::Printf(TEXT("unknown neurochemical '%s'"), *ChemicalName));
 }
 
 bool UAvatar9PServer::WriteNeurochemicalLevel(const FString& ChemicalName, float Value)
@@ -765,7 +804,7 @@ FString UAvatar9PServer::ReadEmotionalState()
 {
     if (!NeurochemicalSystem)
     {
-        return TEXT("{}");
+        return FailRead(TEXT("not available: no neurochemical system"));
     }
 
     FEmotionalChemistry Emotions = NeurochemicalSystem->GetEmotionalChemistry();
@@ -789,87 +828,160 @@ FString UAvatar9PServer::ReadEmotionalState()
 
 FString UAvatar9PServer::ReadDiaryEntry(const FString& EntryId)
 {
-    // Return diary entry as JSON
-    // This would query the NarrativeSystem if available
-    return FString::Printf(TEXT("{\"id\":\"%s\",\"content\":\"Diary entry placeholder\",\"timestamp\":\"%s\"}"),
-        *EntryId, *FDateTime::Now().ToString());
+    if (!AtomSpaceClient)
+    {
+        return FailRead(TEXT("not available: no AtomSpace client holds diary entries"));
+    }
+
+    FDiaryEntry Entry;
+    if (!AtomSpaceClient->TryGetDiaryEntry(EntryId, Entry))
+    {
+        return FailRead(FString::Printf(TEXT("diary entry '%s' not found"), *EntryId));
+    }
+
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("id"), Entry.EntryId);
+    Json->SetStringField(TEXT("content"), Entry.Content);
+    Json->SetStringField(TEXT("timestamp"), Entry.Timestamp.ToIso8601());
+    Json->SetStringField(TEXT("emotional_context"), Entry.EmotionalContext);
+    Json->SetNumberField(TEXT("valence"), Entry.EmotionalValence);
+    Json->SetNumberField(TEXT("arousal"), Entry.EmotionalArousal);
+    TArray<TSharedPtr<FJsonValue>> Tags;
+    for (const FString& Tag : Entry.Tags)
+    {
+        Tags.Add(MakeShared<FJsonValueString>(Tag));
+    }
+    Json->SetArrayField(TEXT("tags"), Tags);
+    return JsonToString(Json);
 }
 
 TArray<FString> UAvatar9PServer::ListDiaryEntries()
 {
-    TArray<FString> Entries;
-    // List diary entries from NarrativeSystem
-    return Entries;
+    return AtomSpaceClient ? AtomSpaceClient->ListDiaryEntryIds() : TArray<FString>();
 }
 
 FString UAvatar9PServer::ReadInsight(const FString& InsightId)
 {
-    return FString::Printf(TEXT("{\"id\":\"%s\",\"insight\":\"Insight placeholder\",\"confidence\":0.8}"),
-        *InsightId);
+    if (!AtomSpaceClient)
+    {
+        return FailRead(TEXT("not available: no AtomSpace client holds insights"));
+    }
+
+    FInsight Insight;
+    if (!AtomSpaceClient->TryGetInsight(InsightId, Insight))
+    {
+        return FailRead(FString::Printf(TEXT("insight '%s' not found"), *InsightId));
+    }
+
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("id"), Insight.InsightId);
+    Json->SetStringField(TEXT("insight"), Insight.Content);
+    Json->SetStringField(TEXT("category"), Insight.Category);
+    Json->SetNumberField(TEXT("confidence"), Insight.Confidence);
+    Json->SetStringField(TEXT("discovered_at"), Insight.DiscoveredAt.ToIso8601());
+    Json->SetBoolField(TEXT("validated"), Insight.bIsValidated);
+    return JsonToString(Json);
 }
 
 // ===== Visual Namespace Handlers =====
 
 FString UAvatar9PServer::ReadAppearance(const FString& Parameter)
 {
-    // Return visual parameter
-    return TEXT("1.0");
+    if (!AvatarComponent)
+    {
+        return FailRead(TEXT("not available: no avatar mesh component"));
+    }
+
+    const FHashedMaterialParameterInfo ParamInfo{FName(*Parameter)};
+    for (int32 i = 0; i < AvatarComponent->GetNumMaterials(); ++i)
+    {
+        UMaterialInterface* Material = AvatarComponent->GetMaterial(i);
+        float Value = 0.0f;
+        if (Material && Material->GetScalarParameterValue(ParamInfo, Value))
+        {
+            return FString::Printf(TEXT("%.4f"), Value);
+        }
+    }
+
+    return FailRead(FString::Printf(TEXT("appearance parameter '%s' not found on avatar materials"), *Parameter));
 }
 
 bool UAvatar9PServer::WriteAppearance(const FString& Parameter, const FString& Value)
 {
-    // Set visual parameter
+    if (!AvatarComponent)
+    {
+        LastPathError = TEXT("not available: no avatar mesh component");
+        return false;
+    }
+
+    float FloatValue = 0.0f;
+    if (!FDefaultValueHelper::ParseFloat(Value.TrimStartAndEnd(), FloatValue))
+    {
+        LastPathError = FString::Printf(TEXT("appearance value '%s' is not a number"), *Value);
+        return false;
+    }
+
+    // Only parameters that exist on the avatar's materials can be applied.
+    const FHashedMaterialParameterInfo ParamInfo{FName(*Parameter)};
+    bool bParameterExists = false;
+    for (int32 i = 0; i < AvatarComponent->GetNumMaterials() && !bParameterExists; ++i)
+    {
+        UMaterialInterface* Material = AvatarComponent->GetMaterial(i);
+        float Existing = 0.0f;
+        bParameterExists = Material && Material->GetScalarParameterValue(ParamInfo, Existing);
+    }
+    if (!bParameterExists)
+    {
+        LastPathError = FString::Printf(TEXT("appearance parameter '%s' not found on avatar materials"), *Parameter);
+        return false;
+    }
+
+    AvatarComponent->SetScalarParameterValueOnMaterials(FName(*Parameter), FloatValue);
     return true;
 }
 
 FString UAvatar9PServer::ReadAnimationState()
 {
-    return TEXT("{\"current_state\":\"idle\",\"blend_alpha\":1.0,\"playing_montage\":false}");
+    if (!AvatarComponent)
+    {
+        return FailRead(TEXT("not available: no avatar mesh component"));
+    }
+
+    UAnimInstance* AnimInstance = AvatarComponent->GetAnimInstance();
+    if (!AnimInstance)
+    {
+        return FailRead(TEXT("not available: avatar mesh has no anim instance"));
+    }
+
+    UAnimMontage* Montage = AnimInstance->GetCurrentActiveMontage();
+
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("anim_instance"), AnimInstance->GetClass()->GetName());
+    Json->SetBoolField(TEXT("playing_montage"), AnimInstance->IsAnyMontagePlaying());
+    Json->SetStringField(TEXT("montage"), Montage ? Montage->GetName() : FString());
+    Json->SetNumberField(TEXT("montage_position"), Montage ? AnimInstance->Montage_GetPosition(Montage) : 0.0f);
+    return JsonToString(Json);
 }
 
 // ===== Cognitive Namespace Handlers =====
 
 FString UAvatar9PServer::ReadCognitiveState(const FString& Parameter)
 {
-    if (Parameter == TEXT("attention"))
-    {
-        return FString::Printf(TEXT("%.4f"), GetAttentionLevel());
-    }
-    else if (Parameter == TEXT("memory_load"))
-    {
-        return FString::Printf(TEXT("%.4f"), GetMemoryLoad());
-    }
-    else if (Parameter == TEXT("processing_state"))
-    {
-        return TEXT("active");
-    }
-    else if (Parameter == TEXT("consciousness_stream"))
-    {
-        return TEXT("{\"stream_id\":1,\"phase\":0.0,\"resonance\":0.8}");
-    }
-    else if (Parameter == TEXT("echo_resonance"))
-    {
-        return TEXT("0.75");
-    }
-
-    return TEXT("");
-}
-
-float UAvatar9PServer::GetAttentionLevel() const
-{
-    return 0.8f; // Placeholder - would query cognitive system
-}
-
-float UAvatar9PServer::GetMemoryLoad() const
-{
-    return 0.5f; // Placeholder - would query memory system
+    return FailRead(FString::Printf(
+        TEXT("cognitive parameter '%s' not available: no cognitive system is wired to the 9P server"), *Parameter));
 }
 
 // ===== Performance Namespace Handlers =====
 
 FString UAvatar9PServer::ReadPerformanceMetrics()
 {
-    return TEXT("{\"fps\":60.0,\"frame_time_ms\":16.67,\"9p_latency_ms\":2.0,\"message_throughput\":500}");
+    // Only measured values: the engine's current frame delta and this server's queue depth.
+    const double DeltaSeconds = FApp::GetDeltaTime();
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetNumberField(TEXT("frame_time_ms"), DeltaSeconds * 1000.0);
+    Json->SetNumberField(TEXT("fps"), DeltaSeconds > 0.0 ? 1.0 / DeltaSeconds : 0.0);
+    Json->SetNumberField(TEXT("pending_requests"), PendingRequests.Num());
+    return JsonToString(Json);
 }
 
 FString UAvatar9PServer::ReadPerformanceBudgets()
@@ -891,8 +1003,17 @@ FString UAvatar9PServer::ProcessBatchQuery(const FString& QueryList)
         FString TrimmedPath = Path.TrimStartAndEnd();
         if (!TrimmedPath.IsEmpty())
         {
+            LastPathError.Reset();
             FString Value = ReadFromPath(TrimmedPath);
-            Results.Add(FString::Printf(TEXT("%s=%s"), *TrimmedPath, *Value));
+            if (Value.IsEmpty())
+            {
+                Results.Add(FString::Printf(TEXT("%s!error:%s"), *TrimmedPath,
+                    LastPathError.IsEmpty() ? TEXT("path not found") : *LastPathError));
+            }
+            else
+            {
+                Results.Add(FString::Printf(TEXT("%s=%s"), *TrimmedPath, *Value));
+            }
         }
     }
 

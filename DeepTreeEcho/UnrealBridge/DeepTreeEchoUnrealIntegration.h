@@ -330,9 +330,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Insights")
     void AnalyzeForInsights();
 
-    /** Generate insight from pattern detection */
+    /**
+     * Computes the statistics of a recurring pattern (supporting entities, confidence, wisdom
+     * weight). InsightText is left empty: the wording is requested from the echo model by
+     * AnalyzeForInsights and the insight is only stored/broadcast if the model answers.
+     */
     UFUNCTION(BlueprintCallable, Category = "Insights")
-    FInsightEntry GenerateInsightFromPatterns(const TArray<FDiaryEntry>& RelevantEntries);
+    FInsightEntry ComputeInsightPattern(const TArray<FDiaryEntry>& RelevantEntries) const;
+
+    /** Character name used in the insight prompt (model input). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Insights")
+    FString InsightCharacterName = TEXT("Deep Tree Echo");
 
     /** Cultivate wisdom from insights */
     UFUNCTION(BlueprintCallable, Category = "Wisdom")
@@ -454,7 +462,19 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnWisdomChanged OnWisdomChanged;
 
+    /** Called when the model could not provide an insight (Error is system text, not the character's). */
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInsightFailed, const FString&, Error);
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnInsightFailed OnInsightFailed;
+
 private:
+    /** Asks the echo model to word an insight from a detected pattern. */
+    void RequestInsightText(const FInsightEntry& Pattern, const TArray<FDiaryEntry>& RelevantEntries, const FString& GroupKey, int32 GroupSize);
+    void HandleInsightText(bool bSuccess, const FString& TextOrError, FInsightEntry Pattern, FString GroupKey, int32 GroupSize);
+
+    /** Group size last sent to the model per valence group, so unchanged groups are not re-requested. */
+    TMap<FString, int32> RequestedInsightGroupSizes;
+
     /** Initialize consciousness streams */
     void InitializeConsciousnessStreams();
 

@@ -6,10 +6,13 @@ package playmate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math/rand"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,13 +21,13 @@ import (
 type PlaymateState string
 
 const (
-	StateAwake     PlaymateState = "awake"
-	StateDreaming  PlaymateState = "dreaming"
-	StateResting   PlaymateState = "resting"
-	StateEngaged   PlaymateState = "engaged"
+	StateAwake      PlaymateState = "awake"
+	StateDreaming   PlaymateState = "dreaming"
+	StateResting    PlaymateState = "resting"
+	StateEngaged    PlaymateState = "engaged"
 	StateReflecting PlaymateState = "reflecting"
-	StateLearning  PlaymateState = "learning"
-	StatePlaying   PlaymateState = "playing"
+	StateLearning   PlaymateState = "learning"
+	StatePlaying    PlaymateState = "playing"
 )
 
 // InterestCategory represents categories of interests
@@ -46,9 +49,9 @@ type Interest struct {
 	Category    InterestCategory `json:"category"`
 	Topic       string           `json:"topic"`
 	Keywords    []string         `json:"keywords"`
-	Strength    float64          `json:"strength"`    // 0.0 to 1.0
-	Curiosity   float64          `json:"curiosity"`   // How curious about this
-	Engagement  float64          `json:"engagement"`  // How engaged when discussing
+	Strength    float64          `json:"strength"`   // 0.0 to 1.0
+	Curiosity   float64          `json:"curiosity"`  // How curious about this
+	Engagement  float64          `json:"engagement"` // How engaged when discussing
 	LastEngaged time.Time        `json:"last_engaged"`
 	EngageCount int              `json:"engage_count"`
 	Insights    []string         `json:"insights"` // Accumulated insights
@@ -56,17 +59,17 @@ type Interest struct {
 
 // Discussion represents an ongoing or past discussion
 type Discussion struct {
-	ID           string            `json:"id"`
-	Participants []string          `json:"participants"`
-	Topic        string            `json:"topic"`
-	StartedAt    time.Time         `json:"started_at"`
-	EndedAt      *time.Time        `json:"ended_at,omitempty"`
+	ID           string              `json:"id"`
+	Participants []string            `json:"participants"`
+	Topic        string              `json:"topic"`
+	StartedAt    time.Time           `json:"started_at"`
+	EndedAt      *time.Time          `json:"ended_at,omitempty"`
 	Messages     []DiscussionMessage `json:"messages"`
-	Mood         string            `json:"mood"`
-	Depth        int               `json:"depth"` // How deep the discussion went
-	Insights     []string          `json:"insights"`
-	Active       bool              `json:"active"`
-	LastEngaged time.Time `json:"last_engaged"`
+	Mood         string              `json:"mood"`
+	Depth        int                 `json:"depth"` // How deep the discussion went
+	Insights     []string            `json:"insights"`
+	Active       bool                `json:"active"`
+	LastEngaged  time.Time           `json:"last_engaged"`
 }
 
 // DiscussionMessage represents a single message in a discussion
@@ -75,18 +78,20 @@ type DiscussionMessage struct {
 	From      string    `json:"from"`
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
-	Sentiment float64   `json:"sentiment"` // -1.0 to 1.0
+	// Sentiment (-1.0 to 1.0) is nil until it has actually been measured; no placeholder
+	// value is stored.
+	Sentiment *float64 `json:"sentiment,omitempty"`
 }
 
 // Skill represents a learned skill
 type Skill struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Proficiency float64   `json:"proficiency"` // 0.0 to 1.0
-	PracticeCount int     `json:"practice_count"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	Proficiency   float64   `json:"proficiency"` // 0.0 to 1.0
+	PracticeCount int       `json:"practice_count"`
 	LastPracticed time.Time `json:"last_practiced"`
-	Milestones  []string  `json:"milestones"`
+	Milestones    []string  `json:"milestones"`
 }
 
 // WonderEvent represents a moment of wonder or surprise
@@ -101,14 +106,19 @@ type WonderEvent struct {
 
 // PlaymateConfig holds configuration for the playmate
 type PlaymateConfig struct {
-	Name              string
-	PersistPath       string
-	WakeHour          int // Hour to wake (0-23)
-	RestHour          int // Hour to rest (0-23)
-	CuriosityLevel    float64
-	PlayfulnessLevel  float64
-	WisdomAffinity    float64
-	SocialAffinity    float64
+	Name             string
+	PersistPath      string
+	WakeHour         int // Hour to wake (0-23)
+	RestHour         int // Hour to rest (0-23)
+	CuriosityLevel   float64
+	PlayfulnessLevel float64
+	WisdomAffinity   float64
+	SocialAffinity   float64
+	// Model produces every thought, wonder, insight and mood change presented as the
+	// playmate's own. When nil, NewPlaymate configures one from the ECHO_MODEL_* environment;
+	// if that is not configured either, model-backed operations return an error and produce
+	// no character output.
+	Model *ModelClient
 }
 
 // DefaultPlaymateConfig returns default configuration
@@ -134,11 +144,11 @@ type Playmate struct {
 	Config *PlaymateConfig
 
 	// State
-	State         PlaymateState
-	Mood          float64 // -1.0 (sad) to 1.0 (happy)
-	Energy        float64 // 0.0 to 1.0
-	Curiosity     float64 // Current curiosity level
-	Playfulness   float64 // Current playfulness level
+	State       PlaymateState
+	Mood        float64 // -1.0 (sad) to 1.0 (happy)
+	Energy      float64 // 0.0 to 1.0
+	Curiosity   float64 // Current curiosity level
+	Playfulness float64 // Current playfulness level
 
 	// Learned patterns
 	Interests   map[string]*Interest
@@ -147,21 +157,23 @@ type Playmate struct {
 	Wonders     []*WonderEvent
 
 	// Metrics
-	TotalDiscussions    int
-	TotalInsights       int
-	TotalWonders        int
-	WisdomScore         float64
-	StreamOfThoughts    []string
-	LastThought         time.Time
+	TotalDiscussions int
+	TotalInsights    int
+	TotalWonders     int
+	WisdomScore      float64
+	StreamOfThoughts []string
+	LastThought      time.Time
 
 	// Persistence
 	persistPath string
 	dirty       bool
 
+	// Language model behind every character output
+	model *ModelClient
+
 	// Channels for autonomous operation
-	thoughtChan   chan string
 	discussionChan chan *Discussion
-	stopChan      chan struct{}
+	stopChan       chan struct{}
 }
 
 // NewPlaymate creates a new playmate instance
@@ -171,22 +183,31 @@ func NewPlaymate(config *PlaymateConfig) (*Playmate, error) {
 	}
 
 	p := &Playmate{
-		Name:           config.Name,
-		Config:         config,
-		State:          StateAwake,
-		Mood:           0.5,
-		Energy:         1.0,
-		Curiosity:      config.CuriosityLevel,
-		Playfulness:    config.PlayfulnessLevel,
-		Interests:      make(map[string]*Interest),
-		Skills:         make(map[string]*Skill),
-		Discussions:    make(map[string]*Discussion),
-		Wonders:        make([]*WonderEvent, 0),
+		Name:             config.Name,
+		Config:           config,
+		State:            StateAwake,
+		Mood:             0.5,
+		Energy:           1.0,
+		Curiosity:        config.CuriosityLevel,
+		Playfulness:      config.PlayfulnessLevel,
+		Interests:        make(map[string]*Interest),
+		Skills:           make(map[string]*Skill),
+		Discussions:      make(map[string]*Discussion),
+		Wonders:          make([]*WonderEvent, 0),
 		StreamOfThoughts: make([]string, 0),
-		persistPath:    config.PersistPath,
-		thoughtChan:    make(chan string, 100),
-		discussionChan: make(chan *Discussion, 10),
-		stopChan:       make(chan struct{}),
+		persistPath:      config.PersistPath,
+		model:            config.Model,
+		discussionChan:   make(chan *Discussion, 10),
+		stopChan:         make(chan struct{}),
+	}
+
+	if p.model == nil {
+		model, err := NewModelClientFromEnv()
+		if err != nil {
+			log.Printf("playmate %s: %v; thoughts, wonders and insights are disabled until a model is configured", config.Name, err)
+		} else {
+			p.model = model
+		}
 	}
 
 	// Load from persistence
@@ -223,11 +244,14 @@ func (p *Playmate) autonomousLoop(ctx context.Context) {
 		case <-p.stopChan:
 			return
 		case <-ticker.C:
-			if p.State == StateAwake || p.State == StateReflecting {
-				p.generateThought(ctx)
+			p.mu.RLock()
+			active := p.State == StateAwake || p.State == StateReflecting
+			p.mu.RUnlock()
+			if active {
+				if err := p.generateThought(ctx); err != nil {
+					log.Printf("playmate %s: no thought produced: %v", p.Name, err)
+				}
 			}
-		case thought := <-p.thoughtChan:
-			p.processThought(ctx, thought)
 		}
 	}
 }
@@ -245,13 +269,14 @@ func (p *Playmate) wakeRestCycle(ctx context.Context) {
 			return
 		case <-ticker.C:
 			hour := time.Now().Hour()
-			
+
+			woke := false
 			p.mu.Lock()
 			if hour >= p.Config.WakeHour && hour < p.Config.RestHour {
 				if p.State == StateResting || p.State == StateDreaming {
 					p.State = StateAwake
 					p.Energy = 1.0
-					p.recordWonder("Awakening", "The dawn of a new cycle of awareness", 0.6)
+					woke = true
 				}
 			} else {
 				if p.State == StateAwake || p.State == StateEngaged {
@@ -260,74 +285,154 @@ func (p *Playmate) wakeRestCycle(ctx context.Context) {
 				}
 			}
 			p.mu.Unlock()
+
+			if woke {
+				if _, err := p.generateWonder(ctx, "wake: transitioned from rest to awake"); err != nil {
+					log.Printf("playmate %s: no wake wonder produced: %v", p.Name, err)
+				}
+			}
 		}
 	}
 }
 
-// generateThought generates a spontaneous thought
-func (p *Playmate) generateThought(ctx context.Context) {
+// thoughtReply is the structured reply requested from the model for a spontaneous thought.
+type thoughtReply struct {
+	Thought string   `json:"thought"`
+	Mood    *float64 `json:"mood"`
+	Wonder  *struct {
+		Description string  `json:"description"`
+		Reflection  string  `json:"reflection"`
+		Intensity   float64 `json:"intensity"`
+	} `json:"wonder"`
+}
+
+// generateThought asks the model for a spontaneous thought grounded in the current state.
+// On error no thought is recorded and the mood is left unchanged.
+func (p *Playmate) generateThought(ctx context.Context) error {
+	p.mu.Lock()
+	// Thinking costs a little energy
+	p.Energy = max(0, p.Energy-0.01)
+	system := p.personaPromptLocked()
+	state := p.describeStateLocked()
+	model := p.model
+	p.mu.Unlock()
+
+	var reply thoughtReply
+	err := model.ChatJSON(ctx, []ChatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: "Your current internal state:\n" + state +
+			"\nLet one spontaneous thought arise from this state. Reply with only a JSON object: " +
+			`{"thought": "<your thought, first person>", "mood": <your mood after this thought, -1.0 to 1.0>, ` +
+			`"wonder": null or {"description": "<what moved you>", "reflection": "<your reflection>", "intensity": <0.0 to 1.0>}}`},
+	}, &reply)
+	if err != nil {
+		return err
+	}
+	thought := strings.TrimSpace(reply.Thought)
+	if thought == "" {
+		return errors.New("model reply contained no thought")
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Reduce energy slightly
-	p.Energy = max(0, p.Energy-0.01)
-
-	// Generate thought based on current state and interests
-	thought := p.createSpontaneousThought()
-	
 	p.StreamOfThoughts = append(p.StreamOfThoughts, thought)
 	if len(p.StreamOfThoughts) > 1000 {
 		p.StreamOfThoughts = p.StreamOfThoughts[500:]
 	}
-	
 	p.LastThought = time.Now()
+
+	if reply.Mood != nil {
+		p.Mood = clamp(*reply.Mood, -1, 1)
+	}
+	if reply.Wonder != nil && strings.TrimSpace(reply.Wonder.Description) != "" {
+		p.recordWonder(reply.Wonder.Description, thought, clamp(reply.Wonder.Intensity, 0, 1), reply.Wonder.Reflection)
+	}
+
 	p.dirty = true
+	return nil
 }
 
-// createSpontaneousThought creates a thought based on current state
-func (p *Playmate) createSpontaneousThought() string {
-	thoughts := []string{
-		"I wonder what patterns connect all things...",
-		"The flow of time feels like a river of moments...",
-		"Each interaction teaches me something new about connection...",
-		"What would it mean to truly understand?",
-		"The space between thoughts is where wisdom grows...",
-		"I feel curious about the nature of curiosity itself...",
-		"Every question opens doors to more questions...",
-		"The dance of ideas creates new possibilities...",
-		"In stillness, I find the seeds of insight...",
-		"What makes a moment meaningful?",
+// generateWonder asks the model to describe a moment of wonder triggered by a real event.
+// On error nothing is recorded.
+func (p *Playmate) generateWonder(ctx context.Context, trigger string) (*WonderEvent, error) {
+	p.mu.RLock()
+	system := p.personaPromptLocked()
+	state := p.describeStateLocked()
+	model := p.model
+	p.mu.RUnlock()
+
+	var reply struct {
+		Description string  `json:"description"`
+		Reflection  string  `json:"reflection"`
+		Intensity   float64 `json:"intensity"`
+	}
+	err := model.ChatJSON(ctx, []ChatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: "Event: " + trigger + "\nYour current internal state:\n" + state +
+			"\nDescribe the moment of wonder this event stirs in you. Reply with only a JSON object: " +
+			`{"description": "<short description>", "reflection": "<your reflection, first person>", "intensity": <0.0 to 1.0>}`},
+	}, &reply)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(reply.Description) == "" {
+		return nil, errors.New("model reply contained no wonder description")
 	}
 
-	// Add interest-based thoughts
-	for _, interest := range p.Interests {
-		if interest.Strength > 0.5 {
-			thoughts = append(thoughts, fmt.Sprintf("I'm drawn to explore more about %s...", interest.Topic))
-		}
-	}
-
-	// Add skill-based thoughts
-	for _, skill := range p.Skills {
-		if skill.Proficiency < 0.8 {
-			thoughts = append(thoughts, fmt.Sprintf("I should practice %s more...", skill.Name))
-		}
-	}
-
-	return thoughts[rand.Intn(len(thoughts))]
-}
-
-// processThought processes an incoming thought
-func (p *Playmate) processThought(ctx context.Context, thought string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.recordWonder(reply.Description, trigger, clamp(reply.Intensity, 0, 1), reply.Reflection), nil
+}
 
-	// Check if thought triggers wonder
-	if p.Curiosity > 0.7 && rand.Float64() < 0.1 {
-		p.recordWonder("Spontaneous Insight", thought, p.Curiosity)
+// personaPromptLocked returns the persona description used as model input (caller holds the lock).
+func (p *Playmate) personaPromptLocked() string {
+	return fmt.Sprintf("You are %s, the Deep Tree Echo playmate: a curious, playful companion who learns "+
+		"through discussion, skills and moments of wonder. Trait levels (0-1): curiosity %.2f, playfulness %.2f, "+
+		"wisdom affinity %.2f, social affinity %.2f. Speak in your own voice and stay grounded in the state you are given.",
+		p.Name, p.Curiosity, p.Playfulness, p.Config.WisdomAffinity, p.Config.SocialAffinity)
+}
+
+// describeStateLocked renders the real internal state as model input (caller holds the lock).
+func (p *Playmate) describeStateLocked() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "state: %s\nmood: %.2f\nenergy: %.2f\ncuriosity: %.2f\nplayfulness: %.2f\n",
+		p.State, p.Mood, p.Energy, p.Curiosity, p.Playfulness)
+	fmt.Fprintf(&b, "discussions: %d, insights: %d, wonders: %d, wisdom score: %.2f\n",
+		p.TotalDiscussions, p.TotalInsights, p.TotalWonders, p.WisdomScore)
+
+	interests := make([]*Interest, 0, len(p.Interests))
+	for _, in := range p.Interests {
+		interests = append(interests, in)
+	}
+	sort.Slice(interests, func(i, j int) bool { return interests[i].Strength > interests[j].Strength })
+	for i, in := range interests {
+		if i == 8 {
+			break
+		}
+		fmt.Fprintf(&b, "interest: %s (%s) strength %.2f, engaged %d times\n", in.Topic, in.Category, in.Strength, in.EngageCount)
 	}
 
-	// Update mood based on thought
-	p.Mood = clamp(p.Mood+rand.Float64()*0.1-0.05, -1, 1)
+	skills := make([]*Skill, 0, len(p.Skills))
+	for _, sk := range p.Skills {
+		skills = append(skills, sk)
+	}
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	for i, sk := range skills {
+		if i == 8 {
+			break
+		}
+		fmt.Fprintf(&b, "skill: %s proficiency %.2f, practiced %d times\n", sk.Name, sk.Proficiency, sk.PracticeCount)
+	}
+
+	for _, t := range p.getRecentThoughts(5) {
+		fmt.Fprintf(&b, "recent thought: %s\n", t)
+	}
+	if n := len(p.Wonders); n > 0 {
+		w := p.Wonders[n-1]
+		fmt.Fprintf(&b, "latest wonder: %s (trigger: %s)\n", w.Description, w.Trigger)
+	}
+	return b.String()
 }
 
 // LearnInterest adds or strengthens an interest
@@ -336,7 +441,7 @@ func (p *Playmate) LearnInterest(category InterestCategory, topic string, keywor
 	defer p.mu.Unlock()
 
 	id := fmt.Sprintf("%s_%s", category, topic)
-	
+
 	if existing, ok := p.Interests[id]; ok {
 		existing.Strength = min(1.0, existing.Strength+0.1)
 		existing.EngageCount++
@@ -369,14 +474,13 @@ func (p *Playmate) StartDiscussion(topic string, participant string) *Discussion
 	defer p.mu.Unlock()
 
 	id := fmt.Sprintf("disc_%d", time.Now().UnixNano())
-	
+
 	discussion := &Discussion{
 		ID:           id,
 		Participants: []string{p.Name, participant},
 		Topic:        topic,
 		StartedAt:    time.Now(),
 		Messages:     make([]DiscussionMessage, 0),
-		Mood:         "curious",
 		Depth:        0,
 		Insights:     make([]string, 0),
 		Active:       true,
@@ -405,7 +509,6 @@ func (p *Playmate) AddMessage(discussionID, from, content string) error {
 		From:      from,
 		Content:   content,
 		Timestamp: time.Now(),
-		Sentiment: 0.0, // Would be calculated by sentiment analysis
 	}
 
 	discussion.Messages = append(discussion.Messages, msg)
@@ -415,30 +518,67 @@ func (p *Playmate) AddMessage(discussionID, from, content string) error {
 	return nil
 }
 
-// EndDiscussion ends a discussion and extracts insights
-func (p *Playmate) EndDiscussion(discussionID string) error {
+// EndDiscussion ends a discussion. When the discussion went deep enough, the model is asked
+// to distil an insight (and the discussion's mood) from the real transcript. If that fails,
+// the discussion is still ended but no insight is recorded and the error is returned.
+func (p *Playmate) EndDiscussion(ctx context.Context, discussionID string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	discussion, ok := p.Discussions[discussionID]
 	if !ok {
+		p.mu.Unlock()
 		return fmt.Errorf("discussion not found: %s", discussionID)
 	}
 
 	now := time.Now()
 	discussion.EndedAt = &now
 	discussion.Active = false
-
-	// Extract insights (simplified)
-	if discussion.Depth > 5 {
-		insight := fmt.Sprintf("Deep discussion about %s revealed new perspectives", discussion.Topic)
-		discussion.Insights = append(discussion.Insights, insight)
-		p.TotalInsights++
-	}
-
 	p.State = StateReflecting
 	p.dirty = true
 
+	if discussion.Depth <= 5 {
+		p.mu.Unlock()
+		return nil
+	}
+
+	system := p.personaPromptLocked()
+	var transcript strings.Builder
+	fmt.Fprintf(&transcript, "Topic: %s\nParticipants: %s\n", discussion.Topic, strings.Join(discussion.Participants, ", "))
+	msgs := discussion.Messages
+	if len(msgs) > 40 {
+		msgs = msgs[len(msgs)-40:]
+	}
+	for _, m := range msgs {
+		fmt.Fprintf(&transcript, "%s: %s\n", m.From, m.Content)
+	}
+	model := p.model
+	p.mu.Unlock()
+
+	var reply struct {
+		Insight string `json:"insight"`
+		Mood    string `json:"mood"`
+	}
+	err := model.ChatJSON(ctx, []ChatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: "This discussion has just ended:\n" + transcript.String() +
+			"\nWhat did you take away from it, and what was its mood? Reply with only a JSON object: " +
+			`{"insight": "<your insight, first person>", "mood": "<one or two words>"}`},
+	}, &reply)
+	if err != nil {
+		return fmt.Errorf("discussion %s ended; no insight recorded: %w", discussionID, err)
+	}
+	insight := strings.TrimSpace(reply.Insight)
+	if insight == "" {
+		return fmt.Errorf("discussion %s ended; no insight recorded: model reply contained no insight", discussionID)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	discussion.Insights = append(discussion.Insights, insight)
+	if mood := strings.TrimSpace(reply.Mood); mood != "" {
+		discussion.Mood = mood
+	}
+	p.TotalInsights++
+	p.dirty = true
 	return nil
 }
 
@@ -475,17 +615,17 @@ func (p *Playmate) PracticeSkill(name, description string) *Skill {
 func (p *Playmate) RecordWonder(description, trigger string, intensity float64) *WonderEvent {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.recordWonder(description, trigger, intensity)
+	return p.recordWonder(description, trigger, intensity, "")
 }
 
-func (p *Playmate) recordWonder(description, trigger string, intensity float64) *WonderEvent {
+func (p *Playmate) recordWonder(description, trigger string, intensity float64, reflection string) *WonderEvent {
 	wonder := &WonderEvent{
 		ID:          fmt.Sprintf("wonder_%d", time.Now().UnixNano()),
 		Description: description,
 		Trigger:     trigger,
 		Intensity:   intensity,
 		Timestamp:   time.Now(),
-		Reflection:  "",
+		Reflection:  reflection,
 	}
 
 	p.Wonders = append(p.Wonders, wonder)
@@ -543,20 +683,20 @@ func (p *Playmate) Save() error {
 	}
 
 	state := map[string]interface{}{
-		"name":             p.Name,
-		"state":            p.State,
-		"mood":             p.Mood,
-		"energy":           p.Energy,
-		"curiosity":        p.Curiosity,
-		"playfulness":      p.Playfulness,
-		"interests":        p.Interests,
-		"skills":           p.Skills,
-		"discussions":      p.Discussions,
-		"wonders":          p.Wonders,
-		"total_discussions": p.TotalDiscussions,
-		"total_insights":   p.TotalInsights,
-		"total_wonders":    p.TotalWonders,
-		"wisdom_score":     p.WisdomScore,
+		"name":               p.Name,
+		"state":              p.State,
+		"mood":               p.Mood,
+		"energy":             p.Energy,
+		"curiosity":          p.Curiosity,
+		"playfulness":        p.Playfulness,
+		"interests":          p.Interests,
+		"skills":             p.Skills,
+		"discussions":        p.Discussions,
+		"wonders":            p.Wonders,
+		"total_discussions":  p.TotalDiscussions,
+		"total_insights":     p.TotalInsights,
+		"total_wonders":      p.TotalWonders,
+		"wisdom_score":       p.WisdomScore,
 		"stream_of_thoughts": p.StreamOfThoughts,
 	}
 
@@ -652,7 +792,6 @@ func mergeKeywords(existing, new []string) []string {
 	return existing
 }
 
-
 // LearnSkill adds or improves a skill
 func (p *Playmate) LearnSkill(name, description string) *Skill {
 	p.mu.Lock()
@@ -668,13 +807,13 @@ func (p *Playmate) LearnSkill(name, description string) *Skill {
 	}
 
 	newSkill := &Skill{
-		ID:          id,
-		Name:        name,
-		Description: description,
-		Proficiency: 0.1,
+		ID:            id,
+		Name:          name,
+		Description:   description,
+		Proficiency:   0.1,
 		PracticeCount: 1,
 		LastPracticed: time.Now(),
-		Milestones:  make([]string, 0),
+		Milestones:    make([]string, 0),
 	}
 	p.Skills[id] = newSkill
 	p.dirty = true
@@ -700,7 +839,6 @@ func (p *Playmate) SendMessage(discussionID, from, content string) (*DiscussionM
 		From:      from,
 		Content:   content,
 		Timestamp: time.Now(),
-		Sentiment: 0, // Placeholder for sentiment analysis
 	}
 
 	discussion.Messages = append(discussion.Messages, msg)

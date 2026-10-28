@@ -40,8 +40,7 @@ void UAvatarAtomSpaceClient::BeginPlay()
 
 void UAvatarAtomSpaceClient::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-    // Sync any pending changes before shutdown
-    if (PendingChanges.Num() > 0)
+    if (PendingChanges.Num() > 0 && bConnected)
     {
         SyncWithServer();
     }
@@ -95,16 +94,19 @@ void UAvatarAtomSpaceClient::InitializeAvatarConcept()
 
 // ===== Connection Management =====
 
-void UAvatarAtomSpaceClient::Connect(const FString& Host, int32 Port)
+bool UAvatarAtomSpaceClient::Connect(const FString& Host, int32 Port)
 {
     ServerHost = Host;
     ServerPort = Port;
 
-    // Simulate connection (in real implementation, would establish network connection)
-    bConnected = true;
-
-    OnConnectionStateChanged.Broadcast(true);
-    UE_LOG(LogAtomSpace, Log, TEXT("Connected to AtomSpace at %s:%d"), *ServerHost, ServerPort);
+    // There is no AtomSpace network transport in this client; do not claim a connection.
+    bConnected = false;
+    LastConnectionError = FString::Printf(
+        TEXT("AtomSpace transport not implemented: cannot connect to %s:%d; atoms stay in the local cache only"),
+        *ServerHost, ServerPort);
+    UE_LOG(LogAtomSpace, Error, TEXT("%s"), *LastConnectionError);
+    OnConnectionStateChanged.Broadcast(false);
+    return false;
 }
 
 void UAvatarAtomSpaceClient::Disconnect()
@@ -242,8 +244,8 @@ void UAvatarAtomSpaceClient::StoreDiaryEntry(const FDiaryEntry& Entry)
     EvalOutgoing.Add(ListLink);
     CreateLink(EAtomType::EvaluationLink, EvalOutgoing, TV);
 
-    // Store content as state
-    // In a full implementation, this would store the actual content
+    // Keep the full entry (content included) so it can be served back verbatim.
+    DiaryStore.Add(Entry.EntryId, Entry);
 
     UE_LOG(LogAtomSpace, Log, TEXT("Stored diary entry: %s"), *Entry.EntryId);
 }
@@ -251,48 +253,45 @@ void UAvatarAtomSpaceClient::StoreDiaryEntry(const FDiaryEntry& Entry)
 FDiaryEntry UAvatarAtomSpaceClient::GetDiaryEntry(const FString& EntryId)
 {
     FDiaryEntry Entry;
-    Entry.EntryId = EntryId;
-
-    // Query AtomSpace for entry
-    TArray<FAtomHandle> Handles = FindByName(EntryId);
-    if (Handles.Num() > 0)
+    if (!TryGetDiaryEntry(EntryId, Entry))
     {
-        FAtom Atom = GetAtom(Handles[0]);
-        Entry.Timestamp = Atom.CreatedAt;
-        // In full implementation, would reconstruct content from links
+        Entry = FDiaryEntry();
+        Entry.EntryId = EntryId;
     }
-
     return Entry;
+}
+
+bool UAvatarAtomSpaceClient::TryGetDiaryEntry(const FString& EntryId, FDiaryEntry& OutEntry) const
+{
+    if (const FDiaryEntry* Found = DiaryStore.Find(EntryId))
+    {
+        OutEntry = *Found;
+        return true;
+    }
+    return false;
+}
+
+TArray<FString> UAvatarAtomSpaceClient::ListDiaryEntryIds() const
+{
+    TArray<FString> Ids;
+    DiaryStore.GetKeys(Ids);
+    return Ids;
 }
 
 TArray<FDiaryEntry> UAvatarAtomSpaceClient::GetRecentDiaryEntries(int32 Count)
 {
     TArray<FDiaryEntry> Entries;
+    DiaryStore.GenerateValueArray(Entries);
 
-    // Find all diary entry nodes, sort by timestamp
-    TArray<FAtomHandle> DiaryHandles = FindByType(EAtomType::DiaryEntryNode);
-
-    // Sort by creation time (most recent first)
-    TArray<FAtom> DiaryAtoms;
-    for (const FAtomHandle& Handle : DiaryHandles)
-    {
-        DiaryAtoms.Add(GetAtom(Handle));
-    }
-
-    DiaryAtoms.Sort([](const FAtom& A, const FAtom& B) {
-        return A.CreatedAt > B.CreatedAt;
+    // Most recent first
+    Entries.Sort([](const FDiaryEntry& A, const FDiaryEntry& B) {
+        return A.Timestamp > B.Timestamp;
     });
 
-    // Return top Count entries
-    int32 ResultCount = FMath::Min(Count, DiaryAtoms.Num());
-    for (int32 i = 0; i < ResultCount; i++)
+    if (Entries.Num() > Count)
     {
-        FDiaryEntry Entry;
-        Entry.EntryId = DiaryAtoms[i].Name;
-        Entry.Timestamp = DiaryAtoms[i].CreatedAt;
-        Entries.Add(Entry);
+        Entries.SetNum(FMath::Max(0, Count));
     }
-
     return Entries;
 }
 
@@ -300,19 +299,16 @@ TArray<FDiaryEntry> UAvatarAtomSpaceClient::SearchDiaryEntries(const FString& Qu
 {
     TArray<FDiaryEntry> Results;
 
-    // Simple pattern matching search
-    TArray<FAtomHandle> Handles = FindByName(TEXT("*") + Query + TEXT("*"));
-
-    int32 Count = FMath::Min(MaxResults, Handles.Num());
-    for (int32 i = 0; i < Count; i++)
+    for (const auto& Pair : DiaryStore)
     {
-        FAtom Atom = GetAtom(Handles[i]);
-        if (Atom.Type == EAtomType::DiaryEntryNode)
+        const FDiaryEntry& Entry = Pair.Value;
+        if (Entry.EntryId.Contains(Query) || Entry.Content.Contains(Query) || Entry.Tags.Contains(Query))
         {
-            FDiaryEntry Entry;
-            Entry.EntryId = Atom.Name;
-            Entry.Timestamp = Atom.CreatedAt;
             Results.Add(Entry);
+            if (Results.Num() >= MaxResults)
+            {
+                break;
+            }
         }
     }
 
@@ -350,6 +346,9 @@ void UAvatarAtomSpaceClient::StoreInsight(const FInsight& Insight)
         }
     }
 
+    // Keep the full insight (content included) so it can be served back verbatim.
+    InsightStore.Add(Insight.InsightId, Insight);
+
     UE_LOG(LogAtomSpace, Log, TEXT("Stored insight: %s (category: %s, confidence: %.2f)"),
         *Insight.InsightId, *Insight.Category, Insight.Confidence);
 }
@@ -357,38 +356,55 @@ void UAvatarAtomSpaceClient::StoreInsight(const FInsight& Insight)
 FInsight UAvatarAtomSpaceClient::GetInsight(const FString& InsightId)
 {
     FInsight Insight;
-    Insight.InsightId = InsightId;
-
-    TArray<FAtomHandle> Handles = FindByName(InsightId);
-    if (Handles.Num() > 0)
+    if (!TryGetInsight(InsightId, Insight))
     {
-        FAtom Atom = GetAtom(Handles[0]);
-        Insight.Confidence = Atom.TruthValue.Strength;
-        Insight.DiscoveredAt = Atom.CreatedAt;
+        Insight = FInsight();
+        Insight.InsightId = InsightId;
     }
-
     return Insight;
+}
+
+bool UAvatarAtomSpaceClient::TryGetInsight(const FString& InsightId, FInsight& OutInsight) const
+{
+    if (const FInsight* Found = InsightStore.Find(InsightId))
+    {
+        OutInsight = *Found;
+        return true;
+    }
+    return false;
+}
+
+TArray<FString> UAvatarAtomSpaceClient::ListInsightIds() const
+{
+    TArray<FString> Ids;
+    InsightStore.GetKeys(Ids);
+    return Ids;
 }
 
 TArray<FInsight> UAvatarAtomSpaceClient::GetRelatedInsights(const FString& Context, int32 MaxResults)
 {
-    TArray<FInsight> Results;
-
-    // Find insights related to context
-    TArray<FAtomHandle> InsightHandles = FindByType(EAtomType::InsightNode);
-
-    int32 Count = FMath::Min(MaxResults, InsightHandles.Num());
-    for (int32 i = 0; i < Count; i++)
+    // Stored insights, those mentioning the context (category or content) first.
+    TArray<FInsight> Matching;
+    TArray<FInsight> Others;
+    for (const auto& Pair : InsightStore)
     {
-        FAtom Atom = GetAtom(InsightHandles[i]);
-        FInsight Insight;
-        Insight.InsightId = Atom.Name;
-        Insight.Confidence = Atom.TruthValue.Strength;
-        Insight.DiscoveredAt = Atom.CreatedAt;
-        Results.Add(Insight);
+        const FInsight& Insight = Pair.Value;
+        if (!Context.IsEmpty() && (Insight.Category.Contains(Context) || Insight.Content.Contains(Context)))
+        {
+            Matching.Add(Insight);
+        }
+        else
+        {
+            Others.Add(Insight);
+        }
     }
 
-    return Results;
+    Matching.Append(Others);
+    if (Matching.Num() > MaxResults)
+    {
+        Matching.SetNum(FMath::Max(0, MaxResults));
+    }
+    return Matching;
 }
 
 void UAvatarAtomSpaceClient::ValidateInsight(const FString& InsightId, bool bValid)
@@ -401,6 +417,11 @@ void UAvatarAtomSpaceClient::ValidateInsight(const FString& InsightId, bool bVal
         TV.Confidence = FMath::Min(1.0f, TV.Confidence + 0.05f);
         TV.Count++;
         SetTruthValue(Handles[0], TV);
+    }
+
+    if (FInsight* Stored = InsightStore.Find(InsightId))
+    {
+        Stored->bIsValidated = bValid;
     }
 }
 
@@ -584,61 +605,85 @@ TArray<FAtomHandle> UAvatarAtomSpaceClient::FindByType(EAtomType Type)
 
 // ===== Pattern Mining =====
 
-TArray<FInsight> UAvatarAtomSpaceClient::MinePatterns(int32 MinSupport)
+TMap<FString, int32> UAvatarAtomSpaceClient::CountFrequentConcepts(int32 MinSupport)
 {
-    TArray<FInsight> DiscoveredInsights;
-
-    // Simple frequency-based pattern mining
     TMap<FString, int32> ConceptFrequency;
-
-    for (auto& Pair : AtomCache)
+    for (const auto& Pair : AtomCache)
     {
         if (Pair.Value.Type == EAtomType::ConceptNode)
         {
-            int32& Count = ConceptFrequency.FindOrAdd(Pair.Value.Name);
-            Count++;
+            ConceptFrequency.FindOrAdd(Pair.Value.Name)++;
         }
     }
 
-    // Find frequent patterns
-    for (auto& FreqPair : ConceptFrequency)
+    TMap<FString, int32> Frequent;
+    for (const auto& FreqPair : ConceptFrequency)
     {
         if (FreqPair.Value >= MinSupport)
         {
-            FInsight Insight;
-            Insight.InsightId = GenerateUniqueId();
-            Insight.Content = FString::Printf(TEXT("Frequent pattern: %s (count: %d)"), *FreqPair.Key, FreqPair.Value);
-            Insight.Category = TEXT("frequency_pattern");
-            Insight.Confidence = FMath::Min(1.0f, FreqPair.Value / 10.0f);
-            Insight.DiscoveredAt = FDateTime::Now();
-            DiscoveredInsights.Add(Insight);
+            Frequent.Add(FreqPair.Key, FreqPair.Value);
+        }
+    }
+    return Frequent;
+}
+
+float UAvatarAtomSpaceClient::ComputeCooccurrence(const FString& ConceptA, const FString& ConceptB)
+{
+    TArray<FAtomHandle> HandlesA = FindByName(ConceptA);
+    TArray<FAtomHandle> HandlesB = FindByName(ConceptB);
+    if (HandlesA.Num() == 0 || HandlesB.Num() == 0)
+    {
+        return -1.0f;
+    }
+
+    TSet<uint64> SetA;
+    TSet<uint64> SetB;
+    for (const FAtomHandle& H : HandlesA) { SetA.Add(H.Handle); }
+    for (const FAtomHandle& H : HandlesB) { SetB.Add(H.Handle); }
+
+    // Count links whose outgoing set touches A, B, or both.
+    int32 Both = 0;
+    int32 Either = 0;
+    for (const auto& Pair : AtomCache)
+    {
+        const FAtom& Link = Pair.Value;
+        if (Link.Outgoing.Num() == 0)
+        {
+            continue;
+        }
+        bool bHasA = false;
+        bool bHasB = false;
+        for (const FAtomHandle& Out : Link.Outgoing)
+        {
+            bHasA |= SetA.Contains(Out.Handle);
+            bHasB |= SetB.Contains(Out.Handle);
+        }
+        if (bHasA || bHasB)
+        {
+            ++Either;
+            if (bHasA && bHasB)
+            {
+                ++Both;
+            }
         }
     }
 
-    return DiscoveredInsights;
-}
+    const float Cooccurrence = Either > 0 ? static_cast<float>(Both) / static_cast<float>(Either) : 0.0f;
 
-void UAvatarAtomSpaceClient::DiscoverCorrelations(const FString& ConceptA, const FString& ConceptB)
-{
-    // Find links that connect both concepts
-    TArray<FAtomHandle> HandlesA = FindByName(ConceptA);
-    TArray<FAtomHandle> HandlesB = FindByName(ConceptB);
+    // Record the measurement: (EvaluationLink (PredicateNode "cooccurs_with") (ListLink A B)).
+    // Confidence grows with the amount of evidence (n / (n + k), k = 10).
+    const FTruthValue TV(Cooccurrence, static_cast<float>(Either) / (static_cast<float>(Either) + 10.0f), Either);
+    FAtomHandle Predicate = CreateNode(EAtomType::PredicateNode, TEXT("cooccurs_with"), TV);
+    TArray<FAtomHandle> ListOutgoing;
+    ListOutgoing.Add(HandlesA[0]);
+    ListOutgoing.Add(HandlesB[0]);
+    FAtomHandle ListLink = CreateLink(EAtomType::ListLink, ListOutgoing, TV);
+    TArray<FAtomHandle> EvalOutgoing;
+    EvalOutgoing.Add(Predicate);
+    EvalOutgoing.Add(ListLink);
+    CreateLink(EAtomType::EvaluationLink, EvalOutgoing, TV);
 
-    if (HandlesA.Num() > 0 && HandlesB.Num() > 0)
-    {
-        // Check for existing correlation link
-        // In full implementation, would analyze co-occurrence patterns
-        float Correlation = 0.5f; // Placeholder
-
-        // Store correlation as an insight
-        FInsight CorrelationInsight;
-        CorrelationInsight.InsightId = GenerateUniqueId();
-        CorrelationInsight.Content = FString::Printf(TEXT("Correlation discovered: %s <-> %s (%.2f)"),
-            *ConceptA, *ConceptB, Correlation);
-        CorrelationInsight.Category = TEXT("correlation");
-        CorrelationInsight.Confidence = Correlation;
-        StoreInsight(CorrelationInsight);
-    }
+    return Cooccurrence;
 }
 
 // ===== Echo Resonance Integration =====
@@ -705,9 +750,9 @@ TArray<FString> UAvatarAtomSpaceClient::GetResonantMemories(const FString& Curre
 
 // ===== Synchronization =====
 
-void UAvatarAtomSpaceClient::SyncWithServer()
+bool UAvatarAtomSpaceClient::SyncWithServer()
 {
-    ProcessPendingChanges();
+    return ProcessPendingChanges();
 }
 
 void UAvatarAtomSpaceClient::EnableAutoSync(bool bEnable, float IntervalSeconds)
@@ -716,21 +761,18 @@ void UAvatarAtomSpaceClient::EnableAutoSync(bool bEnable, float IntervalSeconds)
     SyncInterval = FMath::Max(0.5f, IntervalSeconds);
 }
 
-void UAvatarAtomSpaceClient::ProcessPendingChanges()
+bool UAvatarAtomSpaceClient::ProcessPendingChanges()
 {
     if (PendingChanges.Num() == 0)
     {
-        return;
+        return true;
     }
 
-    if (bVerboseLogging)
-    {
-        UE_LOG(LogAtomSpace, Verbose, TEXT("Syncing %d pending changes to AtomSpace"), PendingChanges.Num());
-    }
-
-    // In full implementation, would serialize and send to AtomSpace server
-    // For now, just clear pending changes (local cache only)
-    PendingChanges.Empty();
+    // There is no server transport; never report changes as synced.
+    UE_LOG(LogAtomSpace, Warning,
+        TEXT("%d pending AtomSpace changes NOT synced: no AtomSpace server transport is implemented"),
+        PendingChanges.Num());
+    return false;
 }
 
 // ===== Helper Methods =====

@@ -609,7 +609,11 @@ public:
     // PUBLIC API - HOLISTIC INSIGHTS
     // ========================================
 
-    /** Generate holistic insights from current state */
+    /**
+     * Diagnostic readings of the metamodel state that crossed their thresholds
+     * ("metric value > threshold"). Measurement labels for tooling/logs; never voiced as the
+     * character's own insight (character insights come only from the model).
+     */
     UFUNCTION(BlueprintCallable, Category = "Metamodel|Insights")
     TArray<FString> GenerateHolisticInsights() const;
 

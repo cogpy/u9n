@@ -2,8 +2,18 @@
 #include "Kismet/GameplayStatics.h"
 #include "Components/AudioComponent.h"
 #include "Sound/SoundBase.h"
-#include "Avatar/AvatarAnimInstance.h"
+#include "Sound/SoundWaveProcedural.h"
 #include "Personality/PersonalityTraitSystem.h"
+#include "EchoCharacterReaction.h"
+#include "HttpModule.h"
+#include "Interfaces/IHttpRequest.h"
+#include "Interfaces/IHttpResponse.h"
+#include "HAL/PlatformMisc.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogAvatarAudio, Log, All);
 
 UAudioManagerComponent::UAudioManagerComponent()
 {
@@ -13,6 +23,8 @@ UAudioManagerComponent::UAudioManagerComponent()
     BasePitch = 1.0f;
     BaseSpeed = 1.0f;
     MusicFadeSpeed = 1.0f;
+    TtsVoice = TEXT("alloy");
+    TtsSampleRate = 24000;
     
     CurrentEmotion = EAvatarEmotionalState::Neutral;
     CurrentEmotionalIntensity = 0.5f;
@@ -25,6 +37,73 @@ void UAudioManagerComponent::BeginPlay()
     Super::BeginPlay();
     
     InitializeAudioComponents();
+    ApplyTtsEnvironment();
+
+    // Voice and reaction sound effects follow only model-produced reactions.
+    ReactionHandle = FEchoReactionBus::OnReaction().AddUObject(this, &UAudioManagerComponent::HandleReaction);
+
+    if (!IsTextToSpeechConfigured())
+    {
+        UE_LOG(LogAvatarAudio, Warning,
+            TEXT("No TTS model configured (set ECHO_TTS_BASE_URL and ECHO_TTS_MODEL): utterances are captioned only, no voice audio is played"));
+    }
+}
+
+void UAudioManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+    ReactionHandle.Reset();
+    Super::EndPlay(EndPlayReason);
+}
+
+void UAudioManagerComponent::ApplyTtsEnvironment()
+{
+    const FString EnvUrl = FPlatformMisc::GetEnvironmentVariable(TEXT("ECHO_TTS_BASE_URL"));
+    const FString EnvModel = FPlatformMisc::GetEnvironmentVariable(TEXT("ECHO_TTS_MODEL"));
+    const FString EnvVoice = FPlatformMisc::GetEnvironmentVariable(TEXT("ECHO_TTS_VOICE"));
+    FString EnvKey = FPlatformMisc::GetEnvironmentVariable(TEXT("ECHO_TTS_API_KEY"));
+    if (EnvKey.IsEmpty())
+    {
+        EnvKey = FPlatformMisc::GetEnvironmentVariable(TEXT("ECHO_MODEL_API_KEY"));
+    }
+    if (!EnvUrl.IsEmpty()) TtsBaseUrl = EnvUrl;
+    if (!EnvModel.IsEmpty()) TtsModel = EnvModel;
+    if (!EnvVoice.IsEmpty()) TtsVoice = EnvVoice;
+    if (!EnvKey.IsEmpty() && TtsApiKey.IsEmpty()) TtsApiKey = EnvKey;
+    TtsBaseUrl.RemoveFromEnd(TEXT("/"));
+}
+
+bool UAudioManagerComponent::IsTextToSpeechConfigured() const
+{
+    return !TtsBaseUrl.IsEmpty() && !TtsModel.IsEmpty();
+}
+
+void UAudioManagerComponent::HandleReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() && Reaction.CharacterName != ReactionCharacterName)
+    {
+        return;
+    }
+
+    if (!Reaction.Utterance.IsEmpty())
+    {
+        Speak(Reaction.Utterance, Reaction.Intensity);
+    }
+
+    // Sound effects keyed by the model-chosen gesture / expression (designer-assigned assets).
+    if (!Reaction.Gesture.IsEmpty())
+    {
+        PlayGestureSound(FName(*Reaction.Gesture));
+    }
+    if (!Reaction.Expression.IsEmpty())
+    {
+        const UEnum* EmotionEnum = StaticEnum<EAvatarEmotionalState>();
+        const int64 Value = EmotionEnum ? EmotionEnum->GetValueByNameString(Reaction.Expression) : INDEX_NONE;
+        if (Value != INDEX_NONE)
+        {
+            PlayEmotionalSound(static_cast<EAvatarEmotionalState>(Value), Reaction.Intensity);
+        }
+    }
 }
 
 void UAudioManagerComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -46,11 +125,6 @@ void UAudioManagerComponent::InitializeAudioComponents()
         VoiceAudioComponent->AttachToComponent(GetOwner()->GetRootComponent(), 
                                                FAttachmentTransformRules::KeepRelativeTransform);
         VoiceAudioComponent->bAutoActivate = false;
-        
-        if (VoiceBase)
-        {
-            VoiceAudioComponent->SetSound(VoiceBase);
-        }
     }
     
     // Create music layer components (4 layers)
@@ -90,33 +164,87 @@ void UAudioManagerComponent::InitializeAudioComponents()
 
 void UAudioManagerComponent::Speak(const FString& Text, float EmotionalIntensity)
 {
-    if (!VoiceAudioComponent)
+    if (Text.TrimStartAndEnd().IsEmpty())
     {
         return;
     }
-    
-    // Modulate pitch based on emotional intensity
-    float ModulatedPitch = BasePitch * FMath::Lerp(0.9f, 1.1f, EmotionalIntensity);
-    VoiceAudioComponent->SetPitchMultiplier(ModulatedPitch);
-    
-    // Modulate speed
-    float ModulatedSpeed = BaseSpeed * FMath::Lerp(0.95f, 1.05f, EmotionalIntensity);
-    // Note: Speed modulation would require time stretching, which is more complex
-    
-    // Play voice
-    VoiceAudioComponent->Play();
-    
-    // Trigger lip sync if avatar anim instance is available
-    UAvatarAnimInstance* AnimInstance = Cast<UAvatarAnimInstance>(
-        GetOwner()->FindComponentByClass<USkeletalMeshComponent>()->GetAnimInstance()
-    );
-    
-    if (AnimInstance)
+
+    // Captions always carry the exact text being said.
+    OnSpeechCaption.Broadcast(Text);
+
+    if (!IsTextToSpeechConfigured())
     {
-        // Calculate duration (would need actual audio duration)
-        float Duration = Text.Len() * 0.05f;  // Rough estimate: 50ms per character
-        AnimInstance->StartLipSync(Text, Duration);
+        UE_LOG(LogAvatarAudio, Verbose, TEXT("No TTS model configured; utterance captioned without voice audio"));
+        return;
     }
+
+    TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+    Body->SetStringField(TEXT("model"), TtsModel);
+    Body->SetStringField(TEXT("input"), Text);
+    Body->SetStringField(TEXT("voice"), TtsVoice);
+    Body->SetStringField(TEXT("response_format"), TEXT("pcm"));
+    FString Payload;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Payload);
+    FJsonSerializer::Serialize(Body, Writer);
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+    Request->SetURL(TtsBaseUrl + TEXT("/audio/speech"));
+    Request->SetVerb(TEXT("POST"));
+    Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+    if (!TtsApiKey.IsEmpty())
+    {
+        Request->SetHeader(TEXT("Authorization"), TEXT("Bearer ") + TtsApiKey);
+    }
+    Request->SetContentAsString(Payload);
+
+    TWeakObjectPtr<UAudioManagerComponent> WeakThis(this);
+    Request->OnProcessRequestComplete().BindLambda(
+        [WeakThis, EmotionalIntensity](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
+        {
+            UAudioManagerComponent* Self = WeakThis.Get();
+            if (!Self)
+            {
+                return;
+            }
+            if (!bConnected || !Response.IsValid())
+            {
+                UE_LOG(LogAvatarAudio, Error, TEXT("TTS request failed: no response; utterance not voiced"));
+                return;
+            }
+            const int32 Code = Response->GetResponseCode();
+            if (Code < 200 || Code >= 300)
+            {
+                UE_LOG(LogAvatarAudio, Error, TEXT("TTS request failed: HTTP %d: %s; utterance not voiced"),
+                    Code, *Response->GetContentAsString().Left(256));
+                return;
+            }
+            Self->PlaySynthesizedSpeech(Response->GetContent(), EmotionalIntensity);
+        });
+
+    if (!Request->ProcessRequest())
+    {
+        UE_LOG(LogAvatarAudio, Error, TEXT("TTS request could not be started; utterance not voiced"));
+    }
+}
+
+void UAudioManagerComponent::PlaySynthesizedSpeech(const TArray<uint8>& Pcm16, float EmotionalIntensity)
+{
+    if (!VoiceAudioComponent || Pcm16.Num() < 2)
+    {
+        UE_LOG(LogAvatarAudio, Error, TEXT("TTS returned no audio; utterance not voiced"));
+        return;
+    }
+
+    USoundWaveProcedural* Wave = NewObject<USoundWaveProcedural>(this);
+    Wave->SetSampleRate(static_cast<uint32>(TtsSampleRate));
+    Wave->NumChannels = 1;
+    Wave->bLooping = false;
+    Wave->QueueAudio(Pcm16.GetData(), Pcm16.Num() - (Pcm16.Num() % 2));
+
+    // Prosody follows the model-chosen intensity.
+    VoiceAudioComponent->SetPitchMultiplier(BasePitch * FMath::Lerp(0.95f, 1.05f, EmotionalIntensity));
+    VoiceAudioComponent->SetSound(Wave);
+    VoiceAudioComponent->Play();
 }
 
 void UAudioManagerComponent::SetVoicePitch(float Pitch)
@@ -143,7 +271,7 @@ void UAudioManagerComponent::UpdateVoiceModulation(float DeltaTime)
     
     // Get personality system for confidence
     UPersonalityTraitSystem* PersonalitySystem = GetOwner()->FindComponentByClass<UPersonalityTraitSystem>();
-    float Confidence = PersonalitySystem ? PersonalitySystem->GetConfidence() : 0.7f;
+    const float Confidence = PersonalitySystem ? PersonalitySystem->GetSuperHotGirlTrait().Confidence : 0.7f;
     
     // Modulate pitch based on current emotion
     float TargetPitch = BasePitch;

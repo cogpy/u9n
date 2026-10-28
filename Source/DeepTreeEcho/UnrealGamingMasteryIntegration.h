@@ -401,9 +401,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Integration|Input")
     TMap<FString, float> AnalyzeInputSequence(const TArray<FString>& InputSequence) const;
 
-    /** Get input improvement suggestions */
+    /**
+     * Ask the companion (model) for input improvement suggestions based on the measured input
+     * timing quality. Result arrives on OnCoachingReady / OnCoachingFailed (topic "input_improvement").
+     */
     UFUNCTION(BlueprintCallable, Category = "Integration|Input")
-    TArray<FString> GetInputImprovementSuggestions() const;
+    void RequestInputImprovementSuggestions();
 
     // ========================================
     // MOVEMENT SYSTEM INTEGRATION
@@ -597,9 +600,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Integration|Training")
     void ExitTrainingMode();
 
-    /** Get training guidance */
+    /**
+     * Ask the companion (model) for guidance on the skill being trained. Result arrives on
+     * OnCoachingReady / OnCoachingFailed (topic "training_guidance").
+     */
     UFUNCTION(BlueprintCallable, Category = "Integration|Training")
-    FString GetTrainingGuidance() const;
+    void RequestTrainingGuidance();
 
     /** Set training difficulty */
     UFUNCTION(BlueprintCallable, Category = "Integration|Training")
@@ -613,8 +619,8 @@ public:
     // EVENTS
     // ========================================
 
-    /** Called when skill execution is analyzed */
-    DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnSkillExecutionAnalyzed, const FString&, SkillName, float, Quality, const FString&, Feedback);
+    /** Called when skill execution is analyzed (measured timing quality only; spoken feedback comes via RequestInputImprovementSuggestions) */
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSkillExecutionAnalyzed, const FString&, SkillName, float, Quality);
     UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
     FOnSkillExecutionAnalyzed OnSkillExecutionAnalyzed;
 
@@ -632,6 +638,14 @@ public:
     DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnOpportunityDetected, const FString&, OpportunityType, float, Value, float, TimeWindow);
     UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
     FOnOpportunityDetected OnOpportunityDetected;
+
+    /** Model-written coaching for the player (see EchoCoaching) */
+    UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
+    FOnCompanionCoaching OnCoachingReady;
+
+    /** A coaching request failed; nothing was said */
+    UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
+    FOnCompanionCoachingFailed OnCoachingFailed;
 
 private:
     // ========================================

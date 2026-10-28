@@ -415,6 +415,10 @@ static void AgentSpeaksThroughVoice() {
     std::mt19937 rng(1);
     UnifiedEchoAgent a;
     CHECK(a.Say("hi", 3, rng).empty());     // no voice attached
+    a.Voice = std::make_shared<EchoLanguageModel>();
+    bool threw = false;
+    try { a.Say("hi", 3, rng); } catch (const std::logic_error&) { threw = true; }
+    CHECK(threw);                            // an unfitted voice fails loudly instead of speaking
     std::string train;
     for (int i = 0; i < 300; ++i) train += "the cat sat. ";
     LanguageModelConfig c; c.Size = 32; c.Order = 5;

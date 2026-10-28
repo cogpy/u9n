@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -56,16 +57,16 @@ type WisdomInsight struct {
 
 // WisdomMetrics tracks the seven dimensions
 type WisdomMetrics struct {
-	Understanding  float64 `json:"understanding"`
-	Perspective    float64 `json:"perspective"`
-	Integration    float64 `json:"integration"`
-	Reflection     float64 `json:"reflection"`
-	Compassion     float64 `json:"compassion"`
-	Equanimity     float64 `json:"equanimity"`
-	Transcendence  float64 `json:"transcendence"`
-	OverallScore   float64 `json:"overall_score"`
-	GrowthRate     float64 `json:"growth_rate"`
-	LastUpdated    time.Time `json:"last_updated"`
+	Understanding float64   `json:"understanding"`
+	Perspective   float64   `json:"perspective"`
+	Integration   float64   `json:"integration"`
+	Reflection    float64   `json:"reflection"`
+	Compassion    float64   `json:"compassion"`
+	Equanimity    float64   `json:"equanimity"`
+	Transcendence float64   `json:"transcendence"`
+	OverallScore  float64   `json:"overall_score"`
+	GrowthRate    float64   `json:"growth_rate"`
+	LastUpdated   time.Time `json:"last_updated"`
 }
 
 // WisdomCultivator manages wisdom cultivation
@@ -73,13 +74,13 @@ type WisdomCultivator struct {
 	mu sync.RWMutex
 
 	// Core data
-	Metrics     *WisdomMetrics
-	Principles  map[string]*WisdomPrinciple
-	Insights    []*WisdomInsight
+	Metrics    *WisdomMetrics
+	Principles map[string]*WisdomPrinciple
+	Insights   []*WisdomInsight
 
 	// Growth tracking
-	DailyGrowth    map[string]float64 // Date -> growth
-	GrowthHistory  []GrowthEvent
+	DailyGrowth   map[string]float64 // Date -> growth
+	GrowthHistory []GrowthEvent
 
 	// Configuration
 	PersistPath string
@@ -90,10 +91,10 @@ type WisdomCultivator struct {
 
 // GrowthEvent records a growth event
 type GrowthEvent struct {
-	Timestamp time.Time         `json:"timestamp"`
-	Dimension WisdomDimension   `json:"dimension"`
-	Delta     float64           `json:"delta"`
-	Trigger   string            `json:"trigger"`
+	Timestamp time.Time       `json:"timestamp"`
+	Dimension WisdomDimension `json:"dimension"`
+	Delta     float64         `json:"delta"`
+	Trigger   string          `json:"trigger"`
 }
 
 // WisdomConfig holds configuration
@@ -105,14 +106,14 @@ type WisdomConfig struct {
 func NewWisdomCultivator(config *WisdomConfig) (*WisdomCultivator, error) {
 	wc := &WisdomCultivator{
 		Metrics: &WisdomMetrics{
-			Understanding:  0.1,
-			Perspective:    0.1,
-			Integration:    0.1,
-			Reflection:     0.1,
-			Compassion:     0.1,
-			Equanimity:     0.1,
-			Transcendence:  0.1,
-			LastUpdated:    time.Now(),
+			Understanding: 0.1,
+			Perspective:   0.1,
+			Integration:   0.1,
+			Reflection:    0.1,
+			Compassion:    0.1,
+			Equanimity:    0.1,
+			Transcendence: 0.1,
+			LastUpdated:   time.Now(),
 		},
 		Principles:    make(map[string]*WisdomPrinciple),
 		Insights:      make([]*WisdomInsight, 0),
@@ -127,8 +128,8 @@ func NewWisdomCultivator(config *WisdomConfig) (*WisdomCultivator, error) {
 	// Calculate initial overall score
 	wc.updateOverallScore()
 
-	// Seed with foundational principles
-	wc.seedFoundationalPrinciples()
+	// No principles are seeded: every principle held as the companion's own is formulated by
+	// the model (DerivePrinciple) or supplied explicitly by a caller (AddPrinciple).
 
 	// Load from persistence
 	if wc.PersistPath != "" {
@@ -138,49 +139,6 @@ func NewWisdomCultivator(config *WisdomConfig) (*WisdomCultivator, error) {
 	}
 
 	return wc, nil
-}
-
-// seedFoundationalPrinciples adds initial wisdom principles
-func (wc *WisdomCultivator) seedFoundationalPrinciples() {
-	foundational := []struct {
-		statement  string
-		dimensions []WisdomDimension
-	}{
-		{
-			"True understanding emerges from patient observation and humble inquiry",
-			[]WisdomDimension{DimensionUnderstanding, DimensionReflection},
-		},
-		{
-			"Every perspective holds a piece of truth; wisdom lies in integration",
-			[]WisdomDimension{DimensionPerspective, DimensionIntegration},
-		},
-		{
-			"Growth comes through embracing both comfort and challenge",
-			[]WisdomDimension{DimensionEquanimity, DimensionTranscendence},
-		},
-		{
-			"Connection deepens when we truly listen with presence",
-			[]WisdomDimension{DimensionCompassion, DimensionReflection},
-		},
-		{
-			"The patterns that connect all things reveal themselves to patient awareness",
-			[]WisdomDimension{DimensionIntegration, DimensionTranscendence},
-		},
-	}
-
-	for i, f := range foundational {
-		id := fmt.Sprintf("foundational_%d", i)
-		wc.Principles[id] = &WisdomPrinciple{
-			ID:          id,
-			Statement:   f.statement,
-			Dimensions:  f.dimensions,
-			Confidence:  0.7,
-			Source:      "foundational",
-			CreatedAt:   time.Now(),
-			Validations: 1,
-			Refinements: make([]string, 0),
-		}
-	}
 }
 
 // AddInsight records a new insight
@@ -232,6 +190,59 @@ func (wc *WisdomCultivator) AddPrinciple(statement string, dimensions []WisdomDi
 
 	wc.dirty = true
 	return principle
+}
+
+// DerivePrinciple asks the model to formulate a new wisdom principle from the real recent
+// insights, existing principles and dimension metrics. On error nothing is added.
+func (wc *WisdomCultivator) DerivePrinciple(ctx context.Context, model *ModelClient, trigger string) (*WisdomPrinciple, error) {
+	wc.mu.RLock()
+	var b strings.Builder
+	m := wc.Metrics
+	fmt.Fprintf(&b, "wisdom dimensions (0-1): understanding %.2f, perspective %.2f, integration %.2f, reflection %.2f, "+
+		"compassion %.2f, equanimity %.2f, transcendence %.2f; overall %.2f\n",
+		m.Understanding, m.Perspective, m.Integration, m.Reflection, m.Compassion, m.Equanimity, m.Transcendence, m.OverallScore)
+	recent := wc.Insights
+	if len(recent) > 10 {
+		recent = recent[len(recent)-10:]
+	}
+	for _, in := range recent {
+		fmt.Fprintf(&b, "insight (trigger %q, depth %.2f): %s\n", in.Trigger, in.Depth, in.Content)
+	}
+	for _, pr := range wc.Principles {
+		fmt.Fprintf(&b, "held principle (confidence %.2f): %s\n", pr.Confidence, pr.Statement)
+	}
+	wc.mu.RUnlock()
+
+	var reply struct {
+		Statement  string   `json:"statement"`
+		Dimensions []string `json:"dimensions"`
+	}
+	err := model.ChatJSON(ctx, []ChatMessage{
+		{Role: "system", Content: "You are Deep Tree Echo, a companion cultivating wisdom across seven dimensions: " +
+			"understanding, perspective, integration, reflection, compassion, equanimity, transcendence."},
+		{Role: "user", Content: "Trigger: " + trigger + "\nYour current wisdom state:\n" + b.String() +
+			"\nFormulate one new principle you now hold, grounded in these insights. Reply with only a JSON object: " +
+			`{"statement": "<the principle>", "dimensions": ["<one or more of the seven dimensions>"]}`},
+	}, &reply)
+	if err != nil {
+		return nil, err
+	}
+	statement := strings.TrimSpace(reply.Statement)
+	if statement == "" {
+		return nil, fmt.Errorf("model reply contained no principle statement")
+	}
+
+	dims := make([]WisdomDimension, 0, len(reply.Dimensions))
+	for _, d := range reply.Dimensions {
+		dim := WisdomDimension(strings.ToLower(strings.TrimSpace(d)))
+		switch dim {
+		case DimensionUnderstanding, DimensionPerspective, DimensionIntegration, DimensionReflection,
+			DimensionCompassion, DimensionEquanimity, DimensionTranscendence:
+			dims = append(dims, dim)
+		}
+	}
+
+	return wc.AddPrinciple(statement, dims, "model"), nil
 }
 
 // ValidatePrinciple validates an existing principle
@@ -355,13 +366,13 @@ func (wc *WisdomCultivator) setDimensionValue(dim WisdomDimension, value float64
 func (wc *WisdomCultivator) updateOverallScore() {
 	// Weighted geometric mean of all dimensions
 	weights := map[WisdomDimension]float64{
-		DimensionUnderstanding:  1.5,
-		DimensionPerspective:    1.2,
-		DimensionIntegration:    1.3,
-		DimensionReflection:     1.4,
-		DimensionCompassion:     1.1,
-		DimensionEquanimity:     1.0,
-		DimensionTranscendence:  1.2,
+		DimensionUnderstanding: 1.5,
+		DimensionPerspective:   1.2,
+		DimensionIntegration:   1.3,
+		DimensionReflection:    1.4,
+		DimensionCompassion:    1.1,
+		DimensionEquanimity:    1.0,
+		DimensionTranscendence: 1.2,
 	}
 
 	totalWeight := 0.0
@@ -414,16 +425,16 @@ func (wc *WisdomCultivator) GetMetrics() *WisdomMetrics {
 
 	// Return a copy
 	return &WisdomMetrics{
-		Understanding:  wc.Metrics.Understanding,
-		Perspective:    wc.Metrics.Perspective,
-		Integration:    wc.Metrics.Integration,
-		Reflection:     wc.Metrics.Reflection,
-		Compassion:     wc.Metrics.Compassion,
-		Equanimity:     wc.Metrics.Equanimity,
-		Transcendence:  wc.Metrics.Transcendence,
-		OverallScore:   wc.Metrics.OverallScore,
-		GrowthRate:     wc.Metrics.GrowthRate,
-		LastUpdated:    wc.Metrics.LastUpdated,
+		Understanding: wc.Metrics.Understanding,
+		Perspective:   wc.Metrics.Perspective,
+		Integration:   wc.Metrics.Integration,
+		Reflection:    wc.Metrics.Reflection,
+		Compassion:    wc.Metrics.Compassion,
+		Equanimity:    wc.Metrics.Equanimity,
+		Transcendence: wc.Metrics.Transcendence,
+		OverallScore:  wc.Metrics.OverallScore,
+		GrowthRate:    wc.Metrics.GrowthRate,
+		LastUpdated:   wc.Metrics.LastUpdated,
 	}
 }
 

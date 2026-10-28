@@ -474,47 +474,37 @@ FDynamicStreamState UHolisticMetamodel::GetStreamState(EDynamicStream StreamType
 
 TArray<FString> UHolisticMetamodel::GenerateHolisticInsights() const
 {
+    // Threshold crossings reported as measurements (diagnostics, not the character's voice)
     TArray<FString> Insights;
 
-    // Monad coherence insight
     if (CurrentState.Monad.Coherence > 0.8f)
     {
-        Insights.Add(TEXT("High unity manifestation quality - strong integration across levels"));
+        Insights.Add(FString::Printf(TEXT("monad coherence %.2f > 0.80"), CurrentState.Monad.Coherence));
     }
 
-    // Triadic balance insight
     if (CurrentState.TriadicSystem.Equilibrium > 0.9f)
     {
-        Insights.Add(TEXT("Optimal being-becoming-relation balance - harmonious triad"));
+        Insights.Add(FString::Printf(TEXT("triadic equilibrium %.2f > 0.90"), CurrentState.TriadicSystem.Equilibrium));
     }
 
-    // Stream flow insights
     for (const FDynamicStreamState& Stream : CurrentState.DynamicStreams)
     {
         if (Stream.Energy > 0.7f)
         {
-            FString StreamName;
-            switch (Stream.StreamType)
-            {
-                case EDynamicStream::Entropic: StreamName = TEXT("Entropic"); break;
-                case EDynamicStream::Negnentropic: StreamName = TEXT("Negnentropic"); break;
-                case EDynamicStream::Identity: StreamName = TEXT("Identity"); break;
-            }
-            Insights.Add(FString::Printf(TEXT("Strong %s stream flow - high organizational capacity"), *StreamName));
+            Insights.Add(FString::Printf(TEXT("%s stream energy %.2f > 0.70"),
+                *UEnum::GetDisplayValueAsText(Stream.StreamType).ToString(), Stream.Energy));
         }
     }
 
-    // Meta-coherence insight
     if (CurrentState.MetamodelCoherence > 0.85f)
     {
-        Insights.Add(TEXT("Excellent metamodel integration - all levels functioning harmoniously"));
+        Insights.Add(FString::Printf(TEXT("metamodel coherence %.2f > 0.85"), CurrentState.MetamodelCoherence));
     }
 
-    // Evolutionary momentum insight
     if (CurrentState.EvolutionaryHelix.Momentum > 1.0f)
     {
-        Insights.Add(FString::Printf(TEXT("Accelerated evolution at spiral level %d"), 
-            CurrentState.EvolutionaryHelix.SpiralLevel));
+        Insights.Add(FString::Printf(TEXT("evolutionary momentum %.2f > 1.00 at spiral level %d"),
+            CurrentState.EvolutionaryHelix.Momentum, CurrentState.EvolutionaryHelix.SpiralLevel));
     }
 
     return Insights;

@@ -13,7 +13,7 @@
  * - Priority-based interruption
  * - Transition curves and timing
  * - Composite expressions (blending multiple states)
- * - Integration with echobeats cognitive cycle
+ * - Applies only explicitly requested states (no built-in greeting/thinking/insight sequences)
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnExpressionChanged, EExpressionState, OldState, EExpressionState, NewState);
@@ -192,7 +192,7 @@ public:
 
     // ========== Sequences ==========
 
-    /** Play a predefined expression sequence */
+    /** Play a registered expression sequence (none are built in; register sequences explicitly) */
     UFUNCTION(BlueprintCallable, Category = "Sequence")
     void PlaySequence(const FName& SequenceName);
 
@@ -203,20 +203,6 @@ public:
     /** Register a custom sequence */
     UFUNCTION(BlueprintCallable, Category = "Sequence")
     void RegisterSequence(const FExpressionSequence& Sequence);
-
-    // ========== Special Transitions ==========
-
-    /** Play the Wonder-to-Joy "aha" transition */
-    UFUNCTION(BlueprintCallable, Category = "Special")
-    void PlayWonderToJoy(float Duration = 1.5f);
-
-    /** Play a thinking sequence (contemplative with occasional curious glances) */
-    UFUNCTION(BlueprintCallable, Category = "Special")
-    void PlayThinkingSequence();
-
-    /** Play an engagement greeting */
-    UFUNCTION(BlueprintCallable, Category = "Special")
-    void PlayGreeting();
 
     // ========== Query ==========
 
@@ -249,9 +235,6 @@ public:
     FOnTransitionComplete OnTransitionComplete;
 
 protected:
-    /** Initialize predefined sequences */
-    void InitializeSequences();
-
     /** Process transition queue */
     void ProcessQueue();
 

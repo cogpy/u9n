@@ -11,6 +11,9 @@
 #include "NiagaraFunctionLibrary.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "EchoCharacterReaction.h"
 
 AAgentAvatarActor::AAgentAvatarActor()
 {
@@ -93,6 +96,65 @@ void AAgentAvatarActor::BeginPlay()
 
     // Apply default aura settings
     SetAuraSettings(AuraSettings);
+
+    // Expressions, gestures and speaking visuals come from the character model only
+    TWeakObjectPtr<AAgentAvatarActor> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (AAgentAvatarActor* Self = WeakThis.Get())
+        {
+            Self->ApplyCharacterReaction(Reaction);
+        }
+    });
+}
+
+void AAgentAvatarActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
+void AAgentAvatarActor::ApplyCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    // Expression name -> emotion channel rendered by this actor
+    static const TCHAR* EmotionChannels[] = {
+        TEXT("happiness"), TEXT("sadness"), TEXT("anger"), TEXT("fear"), TEXT("surprise"),
+        TEXT("disgust"), TEXT("contempt"), TEXT("curiosity"), TEXT("excitement")
+    };
+    const FString ExpressionName = Reaction.Expression.TrimStartAndEnd().ToLower();
+    for (const TCHAR* Channel : EmotionChannels)
+    {
+        if (ExpressionName == Channel)
+        {
+            TMap<FString, float> EmotionalState;
+            EmotionalState.Add(ExpressionName, FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f));
+            UpdateEmotionalExpression(EmotionalState);
+            break;
+        }
+    }
+
+    if (!Reaction.Gesture.TrimStartAndEnd().IsEmpty())
+    {
+        TriggerGesture(Reaction.Gesture.TrimStartAndEnd());
+    }
+
+    // Speaking visuals last as long as the model's utterance takes to play back
+    if (!Reaction.Utterance.IsEmpty())
+    {
+        TriggerSpeakingEffect(true);
+        SpeakingTimer = Reaction.Utterance.Len() * SpeechSecondsPerCharacter;
+    }
 }
 
 void AAgentAvatarActor::Tick(float DeltaTime)
@@ -130,6 +192,15 @@ void AAgentAvatarActor::Tick(float DeltaTime)
         {
             // Reset to base expression
             BlendToExpression(FExpressionMorphState(), 0.3f);
+        }
+    }
+
+    if (SpeakingTimer > 0.0f)
+    {
+        SpeakingTimer -= DeltaTime;
+        if (SpeakingTimer <= 0.0f)
+        {
+            TriggerSpeakingEffect(false);
         }
     }
 
@@ -615,8 +686,25 @@ void AAgentAvatarActor::SetIdleVariation(int32 Variation)
 
 void AAgentAvatarActor::TriggerGesture(const FString& GestureType)
 {
-    // Would trigger gesture montage
-    UE_LOG(LogTemp, Log, TEXT("Gesture triggered: %s"), *GestureType);
+    UAnimMontage* Montage = nullptr;
+    for (const TPair<FString, UAnimMontage*>& Pair : GestureMontages)
+    {
+        if (Pair.Key.Equals(GestureType, ESearchCase::IgnoreCase))
+        {
+            Montage = Pair.Value;
+            break;
+        }
+    }
+
+    UAnimInstance* AnimInstance = AvatarMesh ? AvatarMesh->GetAnimInstance() : nullptr;
+    if (!Montage || !AnimInstance)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("AgentAvatarActor: gesture '%s' not played (%s)"), *GestureType,
+            !Montage ? TEXT("no montage configured in GestureMontages") : TEXT("no anim instance"));
+        return;
+    }
+
+    AnimInstance->Montage_Play(Montage);
 }
 
 // ===== Interaction =====
@@ -678,21 +766,21 @@ void AAgentAvatarActor::TriggerThinkingEffect(bool bEnable)
         }
     }
 
-    // Subtle expression change
-    if (bEnable)
-    {
-        FExpressionMorphState ThinkingExpression = CurrentExpression;
-        ThinkingExpression.Curiosity = FMath::Max(ThinkingExpression.Curiosity, 0.3f);
-        BlendToExpression(ThinkingExpression, 0.3f);
-    }
+    // Status indicator only: the face is not changed (expressions come from the model)
 }
 
 void AAgentAvatarActor::TriggerSpeakingEffect(bool bEnable)
 {
     bIsSpeaking = bEnable;
+    if (!bEnable)
+    {
+        SpeakingTimer = 0.0f;
+    }
 
-    // Would animate mouth/lips
-    // This typically connects to lip sync system
+    if (AvatarMaterial)
+    {
+        AvatarMaterial->SetScalarParameterValue(TEXT("SpeakingIntensity"), bEnable ? 1.0f : 0.0f);
+    }
 }
 
 void AAgentAvatarActor::TriggerHighlight(float Duration, FLinearColor Color)

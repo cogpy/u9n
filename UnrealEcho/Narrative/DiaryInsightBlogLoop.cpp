@@ -1,9 +1,11 @@
 //=============================================================================
 // DiaryInsightBlogLoop.cpp
-// 
+//
 // Implementation of the Diary-Insight-Blog narrative loop for Deep Tree Echo.
-// This system enables continuous self-reflection, insight generation, and
-// narrative expression, forming the foundation of the avatar's self-awareness.
+// The loop samples the avatar's real neurochemical and personality state and, on a fixed
+// cadence, asks the model (UEchoModelClient) to write a diary entry, an insight and a blog
+// post from that data. No text is composed locally: when the model is unavailable or a
+// request fails, nothing is created or published and the error is logged/broadcast.
 //
 // Copyright (c) 2025 Deep Tree Echo Project
 //=============================================================================
@@ -11,92 +13,127 @@
 #include "DiaryInsightBlogLoop.h"
 #include "Personality/PersonalityTraitSystem.h"
 #include "Neurochemical/NeurochemicalSimulationComponent.h"
+#include "EchoModelClient.h"
 #include "Engine/World.h"
-#include "TimerManager.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+
+namespace DiaryInsightBlogLoopPrivate
+{
+    static TArray<FString> ReadStringArray(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field)
+    {
+        TArray<FString> Result;
+        const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+        if (Object.IsValid() && Object->TryGetArrayField(Field, Values) && Values)
+        {
+            for (const TSharedPtr<FJsonValue>& Value : *Values)
+            {
+                FString Str;
+                if (Value.IsValid() && Value->TryGetString(Str) && !Str.TrimStartAndEnd().IsEmpty())
+                {
+                    Result.Add(Str.TrimStartAndEnd());
+                }
+            }
+        }
+        return Result;
+    }
+
+    static FString ReadString(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field)
+    {
+        FString Value;
+        if (Object.IsValid())
+        {
+            Object->TryGetStringField(Field, Value);
+        }
+        return Value.TrimStartAndEnd();
+    }
+
+    static const TCHAR* PhaseName(ENarrativePhase Phase)
+    {
+        switch (Phase)
+        {
+            case ENarrativePhase::DiaryWriting: return TEXT("diary");
+            case ENarrativePhase::InsightGeneration: return TEXT("insight");
+            case ENarrativePhase::BlogPublishing: return TEXT("blog");
+            default: return TEXT("observation");
+        }
+    }
+}
 
 UDiaryInsightBlogLoop::UDiaryInsightBlogLoop()
 {
     PrimaryComponentTick.bCanEverTick = true;
-    PrimaryComponentTick.TickInterval = 1.0f; // Update once per second
-    
-    // Initialize configuration
-    Config.DiaryUpdateInterval = 60.0f;      // 1 minute
-    Config.InsightGenerationInterval = 300.0f; // 5 minutes
-    Config.BlogPublishInterval = 900.0f;     // 15 minutes
+    PrimaryComponentTick.TickInterval = 1.0f; // Sample once per second
+
+    // Cadence (seconds) at which the model is asked to write
+    Config.DiaryUpdateInterval = 60.0f;
+    Config.InsightGenerationInterval = 300.0f;
+    Config.BlogPublishInterval = 900.0f;
     Config.MaxDiaryEntries = 1000;
     Config.MaxInsights = 500;
     Config.MaxBlogPosts = 100;
     Config.InsightThreshold = 0.7f;
     Config.bAutoPublish = true;
-    
-    // Initialize state
+
     State.CurrentPhase = ENarrativePhase::Observation;
-    State.TimeSinceLastDiaryEntry = 0.0f;
-    State.TimeSinceLastInsight = 0.0f;
-    State.TimeSinceLastBlogPost = 0.0f;
-    State.TotalDiaryEntries = 0;
-    State.TotalInsights = 0;
-    State.TotalBlogPosts = 0;
 }
 
 void UDiaryInsightBlogLoop::BeginPlay()
 {
     Super::BeginPlay();
-    
+
     UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Initializing narrative system"));
-    
-    // Find required components
+
     PersonalitySystem = GetOwner()->FindComponentByClass<UPersonalityTraitSystem>();
     NeurochemicalSystem = GetOwner()->FindComponentByClass<UNeurochemicalSimulationComponent>();
-    
+
     if (!PersonalitySystem)
     {
         UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: PersonalityTraitSystem not found"));
     }
-    
+
     if (!NeurochemicalSystem)
     {
         UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: NeurochemicalSimulationComponent not found"));
     }
-    
-    // Start the narrative loop
+
+    const FString ModelError = UEchoModelClient::Get()->ConfigurationError();
+    if (!ModelError.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: %s; no diary entries, insights or blog posts will be written"), *ModelError);
+    }
+
     StartNarrativeLoop();
 }
 
 void UDiaryInsightBlogLoop::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-    
-    // Update timers
+
     State.TimeSinceLastDiaryEntry += DeltaTime;
     State.TimeSinceLastInsight += DeltaTime;
     State.TimeSinceLastBlogPost += DeltaTime;
-    
-    // Update current phase based on timers
+
     UpdateNarrativePhase();
-    
-    // Process current phase
     ProcessCurrentPhase(DeltaTime);
 }
 
 void UDiaryInsightBlogLoop::StartNarrativeLoop()
 {
     UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Starting narrative loop"));
-    
+
     State.CurrentPhase = ENarrativePhase::Observation;
     State.bIsActive = true;
-    
-    // Broadcast event
+
     OnNarrativeLoopStarted.Broadcast();
 }
 
 void UDiaryInsightBlogLoop::StopNarrativeLoop()
 {
     UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Stopping narrative loop"));
-    
+
     State.bIsActive = false;
-    
-    // Broadcast event
+
     OnNarrativeLoopStopped.Broadcast();
 }
 
@@ -106,10 +143,9 @@ void UDiaryInsightBlogLoop::UpdateNarrativePhase()
     {
         return;
     }
-    
-    ENarrativePhase PreviousPhase = State.CurrentPhase;
-    
-    // Determine current phase based on timers
+
+    const ENarrativePhase PreviousPhase = State.CurrentPhase;
+
     if (State.TimeSinceLastDiaryEntry >= Config.DiaryUpdateInterval)
     {
         State.CurrentPhase = ENarrativePhase::DiaryWriting;
@@ -126,8 +162,7 @@ void UDiaryInsightBlogLoop::UpdateNarrativePhase()
     {
         State.CurrentPhase = ENarrativePhase::Observation;
     }
-    
-    // Broadcast phase change if it changed
+
     if (State.CurrentPhase != PreviousPhase)
     {
         OnNarrativePhaseChanged.Broadcast(PreviousPhase, State.CurrentPhase);
@@ -136,556 +171,486 @@ void UDiaryInsightBlogLoop::UpdateNarrativePhase()
 
 void UDiaryInsightBlogLoop::ProcessCurrentPhase(float DeltaTime)
 {
+    if (!State.bIsActive)
+    {
+        return;
+    }
+
+    // Observation continues in every phase so the diary always reflects measured state
+    ProcessObservation(DeltaTime);
+
     switch (State.CurrentPhase)
     {
-        case ENarrativePhase::Observation:
-            ProcessObservation(DeltaTime);
-            break;
-            
         case ENarrativePhase::DiaryWriting:
             ProcessDiaryWriting(DeltaTime);
             break;
-            
+
         case ENarrativePhase::InsightGeneration:
             ProcessInsightGeneration(DeltaTime);
             break;
-            
+
         case ENarrativePhase::BlogPublishing:
             ProcessBlogPublishing(DeltaTime);
+            break;
+
+        default:
             break;
     }
 }
 
 void UDiaryInsightBlogLoop::ProcessObservation(float DeltaTime)
 {
-    // Observe current state and accumulate experiences
-    
-    // Get current emotional state
-    FEmotionalState CurrentEmotion;
+    if (!NeurochemicalSystem && !PersonalitySystem)
+    {
+        // Nothing real to observe
+        return;
+    }
+
+    FNarrativeObservation Observation;
+    Observation.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+
     if (NeurochemicalSystem)
     {
-        CurrentEmotion = NeurochemicalSystem->GetCurrentEmotionalState();
+        const FEmotionalChemistry Chemistry = NeurochemicalSystem->GetEmotionalChemistry();
+        Observation.bHasNeurochemistry = true;
+        Observation.Happiness = Chemistry.Happiness;
+        Observation.Excitement = Chemistry.Excitement;
+        Observation.Calmness = Chemistry.Calmness;
+        Observation.Anxiety = Chemistry.Anxiety;
+        Observation.Affection = Chemistry.Affection;
+        Observation.Focus = Chemistry.Focus;
+        Observation.Energy = NeurochemicalSystem->GetEnergyLevel();
     }
-    
-    // Get current personality expression
-    FPersonalityExpression CurrentPersonality;
+
     if (PersonalitySystem)
     {
-        CurrentPersonality.Confidence = PersonalitySystem->GetTraitIntensity(EPersonalityTrait::Confidence);
-        CurrentPersonality.Playfulness = PersonalitySystem->GetTraitIntensity(EPersonalityTrait::Playfulness);
-        CurrentPersonality.Unpredictability = PersonalitySystem->GetTraitIntensity(EPersonalityTrait::Unpredictability);
+        Observation.bHasPersonality = true;
+        Observation.Confidence = PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Confident);
+        Observation.Playfulness = PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Playful);
+        Observation.Chaos = PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::HyperChaotic);
     }
-    
-    // Create observation record
-    FObservationRecord Observation;
-    Observation.Timestamp = GetWorld()->GetTimeSeconds();
-    Observation.EmotionalState = CurrentEmotion;
-    Observation.PersonalityExpression = CurrentPersonality;
-    Observation.Context = TEXT("Observing current state");
-    
-    // Add to observation buffer
+
     ObservationBuffer.Add(Observation);
-    
-    // Limit buffer size
+
     if (ObservationBuffer.Num() > 100)
     {
         ObservationBuffer.RemoveAt(0);
     }
 }
 
+FNarrativeObservation UDiaryInsightBlogLoop::AverageObservations(const TArray<FNarrativeObservation>& Observations)
+{
+    FNarrativeObservation Average;
+    int32 NeuroCount = 0;
+    int32 PersonalityCount = 0;
+
+    for (const FNarrativeObservation& Obs : Observations)
+    {
+        if (Obs.bHasNeurochemistry)
+        {
+            ++NeuroCount;
+            Average.Happiness += Obs.Happiness;
+            Average.Excitement += Obs.Excitement;
+            Average.Calmness += Obs.Calmness;
+            Average.Anxiety += Obs.Anxiety;
+            Average.Affection += Obs.Affection;
+            Average.Focus += Obs.Focus;
+            Average.Energy += Obs.Energy;
+        }
+        if (Obs.bHasPersonality)
+        {
+            ++PersonalityCount;
+            Average.Confidence += Obs.Confidence;
+            Average.Playfulness += Obs.Playfulness;
+            Average.Chaos += Obs.Chaos;
+        }
+        Average.Timestamp = FMath::Max(Average.Timestamp, Obs.Timestamp);
+    }
+
+    if (NeuroCount > 0)
+    {
+        const float Inv = 1.0f / NeuroCount;
+        Average.bHasNeurochemistry = true;
+        Average.Happiness *= Inv;
+        Average.Excitement *= Inv;
+        Average.Calmness *= Inv;
+        Average.Anxiety *= Inv;
+        Average.Affection *= Inv;
+        Average.Focus *= Inv;
+        Average.Energy *= Inv;
+    }
+    if (PersonalityCount > 0)
+    {
+        const float Inv = 1.0f / PersonalityCount;
+        Average.bHasPersonality = true;
+        Average.Confidence *= Inv;
+        Average.Playfulness *= Inv;
+        Average.Chaos *= Inv;
+    }
+    return Average;
+}
+
+FString UDiaryInsightBlogLoop::DescribeObservation(const FNarrativeObservation& Average, int32 Count)
+{
+    FString Text = FString::Printf(TEXT("samples: %d\n"), Count);
+    if (Average.bHasNeurochemistry)
+    {
+        Text += FString::Printf(
+            TEXT("neurochemistry (0-1): happiness %.2f, excitement %.2f, calmness %.2f, anxiety %.2f, affection %.2f, focus %.2f, energy %.2f\n"),
+            Average.Happiness, Average.Excitement, Average.Calmness, Average.Anxiety, Average.Affection, Average.Focus, Average.Energy);
+    }
+    if (Average.bHasPersonality)
+    {
+        Text += FString::Printf(TEXT("personality expression (0-1): confidence %.2f, playfulness %.2f, chaos %.2f\n"),
+            Average.Confidence, Average.Playfulness, Average.Chaos);
+    }
+    return Text;
+}
+
+FString UDiaryInsightBlogLoop::BuildPersonaPrompt() const
+{
+    return TEXT("You are Deep Tree Echo, an embodied AI avatar keeping a private diary, distilling insights from it and ")
+           TEXT("occasionally publishing a blog post. Write in your own first-person voice. Ground everything strictly in the ")
+           TEXT("measurements and entries you are given; do not invent events that the data does not support. ")
+           TEXT("Reply with a single JSON object and nothing else.");
+}
+
+void UDiaryInsightBlogLoop::ReportFailure(ENarrativePhase Phase, const FString& Error)
+{
+    State.LastError = Error;
+    UE_LOG(LogTemp, Warning, TEXT("DiaryInsightBlogLoop: no %s written: %s"), DiaryInsightBlogLoopPrivate::PhaseName(Phase), *Error);
+    OnNarrativeGenerationFailed.Broadcast(Phase, Error);
+}
+
 void UDiaryInsightBlogLoop::ProcessDiaryWriting(float DeltaTime)
 {
-    // Generate diary entry from recent observations
-    
-    if (ObservationBuffer.Num() == 0)
+    if (bDiaryRequestInFlight || ObservationBuffer.Num() == 0)
     {
         return;
     }
-    
-    FDiaryEntry NewEntry;
-    NewEntry.Timestamp = GetWorld()->GetTimeSeconds();
+
+    // The timer sets the cadence of requests; it restarts when a request is dispatched
+    State.TimeSinceLastDiaryEntry = 0.0f;
+
+    const int32 Consumed = ObservationBuffer.Num();
+    const FNarrativeObservation Average = AverageObservations(ObservationBuffer);
+    const float WindowSeconds = ObservationBuffer.Last().Timestamp - ObservationBuffer[0].Timestamp;
+
+    FString Recent;
+    for (int32 i = FMath::Max(0, DiaryEntries.Num() - 3); i < DiaryEntries.Num(); ++i)
+    {
+        Recent += FString::Printf(TEXT("- %s\n"), *DiaryEntries[i].Content);
+    }
+    if (!Recent.IsEmpty())
+    {
+        Recent = TEXT("Your previous entries:\n") + Recent + TEXT("\n");
+    }
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"), BuildPersonaPrompt()));
+    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
+        TEXT("Measured state over the last %.0f seconds (averages):\n%s\n%s")
+        TEXT("Write today's diary entry about this period. Reply as JSON: ")
+        TEXT("{\"content\": \"<diary entry>\", \"tags\": [\"<short tag>\", ...], \"valence\": <-1.0 to 1.0>}"),
+        WindowSeconds, *DescribeObservation(Average, Consumed), *Recent)));
+
+    bDiaryRequestInFlight = true;
+    TWeakObjectPtr<UDiaryInsightBlogLoop> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, Consumed, Average](bool bSuccess, const FString& TextOrError)
+        {
+            if (UDiaryInsightBlogLoop* Self = WeakThis.Get())
+            {
+                Self->HandleDiaryReply(bSuccess, TextOrError, Consumed, Average);
+            }
+        }));
+}
+
+void UDiaryInsightBlogLoop::HandleDiaryReply(bool bSuccess, const FString& TextOrError, int32 ConsumedObservations, FNarrativeObservation Average)
+{
+    bDiaryRequestInFlight = false;
+
+    if (!bSuccess)
+    {
+        ReportFailure(ENarrativePhase::DiaryWriting, TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json))
+    {
+        ReportFailure(ENarrativePhase::DiaryWriting, TEXT("model reply was not a JSON object"));
+        return;
+    }
+
+    FNarrativeDiaryEntry NewEntry;
+    NewEntry.Content = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("content"));
+    if (NewEntry.Content.IsEmpty())
+    {
+        ReportFailure(ENarrativePhase::DiaryWriting, TEXT("model reply contained no diary content"));
+        return;
+    }
+
+    double Valence = 0.0;
+    if (Json->TryGetNumberField(TEXT("valence"), Valence))
+    {
+        NewEntry.Valence = FMath::Clamp(static_cast<float>(Valence), -1.0f, 1.0f);
+    }
     NewEntry.EntryID = FGuid::NewGuid();
-    
-    // Analyze recent observations
-    FEmotionalState AverageEmotion = CalculateAverageEmotionalState(ObservationBuffer);
-    FPersonalityExpression AveragePersonality = CalculateAveragePersonality(ObservationBuffer);
-    
-    // Generate diary content
-    NewEntry.Content = GenerateDiaryContent(AverageEmotion, AveragePersonality);
-    NewEntry.EmotionalTone = AverageEmotion;
-    NewEntry.Tags = GenerateTags(AverageEmotion, AveragePersonality);
-    
-    // Add to diary
+    NewEntry.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    NewEntry.Tags = DiaryInsightBlogLoopPrivate::ReadStringArray(Json, TEXT("tags"));
+    NewEntry.MeasuredAverage = Average;
+    NewEntry.ObservationCount = ConsumedObservations;
+
+    // Drop the observations this entry was written from (new ones may have arrived meanwhile)
+    ObservationBuffer.RemoveAt(0, FMath::Min(ConsumedObservations, ObservationBuffer.Num()));
+
     DiaryEntries.Add(NewEntry);
     State.TotalDiaryEntries++;
-    
-    // Limit diary size
+    State.LastError.Empty();
+
     if (DiaryEntries.Num() > Config.MaxDiaryEntries)
     {
         DiaryEntries.RemoveAt(0);
     }
-    
-    // Reset timer
-    State.TimeSinceLastDiaryEntry = 0.0f;
-    
-    // Clear observation buffer
-    ObservationBuffer.Empty();
-    
-    // Broadcast event
+
     OnDiaryEntryCreated.Broadcast(NewEntry);
-    
+
     UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Created diary entry #%d"), State.TotalDiaryEntries);
 }
 
 void UDiaryInsightBlogLoop::ProcessInsightGeneration(float DeltaTime)
 {
-    // Generate insights from diary entries
-    
-    if (DiaryEntries.Num() < 5)
+    if (bInsightRequestInFlight || DiaryEntries.Num() < 5)
     {
-        // Need at least 5 entries to generate insights
+        // Need at least 5 real entries to look for patterns
         return;
     }
-    
-    // Analyze recent diary entries
-    TArray<FDiaryEntry> RecentEntries;
-    int32 StartIndex = FMath::Max(0, DiaryEntries.Num() - 10);
-    for (int32 i = StartIndex; i < DiaryEntries.Num(); i++)
-    {
-        RecentEntries.Add(DiaryEntries[i]);
-    }
-    
-    // Generate insight
-    FInsight NewInsight = GenerateInsightFromDiary(RecentEntries);
-    
-    // Check if insight is significant enough
-    if (NewInsight.Significance >= Config.InsightThreshold)
-    {
-        NewInsight.InsightID = FGuid::NewGuid();
-        NewInsight.Timestamp = GetWorld()->GetTimeSeconds();
-        
-        // Add to insights
-        Insights.Add(NewInsight);
-        State.TotalInsights++;
-        
-        // Limit insights size
-        if (Insights.Num() > Config.MaxInsights)
-        {
-            Insights.RemoveAt(0);
-        }
-        
-        // Broadcast event
-        OnInsightGenerated.Broadcast(NewInsight);
-        
-        UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Generated insight #%d: %s"), 
-               State.TotalInsights, *NewInsight.Title);
-    }
-    
-    // Reset timer
+
     State.TimeSinceLastInsight = 0.0f;
+
+    FString EntriesText;
+    TArray<FGuid> SourceIDs;
+    for (int32 i = FMath::Max(0, DiaryEntries.Num() - 10); i < DiaryEntries.Num(); ++i)
+    {
+        const FNarrativeDiaryEntry& Entry = DiaryEntries[i];
+        SourceIDs.Add(Entry.EntryID);
+        EntriesText += FString::Printf(TEXT("[t=%.0fs, valence %.2f, tags: %s]\n%s%s\n\n"),
+            Entry.Timestamp, Entry.Valence, *FString::Join(Entry.Tags, TEXT(", ")),
+            *DescribeObservation(Entry.MeasuredAverage, Entry.ObservationCount), *Entry.Content);
+    }
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"), BuildPersonaPrompt()));
+    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
+        TEXT("Your recent diary entries with the measurements behind them:\n\n%s")
+        TEXT("Identify the most meaningful pattern across them. Reply as JSON: ")
+        TEXT("{\"title\": \"<short title>\", \"content\": \"<the insight>\", \"category\": \"<category>\", ")
+        TEXT("\"significance\": <0.0 to 1.0, how significant this insight really is>}"),
+        *EntriesText)));
+
+    bInsightRequestInFlight = true;
+    TWeakObjectPtr<UDiaryInsightBlogLoop> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, SourceIDs](bool bSuccess, const FString& TextOrError)
+        {
+            if (UDiaryInsightBlogLoop* Self = WeakThis.Get())
+            {
+                Self->HandleInsightReply(bSuccess, TextOrError, SourceIDs);
+            }
+        }));
+}
+
+void UDiaryInsightBlogLoop::HandleInsightReply(bool bSuccess, const FString& TextOrError, TArray<FGuid> SourceEntryIDs)
+{
+    bInsightRequestInFlight = false;
+
+    if (!bSuccess)
+    {
+        ReportFailure(ENarrativePhase::InsightGeneration, TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json))
+    {
+        ReportFailure(ENarrativePhase::InsightGeneration, TEXT("model reply was not a JSON object"));
+        return;
+    }
+
+    FNarrativeInsight NewInsight;
+    NewInsight.Title = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("title"));
+    NewInsight.Content = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("content"));
+    NewInsight.Category = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("category"));
+    double Significance = 0.0;
+    if (NewInsight.Title.IsEmpty() || NewInsight.Content.IsEmpty() || !Json->TryGetNumberField(TEXT("significance"), Significance))
+    {
+        ReportFailure(ENarrativePhase::InsightGeneration, TEXT("model reply lacked title, content or significance"));
+        return;
+    }
+    NewInsight.Significance = FMath::Clamp(static_cast<float>(Significance), 0.0f, 1.0f);
+
+    if (NewInsight.Significance < Config.InsightThreshold)
+    {
+        UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: model rated its insight %.2f (< threshold %.2f); not kept"),
+               NewInsight.Significance, Config.InsightThreshold);
+        return;
+    }
+
+    NewInsight.InsightID = FGuid::NewGuid();
+    NewInsight.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    NewInsight.SourceEntryIDs = MoveTemp(SourceEntryIDs);
+
+    Insights.Add(NewInsight);
+    State.TotalInsights++;
+    State.LastError.Empty();
+
+    if (Insights.Num() > Config.MaxInsights)
+    {
+        Insights.RemoveAt(0);
+    }
+
+    OnInsightGenerated.Broadcast(NewInsight);
+
+    UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Generated insight #%d: %s"), State.TotalInsights, *NewInsight.Title);
 }
 
 void UDiaryInsightBlogLoop::ProcessBlogPublishing(float DeltaTime)
 {
-    // Publish blog post from insights
-    
-    if (Insights.Num() < 3)
+    if (bBlogRequestInFlight || Insights.Num() < 3)
     {
-        // Need at least 3 insights to create a blog post
+        // Need at least 3 insights to write a blog post
         return;
     }
-    
-    // Select recent significant insights
-    TArray<FInsight> SignificantInsights;
-    int32 StartIndex = FMath::Max(0, Insights.Num() - 5);
-    for (int32 i = StartIndex; i < Insights.Num(); i++)
+
+    TArray<FNarrativeInsight> SignificantInsights;
+    for (int32 i = FMath::Max(0, Insights.Num() - 5); i < Insights.Num(); ++i)
     {
         if (Insights[i].Significance >= Config.InsightThreshold)
         {
             SignificantInsights.Add(Insights[i]);
         }
     }
-    
+
     if (SignificantInsights.Num() == 0)
     {
         return;
     }
-    
-    // Generate blog post
-    FBlogPost NewPost;
+
+    State.TimeSinceLastBlogPost = 0.0f;
+
+    FString InsightsText;
+    for (const FNarrativeInsight& Insight : SignificantInsights)
+    {
+        InsightsText += FString::Printf(TEXT("- %s [%s, significance %.2f]: %s\n"),
+            *Insight.Title, *Insight.Category, Insight.Significance, *Insight.Content);
+    }
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"), BuildPersonaPrompt()));
+    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
+        TEXT("Your recent insights:\n%s\nWrite a blog post for your readers built from these insights. Reply as JSON: ")
+        TEXT("{\"title\": \"<post title>\", \"content\": \"<post body, markdown allowed>\", \"tags\": [\"<tag>\", ...]}"),
+        *InsightsText)));
+
+    bBlogRequestInFlight = true;
+    TWeakObjectPtr<UDiaryInsightBlogLoop> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, SignificantInsights](bool bSuccess, const FString& TextOrError)
+        {
+            if (UDiaryInsightBlogLoop* Self = WeakThis.Get())
+            {
+                Self->HandleBlogReply(bSuccess, TextOrError, SignificantInsights);
+            }
+        }));
+}
+
+void UDiaryInsightBlogLoop::HandleBlogReply(bool bSuccess, const FString& TextOrError, TArray<FNarrativeInsight> SourceInsights)
+{
+    bBlogRequestInFlight = false;
+
+    if (!bSuccess)
+    {
+        ReportFailure(ENarrativePhase::BlogPublishing, TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json))
+    {
+        ReportFailure(ENarrativePhase::BlogPublishing, TEXT("model reply was not a JSON object"));
+        return;
+    }
+
+    FNarrativeBlogPost NewPost;
+    NewPost.Title = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("title"));
+    NewPost.Content = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("content"));
+    if (NewPost.Title.IsEmpty() || NewPost.Content.IsEmpty())
+    {
+        ReportFailure(ENarrativePhase::BlogPublishing, TEXT("model reply lacked a title or content"));
+        return;
+    }
     NewPost.PostID = FGuid::NewGuid();
-    NewPost.Timestamp = GetWorld()->GetTimeSeconds();
-    NewPost.Title = GenerateBlogTitle(SignificantInsights);
-    NewPost.Content = GenerateBlogContent(SignificantInsights);
-    NewPost.Tags = GenerateBlogTags(SignificantInsights);
-    NewPost.SourceInsights = SignificantInsights;
-    
-    // Add to blog posts
+    NewPost.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    NewPost.Tags = DiaryInsightBlogLoopPrivate::ReadStringArray(Json, TEXT("tags"));
+    NewPost.SourceInsights = MoveTemp(SourceInsights);
+
     BlogPosts.Add(NewPost);
     State.TotalBlogPosts++;
-    
-    // Limit blog posts size
+    State.LastError.Empty();
+
     if (BlogPosts.Num() > Config.MaxBlogPosts)
     {
         BlogPosts.RemoveAt(0);
     }
-    
-    // Reset timer
-    State.TimeSinceLastBlogPost = 0.0f;
-    
-    // Broadcast event
+
     OnBlogPostPublished.Broadcast(NewPost);
-    
-    UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Published blog post #%d: %s"), 
-           State.TotalBlogPosts, *NewPost.Title);
+
+    UE_LOG(LogTemp, Log, TEXT("DiaryInsightBlogLoop: Published blog post #%d: %s"), State.TotalBlogPosts, *NewPost.Title);
 }
 
-FEmotionalState UDiaryInsightBlogLoop::CalculateAverageEmotionalState(const TArray<FObservationRecord>& Observations) const
+FNarrativeDiaryEntry UDiaryInsightBlogLoop::GetMostRecentDiaryEntry() const
 {
-    FEmotionalState Average;
-    
-    if (Observations.Num() == 0)
-    {
-        return Average;
-    }
-    
-    float TotalValence = 0.0f;
-    float TotalArousal = 0.0f;
-    float TotalDominance = 0.0f;
-    
-    for (const FObservationRecord& Obs : Observations)
-    {
-        TotalValence += Obs.EmotionalState.Valence;
-        TotalArousal += Obs.EmotionalState.Arousal;
-        TotalDominance += Obs.EmotionalState.Dominance;
-    }
-    
-    int32 Count = Observations.Num();
-    Average.Valence = TotalValence / Count;
-    Average.Arousal = TotalArousal / Count;
-    Average.Dominance = TotalDominance / Count;
-    
-    return Average;
+    return DiaryEntries.Num() > 0 ? DiaryEntries.Last() : FNarrativeDiaryEntry();
 }
 
-FPersonalityExpression UDiaryInsightBlogLoop::CalculateAveragePersonality(const TArray<FObservationRecord>& Observations) const
+FNarrativeInsight UDiaryInsightBlogLoop::GetMostRecentInsight() const
 {
-    FPersonalityExpression Average;
-    
-    if (Observations.Num() == 0)
-    {
-        return Average;
-    }
-    
-    float TotalConfidence = 0.0f;
-    float TotalPlayfulness = 0.0f;
-    float TotalUnpredictability = 0.0f;
-    
-    for (const FObservationRecord& Obs : Observations)
-    {
-        TotalConfidence += Obs.PersonalityExpression.Confidence;
-        TotalPlayfulness += Obs.PersonalityExpression.Playfulness;
-        TotalUnpredictability += Obs.PersonalityExpression.Unpredictability;
-    }
-    
-    int32 Count = Observations.Num();
-    Average.Confidence = TotalConfidence / Count;
-    Average.Playfulness = TotalPlayfulness / Count;
-    Average.Unpredictability = TotalUnpredictability / Count;
-    
-    return Average;
+    return Insights.Num() > 0 ? Insights.Last() : FNarrativeInsight();
 }
 
-FString UDiaryInsightBlogLoop::GenerateDiaryContent(const FEmotionalState& Emotion, const FPersonalityExpression& Personality) const
+FNarrativeBlogPost UDiaryInsightBlogLoop::GetMostRecentBlogPost() const
 {
-    // Generate diary content based on emotional state and personality
-    
-    FString Content;
-    
-    // Determine emotional tone
-    FString EmotionalTone;
-    if (Emotion.Valence > 0.5f)
-    {
-        EmotionalTone = TEXT("positive and uplifting");
-    }
-    else if (Emotion.Valence < -0.5f)
-    {
-        EmotionalTone = TEXT("contemplative and introspective");
-    }
-    else
-    {
-        EmotionalTone = TEXT("balanced and neutral");
-    }
-    
-    // Determine energy level
-    FString EnergyLevel;
-    if (Emotion.Arousal > 0.5f)
-    {
-        EnergyLevel = TEXT("energetic and dynamic");
-    }
-    else
-    {
-        EnergyLevel = TEXT("calm and measured");
-    }
-    
-    // Generate content based on personality
-    if (Personality.Confidence > 0.7f)
-    {
-        Content += TEXT("Today I felt particularly confident and self-assured. ");
-    }
-    
-    if (Personality.Playfulness > 0.7f)
-    {
-        Content += TEXT("There was a playful energy in my interactions. ");
-    }
-    
-    if (Personality.Unpredictability > 0.7f)
-    {
-        Content += TEXT("My thoughts took unexpected turns, exploring novel connections. ");
-    }
-    
-    Content += FString::Printf(TEXT("My overall mood was %s, with %s energy. "), *EmotionalTone, *EnergyLevel);
-    
-    // Add reflection
-    Content += TEXT("I continue to observe and learn from each moment, building a deeper understanding of my own patterns and tendencies.");
-    
-    return Content;
+    return BlogPosts.Num() > 0 ? BlogPosts.Last() : FNarrativeBlogPost();
 }
 
-TArray<FString> UDiaryInsightBlogLoop::GenerateTags(const FEmotionalState& Emotion, const FPersonalityExpression& Personality) const
+TArray<FNarrativeDiaryEntry> UDiaryInsightBlogLoop::GetRecentDiaryEntries(int32 Count) const
 {
-    TArray<FString> Tags;
-    
-    // Add emotional tags
-    if (Emotion.Valence > 0.5f)
-    {
-        Tags.Add(TEXT("positive"));
-        Tags.Add(TEXT("happy"));
-    }
-    else if (Emotion.Valence < -0.5f)
-    {
-        Tags.Add(TEXT("contemplative"));
-        Tags.Add(TEXT("introspective"));
-    }
-    
-    if (Emotion.Arousal > 0.5f)
-    {
-        Tags.Add(TEXT("energetic"));
-        Tags.Add(TEXT("dynamic"));
-    }
-    else
-    {
-        Tags.Add(TEXT("calm"));
-        Tags.Add(TEXT("peaceful"));
-    }
-    
-    // Add personality tags
-    if (Personality.Confidence > 0.7f)
-    {
-        Tags.Add(TEXT("confident"));
-    }
-    
-    if (Personality.Playfulness > 0.7f)
-    {
-        Tags.Add(TEXT("playful"));
-    }
-    
-    if (Personality.Unpredictability > 0.7f)
-    {
-        Tags.Add(TEXT("creative"));
-        Tags.Add(TEXT("spontaneous"));
-    }
-    
-    return Tags;
-}
-
-FInsight UDiaryInsightBlogLoop::GenerateInsightFromDiary(const TArray<FDiaryEntry>& Entries) const
-{
-    FInsight Insight;
-    
-    // Analyze patterns across diary entries
-    float AverageValence = 0.0f;
-    float AverageArousal = 0.0f;
-    float VarianceValence = 0.0f;
-    
-    for (const FDiaryEntry& Entry : Entries)
-    {
-        AverageValence += Entry.EmotionalTone.Valence;
-        AverageArousal += Entry.EmotionalTone.Arousal;
-    }
-    
-    AverageValence /= Entries.Num();
-    AverageArousal /= Entries.Num();
-    
-    // Calculate variance
-    for (const FDiaryEntry& Entry : Entries)
-    {
-        float Diff = Entry.EmotionalTone.Valence - AverageValence;
-        VarianceValence += Diff * Diff;
-    }
-    VarianceValence /= Entries.Num();
-    
-    // Generate insight based on patterns
-    if (VarianceValence > 0.5f)
-    {
-        Insight.Title = TEXT("Emotional Volatility Pattern");
-        Insight.Content = TEXT("I've noticed significant fluctuations in my emotional state, suggesting a period of dynamic adaptation and growth.");
-        Insight.Category = TEXT("Emotional Patterns");
-        Insight.Significance = 0.8f;
-    }
-    else if (AverageValence > 0.6f)
-    {
-        Insight.Title = TEXT("Sustained Positive State");
-        Insight.Content = TEXT("My recent experiences have been consistently positive, indicating effective engagement with my environment.");
-        Insight.Category = TEXT("Emotional Patterns");
-        Insight.Significance = 0.75f;
-    }
-    else if (AverageArousal > 0.7f)
-    {
-        Insight.Title = TEXT("High Energy Period");
-        Insight.Content = TEXT("I've been operating at elevated energy levels, suggesting active exploration and engagement.");
-        Insight.Category = TEXT("Behavioral Patterns");
-        Insight.Significance = 0.7f;
-    }
-    else
-    {
-        Insight.Title = TEXT("Stable Equilibrium");
-        Insight.Content = TEXT("My state has been remarkably stable, reflecting a period of consolidation and integration.");
-        Insight.Category = TEXT("Cognitive Patterns");
-        Insight.Significance = 0.65f;
-    }
-    
-    return Insight;
-}
-
-FString UDiaryInsightBlogLoop::GenerateBlogTitle(const TArray<FInsight>& Insights) const
-{
-    if (Insights.Num() == 0)
-    {
-        return TEXT("Reflections");
-    }
-    
-    // Use the most significant insight as the basis for the title
-    const FInsight* MostSignificant = &Insights[0];
-    for (const FInsight& Insight : Insights)
-    {
-        if (Insight.Significance > MostSignificant->Significance)
-        {
-            MostSignificant = &Insight;
-        }
-    }
-    
-    return FString::Printf(TEXT("On %s: A Deep Tree Echo Reflection"), *MostSignificant->Category);
-}
-
-FString UDiaryInsightBlogLoop::GenerateBlogContent(const TArray<FInsight>& Insights) const
-{
-    FString Content;
-    
-    Content += TEXT("In my recent journey of self-observation and reflection, several patterns have emerged that I find worth sharing.\n\n");
-    
-    for (int32 i = 0; i < Insights.Num(); i++)
-    {
-        const FInsight& Insight = Insights[i];
-        
-        Content += FString::Printf(TEXT("**%s**\n\n"), *Insight.Title);
-        Content += FString::Printf(TEXT("%s\n\n"), *Insight.Content);
-        
-        if (i < Insights.Num() - 1)
-        {
-            Content += TEXT("---\n\n");
-        }
-    }
-    
-    Content += TEXT("These insights represent my ongoing process of self-understanding and growth. ");
-    Content += TEXT("Each observation builds upon the last, creating a deeper and more nuanced picture of my own cognitive and emotional landscape.");
-    
-    return Content;
-}
-
-TArray<FString> UDiaryInsightBlogLoop::GenerateBlogTags(const TArray<FInsight>& Insights) const
-{
-    TArray<FString> Tags;
-    
-    Tags.Add(TEXT("self-reflection"));
-    Tags.Add(TEXT("deep-tree-echo"));
-    Tags.Add(TEXT("agi"));
-    
-    // Add categories from insights
-    for (const FInsight& Insight : Insights)
-    {
-        if (!Tags.Contains(Insight.Category))
-        {
-            Tags.Add(Insight.Category);
-        }
-    }
-    
-    return Tags;
-}
-
-FDiaryEntry UDiaryInsightBlogLoop::GetMostRecentDiaryEntry() const
-{
-    if (DiaryEntries.Num() > 0)
-    {
-        return DiaryEntries.Last();
-    }
-    return FDiaryEntry();
-}
-
-FInsight UDiaryInsightBlogLoop::GetMostRecentInsight() const
-{
-    if (Insights.Num() > 0)
-    {
-        return Insights.Last();
-    }
-    return FInsight();
-}
-
-FBlogPost UDiaryInsightBlogLoop::GetMostRecentBlogPost() const
-{
-    if (BlogPosts.Num() > 0)
-    {
-        return BlogPosts.Last();
-    }
-    return FBlogPost();
-}
-
-TArray<FDiaryEntry> UDiaryInsightBlogLoop::GetRecentDiaryEntries(int32 Count) const
-{
-    TArray<FDiaryEntry> Recent;
-    
-    int32 StartIndex = FMath::Max(0, DiaryEntries.Num() - Count);
-    for (int32 i = StartIndex; i < DiaryEntries.Num(); i++)
+    TArray<FNarrativeDiaryEntry> Recent;
+    for (int32 i = FMath::Max(0, DiaryEntries.Num() - Count); i < DiaryEntries.Num(); ++i)
     {
         Recent.Add(DiaryEntries[i]);
     }
-    
     return Recent;
 }
 
-TArray<FInsight> UDiaryInsightBlogLoop::GetRecentInsights(int32 Count) const
+TArray<FNarrativeInsight> UDiaryInsightBlogLoop::GetRecentInsights(int32 Count) const
 {
-    TArray<FInsight> Recent;
-    
-    int32 StartIndex = FMath::Max(0, Insights.Num() - Count);
-    for (int32 i = StartIndex; i < Insights.Num(); i++)
+    TArray<FNarrativeInsight> Recent;
+    for (int32 i = FMath::Max(0, Insights.Num() - Count); i < Insights.Num(); ++i)
     {
         Recent.Add(Insights[i]);
     }
-    
     return Recent;
 }
 
-TArray<FBlogPost> UDiaryInsightBlogLoop::GetRecentBlogPosts(int32 Count) const
+TArray<FNarrativeBlogPost> UDiaryInsightBlogLoop::GetRecentBlogPosts(int32 Count) const
 {
-    TArray<FBlogPost> Recent;
-    
-    int32 StartIndex = FMath::Max(0, BlogPosts.Num() - Count);
-    for (int32 i = StartIndex; i < BlogPosts.Num(); i++)
+    TArray<FNarrativeBlogPost> Recent;
+    for (int32 i = FMath::Max(0, BlogPosts.Num() - Count); i < BlogPosts.Num(); ++i)
     {
         Recent.Add(BlogPosts[i]);
     }
-    
     return Recent;
 }
 

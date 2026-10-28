@@ -6,7 +6,6 @@ UEchobeatsCognitiveInterface::UEchobeatsCognitiveInterface()
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
 
     ExpressionSystem = nullptr;
-    StateMachine = nullptr;
     ProceduralAnim = nullptr;
 
     bLoopRunning = false;
@@ -40,7 +39,6 @@ void UEchobeatsCognitiveInterface::BeginPlay()
 
     // Find components on owner
     ExpressionSystem = GetOwner()->FindComponentByClass<UDeepTreeEchoExpressionSystem>();
-    StateMachine = GetOwner()->FindComponentByClass<UExpressionStateMachine>();
     ProceduralAnim = GetOwner()->FindComponentByClass<UProceduralAnimationComponent>();
 
     InitializeStepConfigs();
@@ -73,20 +71,6 @@ void UEchobeatsCognitiveInterface::TickComponent(float DeltaTime, ELevelTick Tic
 
         ProcessStepChange(NextStep);
     }
-
-    // Update external state integration
-    if (bExternalSpeaking && ProceduralAnim)
-    {
-        ProceduralAnim->SetSpeakingState(true);
-    }
-    if (bExternalListening && ProceduralAnim)
-    {
-        ProceduralAnim->SetListeningState(true);
-    }
-    if (bExternalThinking && ProceduralAnim)
-    {
-        ProceduralAnim->SetThinkingState(true);
-    }
 }
 
 void UEchobeatsCognitiveInterface::InitializeStepConfigs()
@@ -103,10 +87,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 1;
         Config.PhaseName = TEXT("Pivotal-Perception");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::AlertGaze;
-        Config.EmissiveMultiplier = 1.2f;
-        Config.bTriggerMicroExpression = true;
-        Config.MicroExpressionType = EMicroExpression::UnilateralBrowRaise;
         StepConfigs.Add(Config);
     }
 
@@ -116,8 +96,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 5;
         Config.PhaseName = TEXT("Pivotal-Action");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::GentleSmile;
-        Config.EmissiveMultiplier = 1.1f;
         StepConfigs.Add(Config);
     }
 
@@ -127,8 +105,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 9;
         Config.PhaseName = TEXT("Pivotal-Simulation");
         Config.Mode = ECognitiveMode::Reflective;
-        Config.ExpressionHint = EExpressionState::Contemplative;
-        Config.EmissiveMultiplier = 0.9f;
         StepConfigs.Add(Config);
     }
 
@@ -141,8 +117,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 2;
         Config.PhaseName = TEXT("Affordance-Perception");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::CuriousGaze;
-        Config.EmissiveMultiplier = 1.15f;
         StepConfigs.Add(Config);
     }
 
@@ -152,8 +126,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 6;
         Config.PhaseName = TEXT("Affordance-Action");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::SpeakingVowel;
-        Config.EmissiveMultiplier = 1.0f;
         StepConfigs.Add(Config);
     }
 
@@ -163,8 +135,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 10;
         Config.PhaseName = TEXT("Affordance-Simulation");
         Config.Mode = ECognitiveMode::Reflective;
-        Config.ExpressionHint = EExpressionState::Contemplative;
-        Config.EmissiveMultiplier = 0.85f;
         StepConfigs.Add(Config);
     }
 
@@ -177,10 +147,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 3;
         Config.PhaseName = TEXT("Salience-Perception");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::Awe;
-        Config.EmissiveMultiplier = 1.3f;
-        Config.bTriggerMicroExpression = true;
-        Config.MicroExpressionType = EMicroExpression::EyelidFlutter;
         StepConfigs.Add(Config);
     }
 
@@ -190,8 +156,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 7;
         Config.PhaseName = TEXT("Salience-Action");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::BroadSmile;
-        Config.EmissiveMultiplier = 1.4f;
         StepConfigs.Add(Config);
     }
 
@@ -201,8 +165,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 11;
         Config.PhaseName = TEXT("Salience-Simulation");
         Config.Mode = ECognitiveMode::Reflective;
-        Config.ExpressionHint = EExpressionState::Blissful;
-        Config.EmissiveMultiplier = 1.1f;
         StepConfigs.Add(Config);
     }
 
@@ -215,8 +177,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 4;
         Config.PhaseName = TEXT("Integration-1");
         Config.Mode = ECognitiveMode::Expressive;
-        Config.ExpressionHint = EExpressionState::GentleSmile;
-        Config.EmissiveMultiplier = 1.0f;
         StepConfigs.Add(Config);
     }
 
@@ -226,10 +186,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 8;
         Config.PhaseName = TEXT("Integration-2");
         Config.Mode = ECognitiveMode::Reflective;
-        Config.ExpressionHint = EExpressionState::Neutral;
-        Config.EmissiveMultiplier = 0.95f;
-        Config.bTriggerMicroExpression = true;
-        Config.MicroExpressionType = EMicroExpression::Blink;
         StepConfigs.Add(Config);
     }
 
@@ -239,8 +195,6 @@ void UEchobeatsCognitiveInterface::InitializeStepConfigs()
         Config.StepNumber = 12;
         Config.PhaseName = TEXT("Integration-3");
         Config.Mode = ECognitiveMode::Reflective;
-        Config.ExpressionHint = EExpressionState::Contemplative;
-        Config.EmissiveMultiplier = 0.9f;
         StepConfigs.Add(Config);
     }
 
@@ -263,7 +217,6 @@ void UEchobeatsCognitiveInterface::ProcessStepChange(int32 NewStep)
     }
 
     UpdateStreams();
-    ApplyStepExpression();
 
     UE_LOG(LogTemp, Verbose, TEXT("Echobeats step %d: %s"), NewStep, Config ? *Config->PhaseName : TEXT("Unknown"));
 }
@@ -293,43 +246,6 @@ void UEchobeatsCognitiveInterface::UpdateStreams()
         {
             StreamStates[i].Phase = ECognitiveStreamPhase::Simulation;
         }
-    }
-}
-
-void UEchobeatsCognitiveInterface::ApplyStepExpression()
-{
-    const FCognitiveStepConfig* Config = GetStepConfig(CurrentStep);
-    if (!Config)
-        return;
-
-    // Apply expression hint (unless external state overrides)
-    if (!bExternalSpeaking && !bExternalThinking)
-    {
-        if (StateMachine)
-        {
-            FExpressionTransitionRequest Request;
-            Request.TargetState = Config->ExpressionHint;
-            Request.Duration = StepDuration * 0.5f;  // Transition in first half of step
-            Request.Priority = EExpressionPriority::Normal;
-            Request.Curve = ETransitionCurve::EaseInOut;
-            StateMachine->RequestTransition(Request);
-        }
-        else if (ExpressionSystem)
-        {
-            ExpressionSystem->SetExpressionState(Config->ExpressionHint, StepDuration * 0.5f);
-        }
-    }
-
-    // Apply emissive multiplier
-    if (ExpressionSystem)
-    {
-        ExpressionSystem->SetEmissiveIntensity(Config->EmissiveMultiplier);
-    }
-
-    // Trigger microexpression if configured
-    if (Config->bTriggerMicroExpression && ExpressionSystem)
-    {
-        ExpressionSystem->TriggerMicroExpression(Config->MicroExpressionType, 0.2f);
     }
 }
 
@@ -364,12 +280,6 @@ void UEchobeatsCognitiveInterface::StopCognitiveLoop()
 {
     bLoopRunning = false;
     bLoopPaused = false;
-
-    // Return to neutral
-    if (StateMachine)
-    {
-        StateMachine->ReturnToNeutral(0.5f);
-    }
 
     UE_LOG(LogTemp, Log, TEXT("Echobeats cognitive loop stopped"));
 }
@@ -412,7 +322,7 @@ void UEchobeatsCognitiveInterface::SignalRelevanceRealization(const FRelevanceRe
     // Fire event
     OnRelevanceRealization.Broadcast(StreamIndex, Event.Salience);
 
-    // If this is an insight, trigger Wonder-to-Joy
+    // Insight / high salience are visualised on the emissive tech elements only
     if (Event.bIsInsight)
     {
         SignalInsight(Event.Significance);
@@ -432,26 +342,11 @@ void UEchobeatsCognitiveInterface::SignalRelevanceRealization(const FRelevanceRe
 
 void UEchobeatsCognitiveInterface::SignalInsight(float Intensity)
 {
-    // Trigger the Wonder-to-Joy transition
-    if (StateMachine)
-    {
-        StateMachine->PlayWonderToJoy(1.5f * (2.0f - Intensity));  // Higher intensity = faster
-    }
-    else if (ExpressionSystem)
-    {
-        ExpressionSystem->TriggerWonderToJoyTransition(1.5f);
-    }
-
-    // Pulse emissives
+    // Pulse emissives (tech-element visualisation of the insight signal; the face is
+    // left to the character model's reactions)
     if (ExpressionSystem)
     {
         ExpressionSystem->PulseEmissives(0.5f, 2.0f + Intensity);
-    }
-
-    // Trigger deliberate blink
-    if (ProceduralAnim)
-    {
-        ProceduralAnim->TriggerDeliberateBlink(0.4f);
     }
 
     UE_LOG(LogTemp, Log, TEXT("Insight signaled with intensity %.2f"), Intensity);
@@ -488,6 +383,7 @@ FCognitiveStreamState UEchobeatsCognitiveInterface::GetStreamState(int32 StreamI
 
 void UEchobeatsCognitiveInterface::ReceiveCognitiveUpdate(ECognitiveState NewState, float Confidence)
 {
+    // Recorded only; the expression system does not derive an expression from it
     if (ExpressionSystem)
     {
         ExpressionSystem->SetCognitiveState(NewState);
@@ -502,6 +398,7 @@ void UEchobeatsCognitiveInterface::ReceiveCognitiveUpdate(ECognitiveState NewSta
 
 void UEchobeatsCognitiveInterface::ReceiveSpeechUpdate(bool bIsSpeaking, float Amplitude)
 {
+    // Playback of real speech audio: mouth follows the actual amplitude
     bExternalSpeaking = bIsSpeaking;
     ExternalSpeakingAmplitude = Amplitude;
 
@@ -510,47 +407,21 @@ void UEchobeatsCognitiveInterface::ReceiveSpeechUpdate(bool bIsSpeaking, float A
         ProceduralAnim->SetSpeakingState(bIsSpeaking);
     }
 
-    if (ExpressionSystem && bIsSpeaking)
+    if (ExpressionSystem)
     {
-        ExpressionSystem->SetSpeakingAmplitude(Amplitude);
+        ExpressionSystem->SetSpeakingAmplitude(bIsSpeaking ? Amplitude : 0.0f);
     }
 }
 
 void UEchobeatsCognitiveInterface::ReceiveListeningUpdate(bool bIsListening)
 {
+    // Recorded only. No canned listening sequence or nodding is played for the character.
     bExternalListening = bIsListening;
-
-    if (ProceduralAnim)
-    {
-        ProceduralAnim->SetListeningState(bIsListening);
-    }
-
-    if (bIsListening && StateMachine)
-    {
-        StateMachine->PlaySequence(TEXT("Listening"));
-    }
-    else if (!bIsListening && StateMachine)
-    {
-        StateMachine->StopSequence();
-    }
 }
 
 void UEchobeatsCognitiveInterface::ReceiveThinkingUpdate(bool bIsThinking, float Intensity)
 {
+    // Recorded only. No canned thinking expression sequence is played for the character.
     bExternalThinking = bIsThinking;
     ExternalThinkingIntensity = Intensity;
-
-    if (ProceduralAnim)
-    {
-        ProceduralAnim->SetThinkingState(bIsThinking);
-    }
-
-    if (bIsThinking && StateMachine)
-    {
-        StateMachine->PlayThinkingSequence();
-    }
-    else if (!bIsThinking && StateMachine)
-    {
-        StateMachine->StopSequence();
-    }
 }

@@ -3,6 +3,35 @@
 #include "Animation/AnimInstance.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "GameFramework/Actor.h"
+#include "AvatarAnimInstance.h"
+#include "EchoCharacterReaction.h"
+
+namespace
+{
+    /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
+    template <typename TEnum>
+    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    {
+        const FString Trimmed = Name.TrimStartAndEnd();
+        const UEnum* Enum = StaticEnum<TEnum>();
+        if (Trimmed.IsEmpty() || !Enum)
+        {
+            return false;
+        }
+
+        // NumEnums() includes the generated _MAX entry
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            if (Enum->GetNameStringByIndex(Index).Equals(Trimmed, ESearchCase::IgnoreCase) ||
+                Enum->GetDisplayNameTextByIndex(Index).ToString().Equals(Trimmed, ESearchCase::IgnoreCase))
+            {
+                OutValue = static_cast<TEnum>(Enum->GetValueByIndex(Index));
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
 UAvatar3DComponentEnhanced::UAvatar3DComponentEnhanced()
 {
@@ -16,8 +45,6 @@ UAvatar3DComponentEnhanced::UAvatar3DComponentEnhanced()
     EmotionTransitionProgress = 0.0f;
     
     ChaosFactor = 0.3f;
-    ChaosTimer = 0.0f;
-    NextChaoticEventTime = FMath::FRandRange(2.0f, 5.0f);
     
     EchoResonanceIntensity = 0.0f;
     GlitchIntensity = 0.0f;
@@ -62,9 +89,45 @@ void UAvatar3DComponentEnhanced::BeginPlay()
     
     // Apply initial appearance
     UpdateMaterialParameters();
+
+    // Emotions shown by this avatar come from model replies only
+    TWeakObjectPtr<UAvatar3DComponentEnhanced> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UAvatar3DComponentEnhanced* Self = WeakThis.Get())
+        {
+            Self->ApplyCharacterReaction(Reaction);
+        }
+    });
     
     UE_LOG(LogTemp, Log, TEXT("Avatar3DComponentEnhanced initialized for %s"), 
            *GetOwner()->GetName());
+}
+
+void UAvatar3DComponentEnhanced::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
+void UAvatar3DComponentEnhanced::ApplyCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    EAvatarEmotionalState Emotion{};
+    if (ParseReactionEnum(Reaction.Expression, Emotion))
+    {
+        SetEmotionalState(Emotion, FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f));
+    }
 }
 
 void UAvatar3DComponentEnhanced::TickComponent(float DeltaTime, ELevelTick TickType, 
@@ -74,7 +137,7 @@ void UAvatar3DComponentEnhanced::TickComponent(float DeltaTime, ELevelTick TickT
     
     // Update all avatar systems
     UpdateEmotionalTransition(DeltaTime);
-    UpdateChaoticBehavior(DeltaTime);
+    UpdateLipSync(DeltaTime);
     UpdateGazeTracking(DeltaTime);
     UpdateHeadTracking(DeltaTime);
     UpdateVisualEffects(DeltaTime);
@@ -216,18 +279,6 @@ void UAvatar3DComponentEnhanced::SetHyperChaoticBehavior(float ChaosFactor_)
     EnablePersonalityTrait(EAvatarPersonalityTrait::HyperChaotic, ChaosFactor);
     
     UE_LOG(LogTemp, Log, TEXT("Hyper-chaotic behavior set to: %.2f"), ChaosFactor);
-}
-
-void UAvatar3DComponentEnhanced::TriggerChaoticMicroExpression()
-{
-    // Generate random micro-expression
-    float RandomIntensity = FMath::FRandRange(0.1f, 0.3f);
-    int32 RandomEmotion = FMath::RandRange(0, 9);
-    
-    EAvatarEmotionalState TempEmotion = static_cast<EAvatarEmotionalState>(RandomEmotion);
-    TransitionToEmotion(TempEmotion, 0.1f);
-    
-    UE_LOG(LogTemp, Log, TEXT("Chaotic micro-expression triggered"));
 }
 
 void UAvatar3DComponentEnhanced::SetConfidenceLevel(float Confidence)
@@ -407,20 +458,59 @@ void UAvatar3DComponentEnhanced::ApplyGlowEffect(const FLinearColor& GlowColor, 
 
 void UAvatar3DComponentEnhanced::StartLipSync(const TArray<float>& AudioData)
 {
-    // In production, this would drive mouth blend shapes based on audio
-    UE_LOG(LogTemp, Log, TEXT("Lip sync started with %d audio samples"), AudioData.Num());
+    if (AudioData.Num() == 0)
+    {
+        StopLipSync();
+        return;
+    }
+
+    // Amplitude envelope of the speech audio being played
+    LipSyncEnvelope.Reset(AudioData.Num());
+    for (float Sample : AudioData)
+    {
+        LipSyncEnvelope.Add(FMath::Abs(Sample));
+    }
+    LipSyncTime = 0.0f;
+    bLipSyncActive = true;
 }
 
 void UAvatar3DComponentEnhanced::StopLipSync()
 {
-    // In production, this would reset mouth to neutral
-    UE_LOG(LogTemp, Log, TEXT("Lip sync stopped"));
+    bLipSyncActive = false;
+    LipSyncEnvelope.Reset();
+    LipSyncTime = 0.0f;
+
+    if (UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance()))
+    {
+        AvatarAnimInstance->SetSpeechAmplitude(0.0f);
+    }
 }
 
 void UAvatar3DComponentEnhanced::SetLipSyncEmotionalModulation(float EmotionalIntensity)
 {
-    // In production, this would modulate lip sync based on emotion
-    UE_LOG(LogTemp, Log, TEXT("Lip sync emotional modulation: %.2f"), EmotionalIntensity);
+    // Scales how wide the mouth opens for a given audio amplitude
+    LipSyncModulation = FMath::Clamp(1.0f + EmotionalIntensity, 0.5f, 2.0f);
+}
+
+void UAvatar3DComponentEnhanced::UpdateLipSync(float DeltaTime)
+{
+    if (!bLipSyncActive)
+    {
+        return;
+    }
+
+    LipSyncTime += DeltaTime;
+    const int32 SampleIndex = FMath::FloorToInt(LipSyncTime * LipSyncEnvelopeRate);
+    if (!LipSyncEnvelope.IsValidIndex(SampleIndex))
+    {
+        StopLipSync();
+        return;
+    }
+
+    if (UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance()))
+    {
+        AvatarAnimInstance->SetSpeechAmplitude(LipSyncEnvelope[SampleIndex] * LipSyncModulation);
+    }
 }
 
 // ===== Internal Methods =====
@@ -440,21 +530,6 @@ void UAvatar3DComponentEnhanced::UpdateEmotionalTransition(float DeltaTime)
             // Transition complete
             EmotionalState.CurrentEmotion = TargetEmotion;
             ApplyEmotionToFacialAnimation();
-        }
-    }
-}
-
-void UAvatar3DComponentEnhanced::UpdateChaoticBehavior(float DeltaTime)
-{
-    if (ChaosFactor > 0.1f)
-    {
-        ChaosTimer += DeltaTime;
-        
-        if (ChaosTimer >= NextChaoticEventTime)
-        {
-            TriggerRandomChaoticEvent();
-            ChaosTimer = 0.0f;
-            NextChaoticEventTime = FMath::FRandRange(2.0f / ChaosFactor, 5.0f / ChaosFactor);
         }
     }
 }
@@ -537,30 +612,10 @@ void UAvatar3DComponentEnhanced::InitializeDynamicMaterials()
 
 void UAvatar3DComponentEnhanced::ApplyEmotionToFacialAnimation()
 {
-    // In production, this would set blend shape weights based on emotion
-    // For now, just log the emotion change
-    UE_LOG(LogTemp, Log, TEXT("Applying emotion to facial animation: %d"), 
-           (int32)EmotionalState.CurrentEmotion);
-}
-
-void UAvatar3DComponentEnhanced::TriggerRandomChaoticEvent()
-{
-    int32 EventType = FMath::RandRange(0, 2);
-    
-    switch (EventType)
+    // The anim instance turns the emotion into facial blend shapes
+    if (UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance()))
     {
-        case 0:
-            // Micro-expression
-            TriggerChaoticMicroExpression();
-            break;
-        case 1:
-            // Glitch effect
-            TriggerGlitchEffect(FMath::FRandRange(0.2f, 0.5f) * ChaosFactor);
-            break;
-        case 2:
-            // Eye sparkle burst
-            SetEyeSparkle(1.0f);
-            break;
+        AvatarAnimInstance->UpdateEmotionalState(EmotionalState.CurrentEmotion, EmotionalState.EmotionIntensity);
     }
 }
 

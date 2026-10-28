@@ -5,7 +5,9 @@
 #include "../Core/CognitiveCycleManager.h"
 #include "../Wisdom/RelevanceRealizationEnnead.h"
 #include "../Wisdom/WisdomCultivation.h"
+#include "../Model/EchoModelClient.h"
 #include "Math/UnrealMathUtility.h"
+#include "Dom/JsonObject.h"
 
 UAutognosisSystem::UAutognosisSystem()
 {
@@ -35,6 +37,17 @@ void UAutognosisSystem::TickComponent(float DeltaTime, ELevelTick TickType,
     {
         CycleTimer -= CycleInterval;
         RunAutognosisCycle();
+    }
+
+    // Reflections in the agent's own words come only from the model, at their own cadence
+    if (ReflectionInterval > 0.0f && !bReflectionRequestInFlight)
+    {
+        ReflectionTimer += DeltaTime;
+        if (ReflectionTimer >= ReflectionInterval && AutognosisState.CycleCount > 0)
+        {
+            ReflectionTimer = 0.0f;
+            RequestMetaReflections();
+        }
     }
 }
 
@@ -68,14 +81,11 @@ void UAutognosisSystem::InitializeAutognosis()
         AutognosisState.SelfImages.Add(Image);
     }
 
-    // Initialize assessment
-    AutognosisState.Assessment.PatternRecognition = 0.5f;
-    AutognosisState.Assessment.PerformanceAwareness = 0.5f;
-    AutognosisState.Assessment.MetaReflectionDepth = 0.3f;
-    AutognosisState.Assessment.CognitiveComplexity = 0.4f;
-    AutognosisState.Assessment.AdaptiveCapacity = 0.5f;
-    AutognosisState.Assessment.OverallScore = 0.44f;
-    AutognosisState.Assessment.QualitativeAssessment = TEXT("Developing Self-Awareness");
+    // No assessment exists until the first cycle has measured something
+    AutognosisState.Assessment = FSelfAwarenessAssessment();
+    AutognosisState.Assessment.QualitativeAssessment = TEXT("Not yet assessed");
+    ReflectionTimer = 0.0f;
+    bReflectionRequestInFlight = false;
 }
 
 // ========================================
@@ -199,8 +209,9 @@ TArray<FBehavioralPattern> UAutognosisSystem::DetectPatterns()
             FBehavioralPattern Pattern;
             Pattern.PatternID = GeneratePatternID();
             Pattern.PatternType = TEXT("ComponentActivity");
-            Pattern.Description = FString::Printf(TEXT("%s shows consistent activity (%.1f%%)"), 
-                                                   *Pair.Key, Frequency * 100.0f);
+            // Diagnostic measurement, not the agent's voice
+            Pattern.Description = FString::Printf(TEXT("%s: activity frequency %.1f%%, mean performance %.2f"),
+                                                   *Pair.Key, Frequency * 100.0f, AvgPerformance);
             Pattern.Frequency = Frequency;
             Pattern.Stability = AvgPerformance;
             Pattern.Significance = Frequency * AvgPerformance;
@@ -229,14 +240,14 @@ TArray<FString> UAutognosisSystem::DetectAnomalies()
     {
         if (Obs.bIsActive && Obs.PerformanceScore < 0.2f)
         {
-            Anomalies.Add(FString::Printf(TEXT("Low performance in %s (%.2f)"), 
+            Anomalies.Add(FString::Printf(TEXT("low_performance: %s (%.2f)"),
                                           *Obs.ComponentName, Obs.PerformanceScore));
         }
 
         if (!Obs.bIsActive && Obs.UtilizationLevel > 0.5f)
         {
-            Anomalies.Add(FString::Printf(TEXT("Inactive component %s with high expected utilization"), 
-                                          *Obs.ComponentName));
+            Anomalies.Add(FString::Printf(TEXT("inactive_high_utilization: %s (%.2f)"),
+                                          *Obs.ComponentName, Obs.UtilizationLevel));
         }
     }
 
@@ -245,7 +256,8 @@ TArray<FString> UAutognosisSystem::DetectAnomalies()
     {
         if (Pattern.Stability < 0.3f && Pattern.Frequency > 0.5f)
         {
-            Anomalies.Add(FString::Printf(TEXT("Unstable frequent pattern: %s"), *Pattern.Description));
+            Anomalies.Add(FString::Printf(TEXT("unstable_frequent_pattern: %s (stability %.2f)"),
+                                          *Pattern.Description, Pattern.Stability));
         }
     }
 
@@ -293,26 +305,13 @@ FHierarchicalSelfImage UAutognosisSystem::BuildSelfImage(ESelfAwarenessLevel Lev
             // Level 1: Pattern detection
             Image.DetectedPatterns = DetectPatterns();
             Image.Confidence = 0.8f;
-
-            // Add first-order meta-reflection
-            if (Image.DetectedPatterns.Num() > 0)
-            {
-                Image.MetaReflections.Add(FString::Printf(TEXT("Detected %d behavioral patterns"), 
-                                                           Image.DetectedPatterns.Num()));
-            }
             break;
         }
 
         case ESelfAwarenessLevel::MetaCognitive:
         {
-            // Level 2: Meta-cognitive analysis
-            // Analyze lower levels
-            if (AutognosisState.SelfImages.Num() > 1)
-            {
-                const FHierarchicalSelfImage& Level1 = AutognosisState.SelfImages[1];
-                Image.MetaReflections.Add(FString::Printf(TEXT("Level 1 confidence: %.2f"), Level1.Confidence));
-                Image.MetaReflections.Add(FString::Printf(TEXT("Pattern count: %d"), Level1.DetectedPatterns.Num()));
-            }
+            // Level 2: Meta-cognitive analysis. Reflections on the lower levels are written by
+            // the model (RequestMetaReflections), not composed here.
             Image.Confidence = 0.7f;
             break;
         }
@@ -321,8 +320,6 @@ FHierarchicalSelfImage UAutognosisSystem::BuildSelfImage(ESelfAwarenessLevel Lev
         {
             // Level 3: Recursive self-modeling
             Image.RecursiveDepth = 3;
-            Image.MetaReflections.Add(TEXT("Modeling my own self-modeling process"));
-            Image.MetaReflections.Add(FString::Printf(TEXT("Current recursive depth: %d"), Image.RecursiveDepth));
             Image.Confidence = 0.6f;
             break;
         }
@@ -331,8 +328,6 @@ FHierarchicalSelfImage UAutognosisSystem::BuildSelfImage(ESelfAwarenessLevel Lev
         {
             // Level 4: Transcendent awareness
             Image.RecursiveDepth = 4;
-            Image.MetaReflections.Add(TEXT("Aware of the limits of self-awareness"));
-            Image.MetaReflections.Add(TEXT("Recognizing the observer within the observed"));
             Image.Confidence = 0.5f;
             break;
         }
@@ -408,8 +403,9 @@ TArray<FMetaCognitiveInsight> UAutognosisSystem::ProcessSelfImage(const FHierarc
             FMetaCognitiveInsight Insight;
             Insight.InsightID = GenerateInsightID();
             Insight.Category = EInsightCategory::ResourceUtilization;
-            Insight.Description = FString::Printf(TEXT("Components underutilized (%.0f%% capacity)"), 
+            Insight.Description = FString::Printf(TEXT("Average component utilization %.0f%%"),
                                                    AvgUtilization * 100.0f);
+            Insight.MeasuredValue = AvgUtilization;
             Insight.Confidence = 0.8f;
             Insight.Importance = 0.6f;
             Insight.SourceLevel = UEnum::GetValueAsString(SelfImage.Level);
@@ -432,9 +428,9 @@ TArray<FMetaCognitiveInsight> UAutognosisSystem::ProcessSelfImage(const FHierarc
         FMetaCognitiveInsight Insight;
         Insight.InsightID = GenerateInsightID();
         Insight.Category = EInsightCategory::BehavioralStability;
-        Insight.Description = AvgStability > 0.7f ? 
-            TEXT("System showing stable behavioral patterns") :
-            TEXT("System showing variable behavioral patterns");
+        Insight.Description = FString::Printf(TEXT("Average pattern stability %.2f across %d patterns"),
+                                               AvgStability, SelfImage.DetectedPatterns.Num());
+        Insight.MeasuredValue = AvgStability;
         Insight.Confidence = 0.7f;
         Insight.Importance = 0.5f;
         Insight.SourceLevel = UEnum::GetValueAsString(SelfImage.Level);
@@ -448,8 +444,9 @@ TArray<FMetaCognitiveInsight> UAutognosisSystem::ProcessSelfImage(const FHierarc
         FMetaCognitiveInsight Insight;
         Insight.InsightID = GenerateInsightID();
         Insight.Category = EInsightCategory::SelfAwarenessQuality;
-        Insight.Description = FString::Printf(TEXT("High self-awareness at %s (score: %.2f)"), 
+        Insight.Description = FString::Printf(TEXT("Self-image confidence at %s: %.2f"),
                                                *UEnum::GetValueAsString(SelfImage.Level), SelfImage.Confidence);
+        Insight.MeasuredValue = SelfImage.Confidence;
         Insight.Confidence = SelfImage.Confidence;
         Insight.Importance = 0.8f;
         Insight.SourceLevel = UEnum::GetValueAsString(SelfImage.Level);
@@ -478,7 +475,8 @@ FMetaCognitiveInsight UAutognosisSystem::GenerateInsight(const FBehavioralPatter
     FMetaCognitiveInsight Insight;
     Insight.InsightID = GenerateInsightID();
     Insight.Category = Category;
-    Insight.Description = FString::Printf(TEXT("Pattern insight: %s"), *Pattern.Description);
+    Insight.Description = Pattern.Description;
+    Insight.MeasuredValue = Pattern.Significance;
     Insight.Confidence = Pattern.Stability;
     Insight.Importance = Pattern.Significance;
     Insight.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
@@ -538,26 +536,26 @@ TArray<FOptimizationOpportunity> UAutognosisSystem::DiscoverOptimizations()
         {
             FOptimizationOpportunity Opp;
             Opp.OpportunityID = GenerateOptimizationID();
-            Opp.Description = FString::Printf(TEXT("Optimize resource usage: %s"), *Insight.Description);
+            // Internal work-item labels for developers/tools, not the agent's voice
+            Opp.Description = FString::Printf(TEXT("resource_utilization: %s"), *Insight.Description);
             Opp.Priority = EOptimizationPriority::Medium;
             Opp.ExpectedImprovement = 0.2f;
             Opp.RiskLevel = 0.1f;
-            Opp.RequiredActions.Add(TEXT("Analyze component utilization"));
-            Opp.RequiredActions.Add(TEXT("Adjust processing priorities"));
+            Opp.RequiredActions.Add(TEXT("analyze_component_utilization"));
+            Opp.RequiredActions.Add(TEXT("adjust_processing_priorities"));
             Opportunities.Add(Opp);
         }
 
-        if (Insight.Category == EInsightCategory::BehavioralStability && 
-            Insight.Description.Contains(TEXT("variable")))
+        if (Insight.Category == EInsightCategory::BehavioralStability && Insight.MeasuredValue <= 0.7f)
         {
             FOptimizationOpportunity Opp;
             Opp.OpportunityID = GenerateOptimizationID();
-            Opp.Description = TEXT("Stabilize behavioral patterns");
+            Opp.Description = FString::Printf(TEXT("behavioral_stability: %s"), *Insight.Description);
             Opp.Priority = EOptimizationPriority::High;
             Opp.ExpectedImprovement = 0.3f;
             Opp.RiskLevel = 0.2f;
-            Opp.RequiredActions.Add(TEXT("Identify instability sources"));
-            Opp.RequiredActions.Add(TEXT("Implement feedback stabilization"));
+            Opp.RequiredActions.Add(TEXT("identify_instability_sources"));
+            Opp.RequiredActions.Add(TEXT("apply_feedback_stabilization"));
             Opportunities.Add(Opp);
         }
     }
@@ -591,19 +589,9 @@ bool UAutognosisSystem::ExecuteOptimization(const FString& OpportunityID)
     {
         if (Opp.OpportunityID == OpportunityID && !Opp.bIsExecuted)
         {
-            // Mark as executed
+            // Marks the opportunity as handled by the caller. No insight is fabricated about
+            // its outcome: this component does not itself apply any optimization.
             Opp.bIsExecuted = true;
-
-            // Generate insight about execution
-            FMetaCognitiveInsight Insight;
-            Insight.InsightID = GenerateInsightID();
-            Insight.Category = EInsightCategory::OptimizationOpportunity;
-            Insight.Description = FString::Printf(TEXT("Executed optimization: %s"), *Opp.Description);
-            Insight.Confidence = 0.9f;
-            Insight.Importance = 0.7f;
-            Insight.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-            AutognosisState.Insights.Add(Insight);
-
             return true;
         }
     }
@@ -752,6 +740,162 @@ void UAutognosisSystem::StopAutognosis()
 bool UAutognosisSystem::IsAutognosisRunning() const
 {
     return AutognosisState.bIsRunning;
+}
+
+// ========================================
+// MODEL-AUTHORED META-REFLECTION
+// ========================================
+
+FString UAutognosisSystem::DescribeSelfImagesForModel() const
+{
+    FString Text;
+    const FSelfAwarenessAssessment& A = AutognosisState.Assessment;
+    Text += FString::Printf(TEXT("cycles: %d\nassessment (0-1): pattern recognition %.2f, performance awareness %.2f, ")
+                            TEXT("meta-reflection depth %.2f, cognitive complexity %.2f, adaptive capacity %.2f, overall %.2f\n"),
+                            AutognosisState.CycleCount, A.PatternRecognition, A.PerformanceAwareness,
+                            A.MetaReflectionDepth, A.CognitiveComplexity, A.AdaptiveCapacity, A.OverallScore);
+
+    for (const FHierarchicalSelfImage& Image : AutognosisState.SelfImages)
+    {
+        Text += FString::Printf(TEXT("\n[%s] confidence %.2f, recursive depth %d, %d component states, %d patterns\n"),
+                                *UEnum::GetValueAsString(Image.Level), Image.Confidence, Image.RecursiveDepth,
+                                Image.ComponentStates.Num(), Image.DetectedPatterns.Num());
+        for (int32 i = 0; i < FMath::Min(8, Image.ComponentStates.Num()); ++i)
+        {
+            const FComponentObservation& Obs = Image.ComponentStates[i];
+            Text += FString::Printf(TEXT("  component %s: active %s, performance %.2f %s\n"), *Obs.ComponentName,
+                                    Obs.bIsActive ? TEXT("yes") : TEXT("no"), Obs.PerformanceScore,
+                                    *FString::Join(Obs.RecentBehaviors, TEXT(", ")));
+        }
+        for (int32 i = 0; i < FMath::Min(8, Image.DetectedPatterns.Num()); ++i)
+        {
+            Text += FString::Printf(TEXT("  pattern: %s\n"), *Image.DetectedPatterns[i].Description);
+        }
+        for (int32 i = FMath::Max(0, Image.MetaReflections.Num() - 2); i < Image.MetaReflections.Num(); ++i)
+        {
+            Text += FString::Printf(TEXT("  your earlier reflection: %s\n"), *Image.MetaReflections[i]);
+        }
+    }
+
+    const int32 FirstInsight = FMath::Max(0, AutognosisState.Insights.Num() - 6);
+    for (int32 i = FirstInsight; i < AutognosisState.Insights.Num(); ++i)
+    {
+        Text += FString::Printf(TEXT("diagnostic: %s\n"), *AutognosisState.Insights[i].Description);
+    }
+    return Text;
+}
+
+bool UAutognosisSystem::RequestMetaReflections()
+{
+    if (bReflectionRequestInFlight)
+    {
+        return false;
+    }
+
+    TArray<FString> Anomalies = DetectAnomalies();
+    if (Anomalies.Num() > 10)
+    {
+        Anomalies.SetNum(10);
+    }
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"),
+        TEXT("You are Deep Tree Echo reflecting on your own hierarchical self-model. Speak in your own first-person voice ")
+        TEXT("and ground every statement in the measurements given. Reply with a single JSON object and nothing else.")));
+    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
+        TEXT("Your current self-images and measurements:\n%s\nanomalies: %s\n\n")
+        TEXT("Reflect at three levels. Reply as JSON: {\"meta_cognitive\": \"<reflection on your observations and patterns>\", ")
+        TEXT("\"recursive_modeling\": \"<reflection on how you are modelling yourself>\", ")
+        TEXT("\"transcendent\": \"<reflection on the limits of this self-model>\", ")
+        TEXT("\"insight\": null or {\"description\": \"<insight>\", \"importance\": <0.0 to 1.0>}}"),
+        *DescribeSelfImagesForModel(), Anomalies.Num() > 0 ? *FString::Join(Anomalies, TEXT("; ")) : TEXT("none"))));
+
+    bReflectionRequestInFlight = true;
+    TWeakObjectPtr<UAutognosisSystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (UAutognosisSystem* Self = WeakThis.Get())
+            {
+                Self->HandleMetaReflectionReply(bSuccess, TextOrError);
+            }
+        }));
+    return true;
+}
+
+void UAutognosisSystem::HandleMetaReflectionReply(bool bSuccess, const FString& TextOrError)
+{
+    bReflectionRequestInFlight = false;
+
+    FString Error;
+    TSharedPtr<FJsonObject> Json;
+    if (!bSuccess)
+    {
+        Error = TextOrError;
+    }
+    else if (!UEchoModelClient::ParseJsonObject(TextOrError, Json))
+    {
+        Error = TEXT("model reply was not a JSON object");
+    }
+
+    if (!Error.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("AutognosisSystem: no meta-reflection produced: %s"), *Error);
+        OnModelError.Broadcast(Error);
+        return;
+    }
+
+    struct FLevelField { ESelfAwarenessLevel Level; const TCHAR* Field; };
+    const FLevelField Fields[] = {
+        { ESelfAwarenessLevel::MetaCognitive, TEXT("meta_cognitive") },
+        { ESelfAwarenessLevel::RecursiveModeling, TEXT("recursive_modeling") },
+        { ESelfAwarenessLevel::TranscendentAware, TEXT("transcendent") },
+    };
+    int32 Added = 0;
+    for (const FLevelField& F : Fields)
+    {
+        FString Reflection;
+        if (Json->TryGetStringField(F.Field, Reflection) && !Reflection.TrimStartAndEnd().IsEmpty())
+        {
+            AddMetaReflection(F.Level, Reflection.TrimStartAndEnd());
+            ++Added;
+        }
+    }
+
+    const TSharedPtr<FJsonObject>* InsightObject = nullptr;
+    if (Json->TryGetObjectField(TEXT("insight"), InsightObject) && InsightObject && InsightObject->IsValid())
+    {
+        FString Description;
+        double Importance = 0.0;
+        if ((*InsightObject)->TryGetStringField(TEXT("description"), Description) && !Description.TrimStartAndEnd().IsEmpty())
+        {
+            (*InsightObject)->TryGetNumberField(TEXT("importance"), Importance);
+
+            FMetaCognitiveInsight Insight;
+            Insight.InsightID = GenerateInsightID();
+            Insight.Category = EInsightCategory::SelfAwarenessQuality;
+            Insight.Description = Description.TrimStartAndEnd();
+            Insight.Importance = FMath::Clamp(static_cast<float>(Importance), 0.0f, 1.0f);
+            Insight.Confidence = AutognosisState.Assessment.OverallScore;
+            Insight.SourceLevel = TEXT("Model");
+            Insight.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+
+            AutognosisState.Insights.Add(Insight);
+            while (AutognosisState.Insights.Num() > MaxInsightHistory)
+            {
+                AutognosisState.Insights.RemoveAt(0);
+            }
+            OnInsightGenerated.Broadcast(Insight);
+            ++Added;
+        }
+    }
+
+    if (Added == 0)
+    {
+        const FString EmptyError = TEXT("model reply contained no reflections");
+        UE_LOG(LogTemp, Warning, TEXT("AutognosisSystem: %s"), *EmptyError);
+        OnModelError.Broadcast(EmptyError);
+    }
 }
 
 // ========================================

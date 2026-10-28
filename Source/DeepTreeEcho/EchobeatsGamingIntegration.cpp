@@ -971,27 +971,32 @@ FString UEchobeatsGamingIntegration::GetRecommendedAction(const TArray<float>& G
     return Decision;
 }
 
-FString UEchobeatsGamingIntegration::GetAttentionFocusRecommendation() const
+void UEchobeatsGamingIntegration::RequestAttentionFocusRecommendation()
 {
-    // Find highest salience element
-    FString HighestSalience;
-    float MaxSalience = 0.0f;
+    const FString Topic = TEXT("attention_focus");
+    if (SalienceMap.ElementSalience.Num() == 0)
+    {
+        OnCoachingFailed.Broadcast(Topic, TEXT("salience map is empty; nothing to base a recommendation on"));
+        return;
+    }
 
+    TArray<TPair<FString, float>> Elements;
     for (const auto& Pair : SalienceMap.ElementSalience)
     {
-        if (Pair.Value > MaxSalience)
-        {
-            MaxSalience = Pair.Value;
-            HighestSalience = Pair.Key;
-        }
+        Elements.Emplace(Pair.Key, Pair.Value);
     }
+    Elements.Sort([](const TPair<FString, float>& A, const TPair<FString, float>& B) { return A.Value > B.Value; });
 
-    if (MaxSalience > 0.7f)
+    FString Metrics = FString::Printf(TEXT("attention radius %.1f, peripheral awareness %.2f, threat boost %.2f, opportunity boost %.2f\n"),
+        SalienceMap.AttentionRadius, SalienceMap.PeripheralAwareness, SalienceMap.ThreatBoost, SalienceMap.OpportunityBoost);
+    for (int32 i = 0; i < FMath::Min(10, Elements.Num()); ++i)
     {
-        return FString::Printf(TEXT("Focus on %s (salience: %.2f)"), *HighestSalience, MaxSalience);
+        Metrics += FString::Printf(TEXT("element %s: salience %.2f\n"), *Elements[i].Key, Elements[i].Value);
     }
 
-    return TEXT("Maintain broad awareness");
+    EchoCoaching::Request(this, Topic,
+        TEXT("Tell the player where to focus their attention right now, given these salience measurements."),
+        Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 float UEchobeatsGamingIntegration::GetActionTimingRecommendation(const FString& ActionID) const

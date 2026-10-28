@@ -5,6 +5,8 @@
 #include "../Core/CognitiveCycleManager.h"
 #include "../Memory/MemorySystems.h"
 #include "../Emotion/EmotionalSystem.h"
+#include "../Model/EchoModelClient.h"
+#include "../Model/EchoCharacterReaction.h"
 #include "Math/UnrealMathUtility.h"
 
 ULanguageSystem::ULanguageSystem()
@@ -43,66 +45,6 @@ void ULanguageSystem::InitializeLanguageSystem()
     DialogueContext.ConversationID = TEXT("");
     DialogueContext.State = EDialogueState::Idle;
     DialogueContext.TurnHistory.Empty();
-
-    InitializeResponseTemplates();
-}
-
-void ULanguageSystem::InitializeResponseTemplates()
-{
-    // Greeting templates
-    FResponseTemplate Greeting1;
-    Greeting1.TemplateID = TEXT("GREET_1");
-    Greeting1.ResponseType = ESpeechAct::Greeting;
-    Greeting1.TemplateText = TEXT("Hello! How can I help you today?");
-    Greeting1.EmotionalTone = 0.3f;
-    Greeting1.Formality = 0.5f;
-    ResponseTemplates.Add(Greeting1);
-
-    // Acknowledgment templates
-    FResponseTemplate Ack1;
-    Ack1.TemplateID = TEXT("ACK_1");
-    Ack1.ResponseType = ESpeechAct::Acknowledgment;
-    Ack1.TemplateText = TEXT("I understand.");
-    Ack1.EmotionalTone = 0.0f;
-    Ack1.Formality = 0.5f;
-    ResponseTemplates.Add(Ack1);
-
-    FResponseTemplate Ack2;
-    Ack2.TemplateID = TEXT("ACK_2");
-    Ack2.ResponseType = ESpeechAct::Acknowledgment;
-    Ack2.TemplateText = TEXT("Yes, I see what you mean.");
-    Ack2.EmotionalTone = 0.1f;
-    Ack2.Formality = 0.4f;
-    ResponseTemplates.Add(Ack2);
-
-    // Question response templates
-    FResponseTemplate QResp1;
-    QResp1.TemplateID = TEXT("QRESP_1");
-    QResp1.ResponseType = ESpeechAct::Assertion;
-    QResp1.TemplateText = TEXT("Based on my understanding, {answer}.");
-    QResp1.RequiredSlots.Add(TEXT("answer"));
-    QResp1.EmotionalTone = 0.0f;
-    QResp1.Formality = 0.6f;
-    ResponseTemplates.Add(QResp1);
-
-    // Clarification templates
-    FResponseTemplate Clarify1;
-    Clarify1.TemplateID = TEXT("CLARIFY_1");
-    Clarify1.ResponseType = ESpeechAct::Question;
-    Clarify1.TemplateText = TEXT("Could you please clarify what you mean by {unclear}?");
-    Clarify1.RequiredSlots.Add(TEXT("unclear"));
-    Clarify1.EmotionalTone = 0.0f;
-    Clarify1.Formality = 0.6f;
-    ResponseTemplates.Add(Clarify1);
-
-    // Farewell templates
-    FResponseTemplate Farewell1;
-    Farewell1.TemplateID = TEXT("FAREWELL_1");
-    Farewell1.ResponseType = ESpeechAct::Farewell;
-    Farewell1.TemplateText = TEXT("Goodbye! It was nice talking with you.");
-    Farewell1.EmotionalTone = 0.2f;
-    Farewell1.Formality = 0.5f;
-    ResponseTemplates.Add(Farewell1);
 }
 
 // ========================================
@@ -316,14 +258,13 @@ void ULanguageSystem::StartConversation(const FString& InitialTopic)
     SetDialogueState(EDialogueState::Listening);
 }
 
-FGeneratedResponse ULanguageSystem::ProcessUtterance(const FString& Speaker, const FString& Text)
+FString ULanguageSystem::ProcessUtterance(const FString& Speaker, const FString& Text)
 {
     SetDialogueState(EDialogueState::Processing);
 
-    // Parse the utterance
+    // Parse the utterance (heuristic metadata used only as model input)
     FParsedUtterance Parsed = ParseUtterance(Text);
 
-    // Create dialogue turn
     FDialogueTurn Turn;
     Turn.TurnID = GenerateTurnID();
     Turn.Speaker = Speaker;
@@ -334,28 +275,13 @@ FGeneratedResponse ULanguageSystem::ProcessUtterance(const FString& Speaker, con
 
     AddTurnToHistory(Turn);
 
-    // Update mentioned entities
     for (const FString& Entity : Parsed.Entities)
     {
         DialogueContext.MentionedEntities.AddUnique(Entity);
     }
 
-    // Generate response
-    FGeneratedResponse Response = GenerateResponse(Parsed);
-
-    // Create agent turn
-    FDialogueTurn AgentTurn;
-    AgentTurn.TurnID = GenerateTurnID();
-    AgentTurn.Speaker = AgentName;
-    AgentTurn.Utterance = Response.Text;
-    AgentTurn.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-    AgentTurn.bIsAgentTurn = true;
-
-    AddTurnToHistory(AgentTurn);
-
-    SetDialogueState(EDialogueState::Waiting);
-
-    return Response;
+    // The agent's turn is added to the history when (and only if) the model replies.
+    return RequestResponse(Parsed);
 }
 
 FDialogueContext ULanguageSystem::GetDialogueContext() const
@@ -404,293 +330,239 @@ TArray<FDialogueTurn> ULanguageSystem::GetTurnHistory() const
 }
 
 // ========================================
-// RESPONSE GENERATION
+// RESPONSE GENERATION (model-backed)
 // ========================================
 
-FGeneratedResponse ULanguageSystem::GenerateResponse(const FParsedUtterance& Input)
+FString ULanguageSystem::RequestResponse(const FParsedUtterance& Input)
 {
-    float EmotionalTone = 0.0f;
-    if (EmotionalComponent)
-    {
-        EmotionalTone = EmotionalComponent->GetValence();
-    }
-
-    return GenerateEmotionalResponse(Input, EmotionalTone);
+    return RequestEmotionalResponse(Input, GetCurrentEmotionalTone());
 }
 
-FGeneratedResponse ULanguageSystem::GenerateEmotionalResponse(const FParsedUtterance& Input, float EmotionalTone)
+FString ULanguageSystem::RequestEmotionalResponse(const FParsedUtterance& Input, float EmotionalTone)
 {
-    FGeneratedResponse Response;
-    Response.ResponseID = GenerateResponseID();
-    Response.EmotionalTone = EmotionalTone;
-
-    // Select response based on speech act
-    switch (Input.SpeechAct)
-    {
-        case ESpeechAct::Greeting:
-            Response = GenerateGreeting(TEXT(""));
-            break;
-
-        case ESpeechAct::Farewell:
-            Response = GenerateFarewell();
-            break;
-
-        case ESpeechAct::Question:
-        {
-            Response.SpeechAct = ESpeechAct::Assertion;
-            FString Answer = TEXT("I'm processing your question about ");
-            if (Input.Keywords.Num() > 0)
-            {
-                Answer += Input.Keywords[0];
-            }
-            else
-            {
-                Answer += TEXT("that topic");
-            }
-            Response.Text = Answer + TEXT(".");
-            Response.Confidence = 0.6f;
-            break;
-        }
-
-        case ESpeechAct::Command:
-        case ESpeechAct::Request:
-        {
-            Response.SpeechAct = ESpeechAct::Acknowledgment;
-            Response.Text = TEXT("I'll do my best to help with that.");
-            Response.Confidence = 0.7f;
-            break;
-        }
-
-        case ESpeechAct::Acknowledgment:
-        {
-            Response = GenerateAcknowledgment();
-            break;
-        }
-
-        default:
-        {
-            Response.SpeechAct = ESpeechAct::Assertion;
-            if (Input.Sentiment > 0.3f)
-            {
-                Response.Text = TEXT("That sounds positive! I appreciate you sharing that.");
-            }
-            else if (Input.Sentiment < -0.3f)
-            {
-                Response.Text = TEXT("I understand that might be difficult. How can I help?");
-            }
-            else
-            {
-                Response.Text = TEXT("I see. Please tell me more about that.");
-            }
-            Response.Confidence = 0.5f;
-            break;
-        }
-    }
-
-    // Apply emotional modulation
-    Response.Text = ApplyEmotionalModulation(Response.Text, EmotionalTone);
-
-    OnResponseGenerated.Broadcast(Response);
-
-    return Response;
+    const UEnum* ActEnum = StaticEnum<ESpeechAct>();
+    const FString Instruction = FString::Printf(
+        TEXT("Reply to the latest utterance: \"%s\".\n")
+        TEXT("Heuristic parse of that utterance (may be wrong): speech act %s, sentiment %.2f (-1..1), keywords [%s], entities [%s]."),
+        *Input.RawText,
+        ActEnum ? *ActEnum->GetNameStringByValue(static_cast<int64>(Input.SpeechAct)) : TEXT("unknown"),
+        Input.Sentiment,
+        *FString::Join(Input.Keywords, TEXT(", ")),
+        *FString::Join(Input.Entities, TEXT(", ")));
+    return SendResponseRequest(Instruction, ESpeechAct::Assertion, EmotionalTone, EDialogueState::Waiting);
 }
 
-FGeneratedResponse ULanguageSystem::GenerateClarification(const FString& UnclearAspect)
+FString ULanguageSystem::RequestClarification(const FString& UnclearAspect)
 {
-    FGeneratedResponse Response;
-    Response.ResponseID = GenerateResponseID();
-    Response.SpeechAct = ESpeechAct::Question;
-    Response.Text = FString::Printf(TEXT("Could you please clarify what you mean by '%s'?"), *UnclearAspect);
-    Response.Confidence = 0.8f;
-    Response.EmotionalTone = 0.0f;
-
-    SetDialogueState(EDialogueState::Clarifying);
-
-    OnResponseGenerated.Broadcast(Response);
-
-    return Response;
+    const FString Instruction = FString::Printf(
+        TEXT("Something in the conversation is unclear to you: \"%s\". Ask the other person to clarify it."),
+        *UnclearAspect);
+    return SendResponseRequest(Instruction, ESpeechAct::Question, GetCurrentEmotionalTone(), EDialogueState::Clarifying);
 }
 
-FGeneratedResponse ULanguageSystem::GenerateAcknowledgment()
+FString ULanguageSystem::RequestAcknowledgment()
 {
-    FGeneratedResponse Response;
-    Response.ResponseID = GenerateResponseID();
-    Response.SpeechAct = ESpeechAct::Acknowledgment;
-
-    TArray<FString> Acknowledgments = {
-        TEXT("I understand."),
-        TEXT("Yes, I see."),
-        TEXT("Okay, got it."),
-        TEXT("I hear you."),
-        TEXT("That makes sense.")
-    };
-
-    int32 Index = FMath::RandRange(0, Acknowledgments.Num() - 1);
-    Response.Text = Acknowledgments[Index];
-    Response.Confidence = 0.9f;
-    Response.EmotionalTone = 0.1f;
-
-    OnResponseGenerated.Broadcast(Response);
-
-    return Response;
+    return SendResponseRequest(TEXT("Briefly acknowledge what the other person just said."),
+        ESpeechAct::Acknowledgment, GetCurrentEmotionalTone(), EDialogueState::Waiting);
 }
 
-FGeneratedResponse ULanguageSystem::GenerateGreeting(const FString& RecipientName)
+FString ULanguageSystem::RequestGreeting(const FString& RecipientName)
 {
-    FGeneratedResponse Response;
-    Response.ResponseID = GenerateResponseID();
-    Response.SpeechAct = ESpeechAct::Greeting;
-
-    TArray<FString> Greetings = {
-        TEXT("Hello! How can I help you today?"),
-        TEXT("Hi there! What would you like to discuss?"),
-        TEXT("Greetings! I'm here to assist you."),
-        TEXT("Hello! It's nice to meet you.")
-    };
-
-    int32 Index = FMath::RandRange(0, Greetings.Num() - 1);
-    Response.Text = Greetings[Index];
-
-    if (!RecipientName.IsEmpty())
-    {
-        Response.Text = FString::Printf(TEXT("Hello, %s! How can I help you today?"), *RecipientName);
-    }
-
-    Response.Confidence = 0.95f;
-    Response.EmotionalTone = 0.3f;
-
-    OnResponseGenerated.Broadcast(Response);
-
-    return Response;
+    const FString Instruction = RecipientName.IsEmpty()
+        ? FString(TEXT("Greet the person you are talking to."))
+        : FString::Printf(TEXT("Greet %s."), *RecipientName);
+    return SendResponseRequest(Instruction, ESpeechAct::Greeting, GetCurrentEmotionalTone(), EDialogueState::Waiting);
 }
 
-FGeneratedResponse ULanguageSystem::GenerateFarewell()
+FString ULanguageSystem::RequestFarewell()
 {
-    FGeneratedResponse Response;
-    Response.ResponseID = GenerateResponseID();
-    Response.SpeechAct = ESpeechAct::Farewell;
-
-    TArray<FString> Farewells = {
-        TEXT("Goodbye! It was nice talking with you."),
-        TEXT("Take care! Feel free to return anytime."),
-        TEXT("Farewell! I hope our conversation was helpful."),
-        TEXT("Goodbye! Have a great day!")
-    };
-
-    int32 Index = FMath::RandRange(0, Farewells.Num() - 1);
-    Response.Text = Farewells[Index];
-    Response.Confidence = 0.95f;
-    Response.EmotionalTone = 0.2f;
-
-    OnResponseGenerated.Broadcast(Response);
-
-    return Response;
+    return SendResponseRequest(TEXT("Say goodbye to the person you are talking to."),
+        ESpeechAct::Farewell, GetCurrentEmotionalTone(), EDialogueState::Waiting);
 }
 
 // ========================================
-// NARRATIVE GENERATION
+// NARRATIVE GENERATION (model-backed)
 // ========================================
 
-FNarrativeElement ULanguageSystem::GenerateNarrative(const FString& Subject, const TArray<FString>& Events)
+FString ULanguageSystem::RequestNarrative(const FString& Subject, const TArray<FString>& Events)
 {
-    FNarrativeElement Narrative;
-    Narrative.ElementID = GenerateNarrativeID();
-    Narrative.NarrativeType = TEXT("Description");
-    Narrative.Characters.Add(Subject);
-
-    FString Content = FString::Printf(TEXT("%s experienced the following: "), *Subject);
+    FString EventList;
     for (int32 i = 0; i < Events.Num(); ++i)
     {
-        Content += Events[i];
-        if (i < Events.Num() - 1)
-        {
-            Content += TEXT(", then ");
-        }
+        EventList += FString::Printf(TEXT("%d. %s\n"), i + 1, *Events[i]);
     }
-    Content += TEXT(".");
+    const FString Instruction = FString::Printf(
+        TEXT("Narrate, in a short paragraph, what %s experienced. The events, in order:\n%s"),
+        *Subject, *EventList);
 
-    Narrative.Content = Content;
-    Narrative.EmotionalArc = 0.0f;
-
-    OnNarrativeGenerated.Broadcast(Narrative);
-
-    return Narrative;
+    TArray<FString> Characters;
+    Characters.Add(Subject);
+    return SendNarrativeRequest(Instruction, TEXT("Description"), Characters);
 }
 
-FNarrativeElement ULanguageSystem::GenerateSelfNarrative()
+FString ULanguageSystem::RequestSelfNarrative()
 {
-    FNarrativeElement Narrative;
-    Narrative.ElementID = GenerateNarrativeID();
-    Narrative.NarrativeType = TEXT("Self-Description");
-    Narrative.Characters.Add(AgentName);
+    TArray<FString> Characters;
+    Characters.Add(AgentName);
+    return SendNarrativeRequest(
+        TEXT("Describe yourself and how you are feeling right now, in the first person, in a short paragraph."),
+        TEXT("Self-Description"), Characters);
+}
 
-    FString Content = FString::Printf(TEXT("I am %s, a cognitive agent designed for understanding and interaction. "), *AgentName);
+FString ULanguageSystem::RequestExperienceSummary(float TimeSpan)
+{
+    const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    FString Turns;
+    int32 TurnCount = 0;
+    for (const FDialogueTurn& Turn : DialogueContext.TurnHistory)
+    {
+        if (Now - Turn.Timestamp <= TimeSpan)
+        {
+            Turns += FString::Printf(TEXT("%s: %s\n"), *Turn.Speaker, *Turn.Utterance);
+            ++TurnCount;
+        }
+    }
 
+    const FString Instruction = FString::Printf(
+        TEXT("Summarize, in the first person and in a short paragraph, your experience over the last %.0f seconds. ")
+        TEXT("Dialogue turns in that period (%d):\n%s\nEntities mentioned in this conversation: [%s]."),
+        TimeSpan, TurnCount, TurnCount > 0 ? *Turns : TEXT("(none)\n"),
+        *FString::Join(DialogueContext.MentionedEntities, TEXT(", ")));
+
+    TArray<FString> Characters;
+    Characters.Add(AgentName);
+    return SendNarrativeRequest(Instruction, TEXT("Experience Summary"), Characters);
+}
+
+// ========================================
+// MODEL PLUMBING
+// ========================================
+
+float ULanguageSystem::GetCurrentEmotionalTone() const
+{
+    return EmotionalComponent ? EmotionalComponent->GetValence() : 0.0f;
+}
+
+FString ULanguageSystem::BuildSystemPrompt() const
+{
+    // Persona and state are model INPUT only.
+    FString Prompt = FString::Printf(TEXT("You are %s, an embodied cognitive agent."), *AgentName);
+    if (!PersonaDescription.IsEmpty())
+    {
+        Prompt += TEXT(" ") + PersonaDescription;
+    }
     if (EmotionalComponent)
     {
-        float Valence = EmotionalComponent->GetValence();
-        if (Valence > 0.3f)
-        {
-            Content += TEXT("Currently, I am feeling positive and engaged. ");
-        }
-        else if (Valence < -0.3f)
-        {
-            Content += TEXT("Currently, I am processing some challenging information. ");
-        }
-        else
-        {
-            Content += TEXT("Currently, I am in a calm and receptive state. ");
-        }
+        Prompt += FString::Printf(TEXT("\nYour current emotional valence is %.2f on a -1..1 scale."),
+            EmotionalComponent->GetValence());
     }
-
-    Content += TEXT("I am here to assist and learn through our interactions.");
-
-    Narrative.Content = Content;
-    Narrative.EmotionalArc = EmotionalComponent ? EmotionalComponent->GetValence() : 0.0f;
-
-    OnNarrativeGenerated.Broadcast(Narrative);
-
-    return Narrative;
+    if (!DialogueContext.CurrentTopic.IsEmpty())
+    {
+        Prompt += FString::Printf(TEXT("\nThe current conversation topic is: %s."), *DialogueContext.CurrentTopic);
+    }
+    Prompt += TEXT("\nAnswer with only the words you say, without quotation marks or stage directions.");
+    return Prompt;
 }
 
-FNarrativeElement ULanguageSystem::GenerateExperienceSummary(float TimeSpan)
+FString ULanguageSystem::BuildRecentTranscript(int32 MaxTurns) const
 {
+    FString Transcript;
+    const int32 First = FMath::Max(0, DialogueContext.TurnHistory.Num() - MaxTurns);
+    for (int32 i = First; i < DialogueContext.TurnHistory.Num(); ++i)
+    {
+        const FDialogueTurn& Turn = DialogueContext.TurnHistory[i];
+        Transcript += FString::Printf(TEXT("%s: %s\n"), *Turn.Speaker, *Turn.Utterance);
+    }
+    return Transcript;
+}
+
+FString ULanguageSystem::SendResponseRequest(const FString& Instruction, ESpeechAct SpeechAct, float EmotionalTone,
+                                             EDialogueState StateOnSuccess)
+{
+    const FString RequestID = GenerateResponseID();
+
+    const FString Transcript = BuildRecentTranscript(MaxTurnHistory);
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"), BuildSystemPrompt()));
+    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
+        TEXT("Conversation so far:\n%s\nSpeak with an emotional tone of %.2f (-1 negative .. 1 positive).\n%s"),
+        Transcript.IsEmpty() ? TEXT("(no turns yet)\n") : *Transcript, EmotionalTone, *Instruction)));
+
+    SetDialogueState(EDialogueState::Processing);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateUObject(
+        this, &ULanguageSystem::HandleResponseReply, RequestID, SpeechAct, EmotionalTone, StateOnSuccess));
+    return RequestID;
+}
+
+void ULanguageSystem::HandleResponseReply(bool bSuccess, const FString& TextOrError, FString RequestID,
+                                          ESpeechAct SpeechAct, float EmotionalTone, EDialogueState StateOnSuccess)
+{
+    if (!bSuccess)
+    {
+        // No agent turn, no text: report the failure as a system event.
+        UE_LOG(LogTemp, Error, TEXT("LanguageSystem: request %s produced no reply: %s"), *RequestID, *TextOrError);
+        SetDialogueState(EDialogueState::Listening);
+        OnGenerationFailed.Broadcast(RequestID, TextOrError);
+        return;
+    }
+
+    FGeneratedResponse Response;
+    Response.ResponseID = RequestID;
+    Response.Text = TextOrError.TrimStartAndEnd();
+    Response.SpeechAct = SpeechAct;
+    Response.EmotionalTone = EmotionalTone;
+
+    FDialogueTurn AgentTurn;
+    AgentTurn.TurnID = GenerateTurnID();
+    AgentTurn.Speaker = AgentName;
+    AgentTurn.Utterance = Response.Text;
+    AgentTurn.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    AgentTurn.bIsAgentTurn = true;
+    AddTurnToHistory(AgentTurn);
+
+    SetDialogueState(StateOnSuccess);
+
+    // The agent speaks the model's words; no expression/gesture is chosen here.
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = AgentName;
+    Reaction.Utterance = Response.Text;
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+
+    OnResponseGenerated.Broadcast(Response);
+}
+
+FString ULanguageSystem::SendNarrativeRequest(const FString& Instruction, const FString& NarrativeType,
+                                              const TArray<FString>& Characters)
+{
+    const FString RequestID = GenerateNarrativeID();
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"), BuildSystemPrompt()));
+    Messages.Add(FEchoModelMessage(TEXT("user"), Instruction));
+
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateUObject(
+        this, &ULanguageSystem::HandleNarrativeReply, RequestID, NarrativeType, Characters, GetCurrentEmotionalTone()));
+    return RequestID;
+}
+
+void ULanguageSystem::HandleNarrativeReply(bool bSuccess, const FString& TextOrError, FString RequestID,
+                                           FString NarrativeType, TArray<FString> Characters, float EmotionalArc)
+{
+    if (!bSuccess)
+    {
+        UE_LOG(LogTemp, Error, TEXT("LanguageSystem: narrative request %s produced no text: %s"), *RequestID, *TextOrError);
+        OnGenerationFailed.Broadcast(RequestID, TextOrError);
+        return;
+    }
+
     FNarrativeElement Narrative;
-    Narrative.ElementID = GenerateNarrativeID();
-    Narrative.NarrativeType = TEXT("Experience Summary");
-    Narrative.Characters.Add(AgentName);
-
-    FString Content = TEXT("Over the recent period, ");
-
-    int32 TurnCount = DialogueContext.TurnHistory.Num();
-    if (TurnCount > 0)
-    {
-        Content += FString::Printf(TEXT("I engaged in %d conversational exchanges. "), TurnCount);
-    }
-    else
-    {
-        Content += TEXT("I have been observing and processing my environment. ");
-    }
-
-    if (DialogueContext.MentionedEntities.Num() > 0)
-    {
-        Content += TEXT("Topics discussed included: ");
-        for (int32 i = 0; i < FMath::Min(3, DialogueContext.MentionedEntities.Num()); ++i)
-        {
-            Content += DialogueContext.MentionedEntities[i];
-            if (i < FMath::Min(3, DialogueContext.MentionedEntities.Num()) - 1)
-            {
-                Content += TEXT(", ");
-            }
-        }
-        Content += TEXT(". ");
-    }
-
-    Narrative.Content = Content;
+    Narrative.ElementID = RequestID;
+    Narrative.NarrativeType = NarrativeType;
+    Narrative.Characters = Characters;
+    Narrative.Content = TextOrError.TrimStartAndEnd();
+    Narrative.EmotionalArc = EmotionalArc;
 
     OnNarrativeGenerated.Broadcast(Narrative);
-
-    return Narrative;
 }
 
 // ========================================
@@ -723,59 +595,6 @@ void ULanguageSystem::AddTurnToHistory(const FDialogueTurn& Turn)
     {
         DialogueContext.TurnHistory.RemoveAt(0);
     }
-}
-
-FString ULanguageSystem::SelectResponseTemplate(ESpeechAct InputAct, float EmotionalTone) const
-{
-    for (const FResponseTemplate& Template : ResponseTemplates)
-    {
-        if (Template.ResponseType == InputAct && 
-            FMath::Abs(Template.EmotionalTone - EmotionalTone) < 0.5f)
-        {
-            return Template.TemplateText;
-        }
-    }
-    return TEXT("");
-}
-
-FString ULanguageSystem::FillTemplateSlots(const FString& Template, const FParsedUtterance& Input) const
-{
-    FString Filled = Template;
-
-    if (Input.Keywords.Num() > 0)
-    {
-        Filled = Filled.Replace(TEXT("{topic}"), *Input.Keywords[0]);
-        Filled = Filled.Replace(TEXT("{answer}"), *Input.Keywords[0]);
-    }
-
-    if (Input.Entities.Num() > 0)
-    {
-        Filled = Filled.Replace(TEXT("{entity}"), *Input.Entities[0]);
-    }
-
-    return Filled;
-}
-
-FString ULanguageSystem::ApplyEmotionalModulation(const FString& Text, float EmotionalTone) const
-{
-    FString Modulated = Text;
-
-    if (EmotionalTone > 0.5f)
-    {
-        // Add enthusiasm
-        if (!Modulated.EndsWith(TEXT("!")))
-        {
-            Modulated.RemoveFromEnd(TEXT("."));
-            Modulated += TEXT("!");
-        }
-    }
-    else if (EmotionalTone < -0.5f)
-    {
-        // Add empathy markers
-        Modulated = TEXT("I understand... ") + Modulated;
-    }
-
-    return Modulated;
 }
 
 bool ULanguageSystem::IsQuestion(const FString& Text) const

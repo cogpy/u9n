@@ -9,6 +9,8 @@
 #include "Avatar3DComponentEnhanced.h"
 #include "AvatarAnimInstance.generated.h"
 
+struct FEchoCharacterReaction;
+
 /**
  * Locomotion state for state machine
  */
@@ -79,7 +81,12 @@ struct FFacialBlendShapes
 
 /**
  * Main Avatar Animation Instance
- * Drives all animation layers for Deep Tree Echo avatar
+ * Drives all animation layers for Deep Tree Echo avatar.
+ *
+ * Emotion, gesture and speaking state shown by this instance come from model replies
+ * broadcast on FEchoReactionBus (or explicit calls by code relaying such replies).
+ * The instance never picks an emotion or gesture by itself (no dice, timers or
+ * personality thresholds).
  */
 UCLASS()
 class DEEPTREECHO_API UAvatarAnimInstance : public UAnimInstance
@@ -160,6 +167,34 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Gesture")
     float GestureBlendWeight;
 
+    /** Intensity (0-1) of the current gesture, as chosen by the model */
+    UPROPERTY(BlueprintReadOnly, Category = "Gesture")
+    float GestureIntensity;
+
+    // ===== Speech =====
+
+    /** True while an utterance (or speech audio) is being played back */
+    UPROPERTY(BlueprintReadOnly, Category = "Speech")
+    bool bIsSpeaking;
+
+    /** Mouth openness (0-1) driven by the utterance/audio being spoken */
+    UPROPERTY(BlueprintReadOnly, Category = "Speech")
+    float SpeechMouthOpen;
+
+    // ===== Model Reactions =====
+
+    /** Only reactions for this character are applied; empty = apply every reaction on the bus */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction")
+    FString ReactionCharacterName;
+
+    /** Playback time per character of utterance text, used to time text-driven lip sync */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction", meta = (ClampMin = "0.01"))
+    float SpeechSecondsPerCharacter;
+
+    /** Duration of a gesture chosen by the model */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction", meta = (ClampMin = "0.1"))
+    float ReactionGestureDuration;
+
     // ===== Facial Animation =====
 
     /** Current facial blend shapes */
@@ -234,9 +269,27 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Animation|Gaze")
     void SetGazeTarget(const FVector& Target);
 
-    /** Apply chaotic behavior */
+    /** Apply chaotic behavior (sets chaos factor and glitch effect intensity; triggers nothing) */
     UFUNCTION(BlueprintCallable, Category = "Animation|Chaos")
     void ApplyChaoticBehavior(float Intensity);
+
+    /** Drive the mouth from the text being spoken, over the given playback duration */
+    UFUNCTION(BlueprintCallable, Category = "Animation|Speech")
+    void StartLipSync(const FString& Text, float Duration);
+
+    /** Drive the mouth directly from a speech audio amplitude (0-1); 0 closes the mouth */
+    UFUNCTION(BlueprintCallable, Category = "Animation|Speech")
+    void SetSpeechAmplitude(float Amplitude);
+
+    /** Stop speech mouth movement */
+    UFUNCTION(BlueprintCallable, Category = "Animation|Speech")
+    void StopLipSync();
+
+    /** Apply a model-chosen reaction (expression/gesture names are mapped to enums; unknown names are ignored) */
+    void ApplyCharacterReaction(const FEchoCharacterReaction& Reaction);
+
+    virtual void NativeUninitializeAnimation() override;
+    virtual void BeginDestroy() override;
 
 protected:
     // ===== Internal State =====
@@ -254,9 +307,14 @@ protected:
     // Facial animation smoothing
     float FacialBlendSpeed;
 
-    // Chaos state
-    float ChaosTimer;
-    float NextChaoticEventTime;
+    // Text-driven lip sync state
+    FString LipSyncText;
+    float LipSyncDuration;
+    float LipSyncTime;
+    bool bTextLipSyncActive;
+
+    // Subscription to FEchoReactionBus
+    FDelegateHandle ReactionHandle;
 
     // Breathing state
     float BreathingTime;
@@ -271,12 +329,12 @@ protected:
     void UpdateFacialAnimation(float DeltaTime);
     void UpdateGazeTracking(float DeltaTime);
     void UpdateProceduralAnimation(float DeltaTime);
-    void UpdateChaoticBehavior(float DeltaTime);
+    void UpdateSpeech(float DeltaTime);
+    void UnbindReactionBus();
 
     // ===== Helper Functions =====
 
     FFacialBlendShapes CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const;
     void BlendFacialShapes(const FFacialBlendShapes& Target, float DeltaTime);
     float CalculateBreathingRate() const;
-    void TriggerRandomChaoticEvent();
 };
