@@ -8,6 +8,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/AudioComponent.h"
 #include "Math/UnrealMathUtility.h"
+#include "../Model/EchoCharacterReaction.h"
 
 UExpressiveAnimationSystem::UExpressiveAnimationSystem()
 {
@@ -36,6 +37,88 @@ void UExpressiveAnimationSystem::BeginPlay()
     // Initialize timing
     NextBlinkTime = GetWorld()->GetTimeSeconds() + FMath::FRandRange(BlinkIntervalRange.X, BlinkIntervalRange.Y);
     NextSaccadeTime = GetWorld()->GetTimeSeconds() + FMath::FRandRange(SaccadeIntervalRange.X, SaccadeIntervalRange.Y);
+
+    // Expressions and gestures shown as the character's reaction come from the model only
+    TWeakObjectPtr<UExpressiveAnimationSystem> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UExpressiveAnimationSystem* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
+}
+
+void UExpressiveAnimationSystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
+void UExpressiveAnimationSystem::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+
+    // Expression: map the model's name onto the emotions this system can render
+    const FString Name = Reaction.Expression.TrimStartAndEnd();
+    if (!Name.IsEmpty())
+    {
+        static const TPair<const TCHAR*, const TCHAR*> Aliases[] = {
+            { TEXT("Joy"), TEXT("Joy") },         { TEXT("Happy"), TEXT("Joy") },
+            { TEXT("Sadness"), TEXT("Sadness") }, { TEXT("Sad"), TEXT("Sadness") },
+            { TEXT("Anger"), TEXT("Anger") },     { TEXT("Angry"), TEXT("Anger") },
+            { TEXT("Fear"), TEXT("Fear") },       { TEXT("Fearful"), TEXT("Fear") },
+            { TEXT("Surprise"), TEXT("Surprise") }, { TEXT("Surprised"), TEXT("Surprise") },
+            { TEXT("Disgust"), TEXT("Disgust") }, { TEXT("Disgusted"), TEXT("Disgust") }
+        };
+
+        if (Name.Equals(TEXT("Neutral"), ESearchCase::IgnoreCase))
+        {
+            ResetAllExpressions(0.5f);
+            BroadcastExpressionEvent(EExpressionChannel::Facial, TEXT("Neutral"), Intensity);
+        }
+        else
+        {
+            for (const auto& Alias : Aliases)
+            {
+                if (Name.Equals(Alias.Key, ESearchCase::IgnoreCase))
+                {
+                    TMap<FString, float> Blend;
+                    Blend.Add(Alias.Value, Intensity);
+                    CreateExpressionFromEmotionBlend(Blend);
+                    ApplyPostureFromEmotion(Alias.Value, Intensity);
+                    BroadcastExpressionEvent(EExpressionChannel::Facial, Alias.Value, Intensity);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Gesture: play the registered gesture the model named (by ID or display name)
+    const FString GestureName = Reaction.Gesture.TrimStartAndEnd();
+    if (!GestureName.IsEmpty())
+    {
+        for (const auto& Pair : RegisteredGestures)
+        {
+            if (Pair.Key.Equals(GestureName, ESearchCase::IgnoreCase) ||
+                Pair.Value.Name.Equals(GestureName, ESearchCase::IgnoreCase))
+            {
+                TriggerGesture(Pair.Key, Intensity);
+                break;
+            }
+        }
+    }
 }
 
 void UExpressiveAnimationSystem::TickComponent(float DeltaTime, ELevelTick TickType,
@@ -579,116 +662,15 @@ void UExpressiveAnimationSystem::Update4EFromContext(const FString& ContextType,
 
 void UExpressiveAnimationSystem::ProcessEchobeatStep(int32 Step)
 {
+    // Cadence record only: expression events are stamped with the step, but the step
+    // never selects action units, posture or gaze.
     CurrentEchobeatStep = Step;
-
-    // Determine expression phase based on step
-    // Steps 1,5,9 = Pivotal (relevance realization)
-    // Steps 2,6,10 = Affordance (interaction)
-    // Steps 3,7,11 = Salience (simulation)
-    // Steps 4,8,12 = Integration
-
-    int32 Phase = ((Step - 1) % 4);
-
-    switch (Phase)
-    {
-    case 0: // Pivotal
-        // Heightened attention expression
-        SetActionUnitIntensity(5, 0.3f, 0.1f); // Upper lid raiser
-        SetPostureParameter(TEXT("ForwardLean"), 0.2f, 0.2f);
-        break;
-
-    case 1: // Affordance
-        // Action-ready expression
-        SetPostureParameter(TEXT("Tension"), 0.4f, 0.2f);
-        break;
-
-    case 2: // Salience
-        // Contemplative expression
-        SetActionUnitIntensity(4, 0.2f, 0.1f); // Slight brow furrow
-        SetPostureParameter(TEXT("ForwardLean"), 0.0f, 0.2f);
-        break;
-
-    case 3: // Integration
-        // Neutral/processing expression
-        SetPostureParameter(TEXT("Tension"), 0.2f, 0.2f);
-        break;
-    }
-}
-
-TArray<FExpressionTarget> UExpressiveAnimationSystem::GetEchobeatPhaseExpression(int32 Phase) const
-{
-    TArray<FExpressionTarget> Targets;
-
-    switch (Phase)
-    {
-    case 0: // Pivotal
-        {
-            FExpressionTarget Target;
-            Target.Name = TEXT("Attention");
-            Target.Channel = EExpressionChannel::Facial;
-            Target.Value = 0.3f;
-            Targets.Add(Target);
-        }
-        break;
-
-    case 1: // Affordance
-        {
-            FExpressionTarget Target;
-            Target.Name = TEXT("Readiness");
-            Target.Channel = EExpressionChannel::Body;
-            Target.Value = 0.4f;
-            Targets.Add(Target);
-        }
-        break;
-
-    case 2: // Salience
-        {
-            FExpressionTarget Target;
-            Target.Name = TEXT("Contemplation");
-            Target.Channel = EExpressionChannel::Facial;
-            Target.Value = 0.2f;
-            Targets.Add(Target);
-        }
-        break;
-
-    case 3: // Integration
-        {
-            FExpressionTarget Target;
-            Target.Name = TEXT("Processing");
-            Target.Channel = EExpressionChannel::Body;
-            Target.Value = 0.2f;
-            Targets.Add(Target);
-        }
-        break;
-    }
-
-    return Targets;
 }
 
 void UExpressiveAnimationSystem::SynchronizeWithStream(int32 StreamIndex)
 {
-    // Adjust expression based on stream
-    // Stream 0: Perception-focused
-    // Stream 1: Action-focused
-    // Stream 2: Simulation-focused
-
-    switch (StreamIndex)
-    {
-    case 0:
-        // Perceptual mode - more gaze activity
-        CurrentGazeTarget.SaccadeProbability = 0.2f;
-        break;
-
-    case 1:
-        // Action mode - more body engagement
-        SetPostureParameter(TEXT("Tension"), 0.5f, 0.3f);
-        break;
-
-    case 2:
-        // Simulation mode - more introspective
-        SetGazeAversion(0.3f, 0.5f);
-        break;
-    }
+    // Recorded only: the active stream does not choose a posture, gaze aversion or expression
+    CurrentStreamIndex = StreamIndex;
 }
 
 void UExpressiveAnimationSystem::ApplyExpressionPreset(const FString& PresetName, float Intensity, float TransitionTime)

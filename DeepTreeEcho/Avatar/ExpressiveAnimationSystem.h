@@ -8,6 +8,8 @@
 #include "Components/ActorComponent.h"
 #include "ExpressiveAnimationSystem.generated.h"
 
+struct FEchoCharacterReaction;
+
 // Forward declarations
 class UAdvancedEmotionBlending;
 class UEchobeatsStreamEngine;
@@ -377,7 +379,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOn4EModeChanged, E4ECognitionMode, 
  * - Vocal parameter modulation (pitch, rate, breathiness)
  * - Breathing animation synchronized with emotional state
  * - 4E cognition integration (Embodied, Embedded, Enacted, Extended)
- * - Echobeats synchronization for expression timing
+ * - Echobeats synchronization for expression timing (cadence record only)
+ *
+ * Emotions, facial action units and gestures presented as the character's reaction come only
+ * from model reactions on FEchoReactionBus; the echobeat clock and stream index never select them.
  */
 UCLASS(ClassGroup=(DeepTreeEcho), meta=(BlueprintSpawnableComponent))
 class DEEPTREEECHO_API UExpressiveAnimationSystem : public UActorComponent
@@ -389,6 +394,7 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType,
@@ -397,6 +403,10 @@ public:
     // ========================================
     // CONFIGURATION
     // ========================================
+
+    /** Only reactions for this character are rendered; empty = all reactions accepted. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction")
+    FString ReactionCharacterName;
 
     /** Enable facial animation */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Config|Channels")
@@ -626,17 +636,16 @@ public:
     // PUBLIC API - ECHOBEATS INTEGRATION
     // ========================================
 
-    /** Process echobeat step for expression */
+    /** Record the echobeat step (timing of expression events; never selects an expression) */
     UFUNCTION(BlueprintCallable, Category = "Echobeats")
     void ProcessEchobeatStep(int32 Step);
 
-    /** Get expression for echobeat phase */
-    UFUNCTION(BlueprintPure, Category = "Echobeats")
-    TArray<FExpressionTarget> GetEchobeatPhaseExpression(int32 Phase) const;
-
-    /** Synchronize expression with stream */
+    /** Record the active consciousness stream (never selects an expression, posture or gaze behaviour) */
     UFUNCTION(BlueprintCallable, Category = "Echobeats")
     void SynchronizeWithStream(int32 StreamIndex);
+
+    UFUNCTION(BlueprintPure, Category = "Echobeats")
+    int32 GetCurrentStreamIndex() const { return CurrentStreamIndex; }
 
     // ========================================
     // PUBLIC API - COMPOSITE EXPRESSIONS
@@ -692,7 +701,9 @@ protected:
     float NextSaccadeTime = 0.0f;
     bool bIsGesturePlaying = false;
     int32 CurrentEchobeatStep = 1;
+    int32 CurrentStreamIndex = 0;
     int32 NextEventID = 1;
+    FDelegateHandle ReactionHandle;
 
     // Internal methods
     void FindComponentReferences();
@@ -709,4 +720,7 @@ protected:
     FBodyPostureState GetPostureForEmotion(const FString& EmotionType, float Intensity) const;
     FVocalParameters GetVocalForEmotion(const FString& EmotionType, float Intensity) const;
     TArray<FFacialActionUnit> GetActionUnitsForEmotion(const FString& EmotionType, float Intensity) const;
+
+    /** Render a model reaction (expression -> AUs/posture, gesture -> registered gesture) */
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
 };

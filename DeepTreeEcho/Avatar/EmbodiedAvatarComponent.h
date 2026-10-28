@@ -12,6 +12,7 @@
 class USkeletalMeshComponent;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
+struct FEchoCharacterReaction;
 
 /**
  * Embodied State - Body-based cognition parameters
@@ -339,6 +340,7 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, 
@@ -388,9 +390,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Facial")
     void BlendExpression(float DeltaTime);
 
-    /** Set emotion intensity and update expression */
+    /** Renderer: set emotion intensity and update expression (model reactions arrive via the reaction bus) */
     UFUNCTION(BlueprintCallable, Category = "Facial")
     void SetEmotionIntensity(const FString& EmotionName, float Intensity);
+
+    /** Only reactions for this character are rendered; empty = all reactions accepted. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Facial")
+    FString ReactionCharacterName;
+
+    /** Emotion names this component can render (the vocabulary a model reaction may use). */
+    UFUNCTION(BlueprintPure, Category = "Facial")
+    static TArray<FString> GetRenderableEmotions();
 
     // ========================================
     // AURA VISUALIZATION
@@ -512,7 +522,7 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Cognitive")
     int32 CurrentCycleStep = 0;
 
-    /** Set cognitive cycle step and update visuals */
+    /** Record the cognitive cycle step (aura/step visuals only; the step never sets a facial expression) */
     UFUNCTION(BlueprintCallable, Category = "Cognitive")
     void SetCognitiveStep(int32 Step);
 
@@ -548,4 +558,9 @@ private:
 
     /** Map emotion name to expression blend */
     void ApplyEmotionToExpression(const FString& EmotionName, float Intensity);
+
+    /** Render a model reaction from the reaction bus */
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+
+    FDelegateHandle ReactionHandle;
 };
