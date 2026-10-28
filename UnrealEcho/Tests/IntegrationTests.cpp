@@ -200,6 +200,70 @@ bool FPersonalityNeurochemicalIntegrationTest::RunTest(const FString& Parameters
 // Integration Test: Narrative Loop + All Systems
 //=============================================================================
 
+/**
+ * Waits until the narrative loop's diary request has an outcome: a model-written entry, or a
+ * reported failure (State.LastError) with no entry created. Destroys the test actor when done.
+ */
+class FNarrativeModelOutcomeCommand : public IAutomationLatentCommand
+{
+public:
+    FNarrativeModelOutcomeCommand(FAutomationTestBase* InTest, UDiaryInsightBlogLoop* InLoop, AActor* InActor, double InTimeoutSeconds)
+        : Test(InTest), Loop(InLoop), Actor(InActor), TimeoutSeconds(InTimeoutSeconds)
+    {
+    }
+
+    virtual bool Update() override
+    {
+        UDiaryInsightBlogLoop* NarrativeLoop = Loop.Get();
+        if (!NarrativeLoop)
+        {
+            Test->AddError(TEXT("Narrative loop was destroyed before the model request finished"));
+            return true;
+        }
+
+        const FNarrativeLoopState LoopState = NarrativeLoop->GetNarrativeState();
+        const bool bEntryWritten = LoopState.TotalDiaryEntries > 0;
+        const bool bFailureReported = !LoopState.LastError.IsEmpty();
+        const bool bTimedOut = (FPlatformTime::Seconds() - StartTime) >= TimeoutSeconds;
+        if (!bEntryWritten && !bFailureReported && !bTimedOut)
+        {
+            return false;
+        }
+
+        if (bEntryWritten)
+        {
+            // A model answered: the entry carries its text
+            Test->TestFalse(TEXT("Model-written diary entry has content"), NarrativeLoop->GetMostRecentDiaryEntry().Content.IsEmpty());
+        }
+        else if (bFailureReported)
+        {
+            // No model: the failure is a system error and no diary entry or insight exists
+            Test->TestTrue(TEXT("No diary entry without a model"), NarrativeLoop->GetMostRecentDiaryEntry().Content.IsEmpty());
+            Test->TestTrue(TEXT("No insight without a model"), NarrativeLoop->GetMostRecentInsight().Title.IsEmpty());
+        }
+        else
+        {
+            Test->AddError(TEXT("Narrative loop neither produced a model diary entry nor reported a failure"));
+        }
+
+        if (AActor* TestActor = Actor.Get())
+        {
+            if (UWorld* World = TestActor->GetWorld())
+            {
+                World->DestroyActor(TestActor);
+            }
+        }
+        return true;
+    }
+
+private:
+    FAutomationTestBase* Test;
+    TWeakObjectPtr<UDiaryInsightBlogLoop> Loop;
+    TWeakObjectPtr<AActor> Actor;
+    double TimeoutSeconds;
+    double StartTime = FPlatformTime::Seconds();
+};
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNarrativeLoopIntegrationTest,
     "UnrealEngineCog.Integration.NarrativeLoop",
     EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
@@ -251,32 +315,21 @@ bool FNarrativeLoopIntegrationTest::RunTest(const FString& Parameters)
     // Simulate time passage
     NarrativeLoop->TickComponent(1.0f, ELevelTick::LEVELTICK_All, nullptr);
     
-    // Force diary entry creation
+    // Request a diary entry and an insight. Both are written by the model asynchronously; nothing
+    // may be created synchronously (no template or placeholder text stands in for the model).
     NarrativeLoop->ForceDiaryEntry();
     NarrativeLoop->TickComponent(0.1f, ELevelTick::LEVELTICK_All, nullptr);
-    
-    // Verify diary entry was created
-    FDiaryEntry RecentEntry = NarrativeLoop->GetMostRecentDiaryEntry();
-    TestTrue(TEXT("Diary entry created"), !RecentEntry.Content.IsEmpty());
-    
-    // Test: Insights generated from diary entries
-    // Create multiple diary entries
-    for (int32 i = 0; i < 5; i++)
-    {
-        NarrativeLoop->ForceDiaryEntry();
-        NarrativeLoop->TickComponent(0.1f, ELevelTick::LEVELTICK_All, nullptr);
-    }
-    
-    // Force insight generation
     NarrativeLoop->ForceInsightGeneration();
     NarrativeLoop->TickComponent(0.1f, ELevelTick::LEVELTICK_All, nullptr);
     
-    // Verify insight was generated
-    FInsight RecentInsight = NarrativeLoop->GetMostRecentInsight();
-    TestTrue(TEXT("Insight generated"), !RecentInsight.Title.IsEmpty());
+    FNarrativeDiaryEntry RecentEntry = NarrativeLoop->GetMostRecentDiaryEntry();
+    TestTrue(TEXT("No diary entry is created before the model replies"), RecentEntry.Content.IsEmpty());
+    FNarrativeInsight RecentInsight = NarrativeLoop->GetMostRecentInsight();
+    TestTrue(TEXT("No insight is created before the model replies"), RecentInsight.Title.IsEmpty());
     
-    // Cleanup
-    World->DestroyActor(TestActor);
+    // Wait for the outcome: either a model wrote the entry, or (no model configured / served)
+    // the failure is reported as a system error and still nothing is created.
+    ADD_LATENT_AUTOMATION_COMMAND(FNarrativeModelOutcomeCommand(this, NarrativeLoop, TestActor, 30.0));
     
     return true;
 }
