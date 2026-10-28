@@ -28,6 +28,7 @@
 #include "DeepTreeEchoUnrealBridge.generated.h"
 
 // Forward declarations
+struct FEchoCharacterReaction;
 class UAnimInstance;
 class USkeletalMeshComponent;
 class UAudioComponent;
@@ -54,7 +55,8 @@ enum class EUnrealIntegrationMode : uint8
 
 /**
  * Avatar Expression State
- * Represents the current emotional/cognitive expression of the avatar
+ * The emotion/blend-shape fields hold the expression most recently chosen by the character model
+ * (received on FEchoReactionBus); gaze and blink rate are procedural.
  */
 USTRUCT(BlueprintType)
 struct FAvatarExpressionState
@@ -182,6 +184,25 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
     FCognitiveMotorMapping MotorMapping;
 
+    /** Name used for this character in model requests and to filter bus reactions (empty = owner name, accept any) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
+    FString ReactionCharacterName;
+
+    /** Ask the character model for a facial reaction whenever the cognitive mode changes */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
+    bool bRequestReactionOnModeChange = true;
+
+    /** Minimum seconds between model reaction requests */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config", meta = (ClampMin = "0.0"))
+    float MinSecondsBetweenReactionRequests = 2.0f;
+
+    /**
+     * Prompt template for the model reaction request. Slots: {character}, {mode}, {previous_mode},
+     * {coherence}, {frame}, {salience}, {expressions}. The model's JSON answer is the reaction.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config", meta = (MultiLine = "true"))
+    FString ReactionPromptTemplate;
+
     /** Enable cognitive visualization (debug) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
     bool bEnableCognitiveVisualization = false;
@@ -214,7 +235,7 @@ public:
     // AVATAR STATE
     // ========================================
 
-    /** Current expression state */
+    /** Expression last chosen by the character model (via FEchoReactionBus); neutral until one arrives */
     UPROPERTY(BlueprintReadOnly, Category = "DeepTreeEcho|State")
     FAvatarExpressionState CurrentExpression;
 
@@ -258,9 +279,17 @@ public:
     // PUBLIC API - MOTOR OUTPUT
     // ========================================
 
-    /** Update avatar expression based on cognitive state */
+    /** Update procedural gaze/blink and, on a cognitive mode change, ask the model for a facial reaction */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
     void UpdateAvatarExpression();
+
+    /** Ask the character model to choose a facial reaction to the current cognitive state. Returns false if a request is already pending. */
+    UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
+    bool RequestModelReaction();
+
+    /** Last model reaction request error (system-level, never shown as the character's reaction), or empty */
+    UFUNCTION(BlueprintPure, Category = "DeepTreeEcho|Motor")
+    FString GetLastReactionError() const { return LastReactionError; }
 
     /** Apply facial blend shapes */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
@@ -336,6 +365,7 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
     // ========================================
@@ -376,10 +406,22 @@ private:
     /** Update motor outputs */
     void UpdateMotorOutputs(float DeltaTime);
 
-    /** Map cognitive state to expression */
-    FAvatarExpressionState MapCognitiveStateToExpression() const;
+    /** Build the prompt that asks the model for a facial reaction to the current cognitive state */
+    FString BuildReactionPrompt(const FString& PreviousMode) const;
 
-    /** Map emotion to facial blend shapes */
+    /** Model reply to RequestModelReaction: validate the JSON and broadcast it on FEchoReactionBus */
+    void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
+
+    /** Render a model reaction received on FEchoReactionBus (expression + intensity) to the face */
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+
+    /** Character name used in requests / reactions */
+    FString GetReactionCharacterName() const;
+
+    /** Expression names MapEmotionToBlendShapes can render (the vocabulary offered to the model) */
+    static const TArray<FString>& GetRenderableExpressions();
+
+    /** Render a model-chosen expression name at the model's intensity as facial blend shapes */
     TMap<FString, float> MapEmotionToBlendShapes(const FString& Emotion, float Intensity) const;
 
     /** Compute gaze direction from attention */
@@ -387,4 +429,19 @@ private:
 
     /** Draw cognitive visualization (debug) */
     void DrawCognitiveVisualization() const;
+
+    /** Subscription to FEchoReactionBus */
+    FDelegateHandle ReactionHandle;
+
+    /** Cognitive mode seen at the last expression update (empty = none yet) */
+    FString LastObservedMode;
+
+    /** A model reaction request is in flight */
+    bool bReactionRequestPending = false;
+
+    /** World time of the last model reaction request */
+    double LastReactionRequestTime = -1.0e9;
+
+    /** Last request error */
+    FString LastReactionError;
 };

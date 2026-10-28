@@ -1,4 +1,6 @@
 #include "DeepTreeEchoUnrealBridge.h"
+#include "../Model/EchoCharacterReaction.h"
+#include "../Model/EchoModelClient.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
 #include "DrawDebugHelpers.h"
@@ -29,14 +31,43 @@ UDeepTreeEchoUnrealBridge::UDeepTreeEchoUnrealBridge()
     MotorMapping.EmotionToGestureMap.Add(TEXT("Wonder"), TEXT("Gesture_Amazed"));
     MotorMapping.EmotionToGestureMap.Add(TEXT("Concern"), TEXT("Gesture_Worried"));
 
-    // Initialize default expression
+    // Resting face until the model chooses an expression
     CurrentExpression.EmotionIntensities.Add(TEXT("Neutral"), 1.0f);
+
+    // Prompt template (model input): the model chooses the reaction, the slots carry the real state
+    ReactionPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent. Your cognitive mode has just changed from "
+        "{previous_mode} to {mode}. Relevance coherence: {coherence} (0..1). Current relevance frame: {frame}. "
+        "Most salient items: {salience}.\n"
+        "Choose the facial expression you show right now, from exactly this list: {expressions}. "
+        "Reply with JSON only: {\"expression\": \"<one name from the list>\", \"intensity\": <number 0..1>}");
 }
 
 void UDeepTreeEchoUnrealBridge::BeginPlay()
 {
     Super::BeginPlay();
     InitializeComponentReferences();
+
+    // The displayed facial expression is chosen by the character model only
+    TWeakObjectPtr<UDeepTreeEchoUnrealBridge> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UDeepTreeEchoUnrealBridge* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
+}
+
+void UDeepTreeEchoUnrealBridge::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 void UDeepTreeEchoUnrealBridge::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -320,12 +351,194 @@ void UDeepTreeEchoUnrealBridge::UpdateMotorOutputs(float DeltaTime)
 
 void UDeepTreeEchoUnrealBridge::UpdateAvatarExpression()
 {
-    CurrentExpression = MapCognitiveStateToExpression();
-    ApplyFacialBlendShapes(CurrentExpression.FacialBlendShapes);
+    // The facial expression itself is applied only in HandleCharacterReaction (model reactions).
+    // A cognitive mode change is the moment to ask the model how the character reacts.
+    if (CognitiveCore && bRequestReactionOnModeChange && !bReactionRequestPending)
+    {
+        const FString Mode = GetCurrentCognitiveModeString();
+        const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+        if (Mode != LastObservedMode && Now - LastReactionRequestTime >= MinSecondsBetweenReactionRequests)
+        {
+            RequestModelReaction();
+        }
+    }
+
+    // Procedural physiology (not a reaction): blink rate follows cognitive load
+    if (CognitiveCore)
+    {
+        const float CognitiveLoad = 1.0f - CognitiveCore->RelevanceState.RelevanceCoherence;
+        CurrentExpression.BlinkRateModifier = 1.0f + (CognitiveLoad * 0.5f);
+    }
 
     // Update gaze
     FVector GazeTarget = ComputeGazeFromAttention();
     SetGazeTarget(GazeTarget);
+}
+
+FString UDeepTreeEchoUnrealBridge::GetReactionCharacterName() const
+{
+    if (!ReactionCharacterName.IsEmpty())
+    {
+        return ReactionCharacterName;
+    }
+    return GetOwner() ? GetOwner()->GetName() : FString(TEXT("Deep Tree Echo"));
+}
+
+const TArray<FString>& UDeepTreeEchoUnrealBridge::GetRenderableExpressions()
+{
+    static const TArray<FString> Expressions = {
+        TEXT("Neutral"), TEXT("Joy"), TEXT("Curiosity"), TEXT("Contemplation"),
+        TEXT("Wonder"), TEXT("Alert"), TEXT("Focused"), TEXT("Serenity")
+    };
+    return Expressions;
+}
+
+FString UDeepTreeEchoUnrealBridge::BuildReactionPrompt(const FString& PreviousMode) const
+{
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetReactionCharacterName());
+    Slots.Add(TEXT("mode"), GetCurrentCognitiveModeString());
+    Slots.Add(TEXT("previous_mode"), PreviousMode.IsEmpty() ? FString(TEXT("(start)")) : PreviousMode);
+    Slots.Add(TEXT("expressions"), FString::Join(GetRenderableExpressions(), TEXT(", ")));
+
+    if (CognitiveCore)
+    {
+        const FRelevanceRealizationState& RelevanceState = CognitiveCore->RelevanceState;
+        Slots.Add(TEXT("coherence"), FString::Printf(TEXT("%.2f"), RelevanceState.RelevanceCoherence));
+        Slots.Add(TEXT("frame"), RelevanceState.RelevanceFrame.IsEmpty() ? FString(TEXT("(none)")) : RelevanceState.RelevanceFrame);
+
+        // Top salient items, highest first
+        TArray<TPair<FString, float>> Salient;
+        for (const auto& Pair : RelevanceState.SalienceLandscape)
+        {
+            Salient.Add(TPair<FString, float>(Pair.Key, Pair.Value));
+        }
+        Salient.Sort([](const TPair<FString, float>& A, const TPair<FString, float>& B) { return A.Value > B.Value; });
+        TArray<FString> SalienceText;
+        for (int32 i = 0; i < Salient.Num() && i < 5; ++i)
+        {
+            SalienceText.Add(FString::Printf(TEXT("%s (%.2f)"), *Salient[i].Key, Salient[i].Value));
+        }
+        Slots.Add(TEXT("salience"), SalienceText.Num() > 0 ? FString::Join(SalienceText, TEXT(", ")) : FString(TEXT("(none)")));
+    }
+    else
+    {
+        Slots.Add(TEXT("coherence"), TEXT("(unknown)"));
+        Slots.Add(TEXT("frame"), TEXT("(none)"));
+        Slots.Add(TEXT("salience"), TEXT("(none)"));
+    }
+
+    return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
+}
+
+bool UDeepTreeEchoUnrealBridge::RequestModelReaction()
+{
+    if (bReactionRequestPending)
+    {
+        return false;
+    }
+
+    const FString PreviousMode = LastObservedMode;
+    LastObservedMode = GetCurrentCognitiveModeString();
+    LastReactionRequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    bReactionRequestPending = true;
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), BuildReactionPrompt(PreviousMode)));
+
+    TWeakObjectPtr<UDeepTreeEchoUnrealBridge> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (UDeepTreeEchoUnrealBridge* Self = WeakThis.Get())
+            {
+                Self->HandleModelReactionReply(bSuccess, TextOrError);
+            }
+        }), 0.7f);
+    return true;
+}
+
+void UDeepTreeEchoUnrealBridge::HandleModelReactionReply(bool bSuccess, const FString& TextOrError)
+{
+    bReactionRequestPending = false;
+
+    // On any failure the face stays as it is; the error is reported as a system event only.
+    if (!bSuccess)
+    {
+        LastReactionError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealBridge: no model reaction: %s"), *TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Expression;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("expression"), Expression) ||
+        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
+    {
+        LastReactionError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealBridge: %s"), *LastReactionError);
+        return;
+    }
+
+    const FString* Allowed = GetRenderableExpressions().FindByPredicate(
+        [&Expression](const FString& Name) { return Name.Equals(Expression.TrimStartAndEnd(), ESearchCase::IgnoreCase); });
+    if (!Allowed)
+    {
+        LastReactionError = FString::Printf(TEXT("model chose an expression outside the offered list: %s"), *Expression);
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealBridge: %s"), *LastReactionError);
+        return;
+    }
+
+    LastReactionError.Reset();
+
+    // Publish the model's reaction; every subscriber (including this bridge) renders it
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = GetReactionCharacterName();
+    Reaction.Expression = *Allowed;
+    Reaction.Intensity = FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f);
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+}
+
+void UDeepTreeEchoUnrealBridge::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    // Empty expression = the model chose no change
+    if (Reaction.Expression.IsEmpty())
+    {
+        return;
+    }
+
+    const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+    const TMap<FString, float> NewShapes = MapEmotionToBlendShapes(Reaction.Expression, Intensity);
+    if (NewShapes.Num() == 0)
+    {
+        return; // not renderable here; leave the face unchanged
+    }
+
+    // Clear the previous model-chosen expression's morph targets, then apply the new ones
+    TMap<FString, float> BlendShapes;
+    for (const auto& Pair : CurrentExpression.FacialBlendShapes)
+    {
+        BlendShapes.Add(Pair.Key, 0.0f);
+    }
+    for (const auto& Pair : NewShapes)
+    {
+        BlendShapes.Add(Pair.Key, Pair.Value);
+    }
+
+    CurrentExpression.EmotionIntensities.Reset();
+    CurrentExpression.EmotionIntensities.Add(Reaction.Expression, Intensity);
+    CurrentExpression.FacialBlendShapes = NewShapes;
+    CurrentExpression.ExpressionIntensity = Intensity;
+
+    ApplyFacialBlendShapes(BlendShapes);
 }
 
 void UDeepTreeEchoUnrealBridge::ApplyFacialBlendShapes(const TMap<FString, float>& BlendShapes)
@@ -382,79 +595,6 @@ void UDeepTreeEchoUnrealBridge::UpdateBodyPosture()
     }
 }
 
-FAvatarExpressionState UDeepTreeEchoUnrealBridge::MapCognitiveStateToExpression() const
-{
-    FAvatarExpressionState Expression;
-
-    if (!CognitiveCore)
-    {
-        Expression.EmotionIntensities.Add(TEXT("Neutral"), 1.0f);
-        return Expression;
-    }
-
-    // Get relevance state for emotional mapping
-    const FRelevanceRealizationState& RelevanceState = CognitiveCore->RelevanceState;
-
-    // Map salience to emotions
-    float TotalSalience = 0.0f;
-    for (const auto& Pair : RelevanceState.SalienceLandscape)
-    {
-        TotalSalience += Pair.Value;
-    }
-
-    // Determine primary emotion from cognitive state
-    ECognitiveMode Mode = CognitiveCore->CurrentMode;
-    switch (Mode)
-    {
-    case ECognitiveMode::Reactive:
-        Expression.EmotionIntensities.Add(TEXT("Alert"), 0.7f);
-        Expression.EmotionIntensities.Add(TEXT("Neutral"), 0.3f);
-        break;
-    case ECognitiveMode::Deliberative:
-        Expression.EmotionIntensities.Add(TEXT("Focused"), 0.8f);
-        Expression.EmotionIntensities.Add(TEXT("Contemplation"), 0.2f);
-        break;
-    case ECognitiveMode::Reflective:
-        Expression.EmotionIntensities.Add(TEXT("Contemplation"), 0.7f);
-        Expression.EmotionIntensities.Add(TEXT("Wonder"), 0.3f);
-        break;
-    case ECognitiveMode::Creative:
-        Expression.EmotionIntensities.Add(TEXT("Joy"), 0.5f);
-        Expression.EmotionIntensities.Add(TEXT("Curiosity"), 0.5f);
-        break;
-    case ECognitiveMode::Integrative:
-        Expression.EmotionIntensities.Add(TEXT("Serenity"), 0.6f);
-        Expression.EmotionIntensities.Add(TEXT("Focus"), 0.4f);
-        break;
-    }
-
-    // Map emotions to facial blend shapes
-    for (const auto& EmotionPair : Expression.EmotionIntensities)
-    {
-        TMap<FString, float> EmotionBlendShapes = MapEmotionToBlendShapes(EmotionPair.Key, EmotionPair.Value);
-        for (const auto& BlendPair : EmotionBlendShapes)
-        {
-            if (Expression.FacialBlendShapes.Contains(BlendPair.Key))
-            {
-                Expression.FacialBlendShapes[BlendPair.Key] = FMath::Max(Expression.FacialBlendShapes[BlendPair.Key], BlendPair.Value);
-            }
-            else
-            {
-                Expression.FacialBlendShapes.Add(BlendPair.Key, BlendPair.Value);
-            }
-        }
-    }
-
-    // Set expression intensity based on relevance coherence
-    Expression.ExpressionIntensity = RelevanceState.RelevanceCoherence;
-
-    // Modulate blink rate based on cognitive load
-    float CognitiveLoad = 1.0f - RelevanceState.RelevanceCoherence;
-    Expression.BlinkRateModifier = 1.0f + (CognitiveLoad * 0.5f);
-
-    return Expression;
-}
-
 TMap<FString, float> UDeepTreeEchoUnrealBridge::MapEmotionToBlendShapes(const FString& Emotion, float Intensity) const
 {
     TMap<FString, float> BlendShapes;
@@ -498,9 +638,14 @@ TMap<FString, float> UDeepTreeEchoUnrealBridge::MapEmotionToBlendShapes(const FS
         BlendShapes.Add(TEXT("Smile"), Intensity * 0.3f);
         BlendShapes.Add(TEXT("EyeRelax"), Intensity * 0.5f);
     }
-    else // Neutral
+    else if (Emotion == TEXT("Neutral"))
     {
         BlendShapes.Add(TEXT("Neutral"), Intensity);
+    }
+    else
+    {
+        // Not in this renderer's vocabulary: render nothing rather than substitute another expression
+        UE_LOG(LogTemp, Verbose, TEXT("DeepTreeEchoUnrealBridge: no blend-shape mapping for expression '%s'"), *Emotion);
     }
 
     return BlendShapes;
