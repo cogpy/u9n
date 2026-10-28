@@ -282,7 +282,7 @@ struct FMemoryQuery
  * Memory structure for retrieved memories
  */
 USTRUCT(BlueprintType)
-struct FMemory
+struct FRetrievedMemory
 {
     GENERATED_BODY()
 
@@ -307,7 +307,7 @@ struct FMemory
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FString Context;
 
-    FMemory()
+    FRetrievedMemory()
         : Timestamp(FDateTime::Now())
         , Relevance(1.0f)
         , Strength(1.0f)
@@ -466,7 +466,7 @@ public:
     // ===== Memory Queries =====
 
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Memory")
-    TArray<FMemory> QueryRelatedMemories(const FString& Context, int32 MaxResults = 10);
+    TArray<FRetrievedMemory> QueryRelatedMemories(const FString& Context, int32 MaxResults = 10);
 
     UFUNCTION(BlueprintCallable, Category = "AtomSpace|Memory")
     TArray<FAtom> QueryAtoms(const FMemoryQuery& Query);

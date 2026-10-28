@@ -93,5 +93,9 @@ public class UnrealEcho : ModuleRules
 
 		// Compiler definitions
 		PublicDefinitions.Add("UNREALECHO_API=");
+		// Export macros used by headers in this module's include tree that UBT does not define
+		PublicDefinitions.Add("UNREALENGINE_API=");
+		PublicDefinitions.Add("DEEPTREECHO_API=");
+		PublicDefinitions.Add("DEEPTREEECHOAVATAR_API=");
 	}
 }

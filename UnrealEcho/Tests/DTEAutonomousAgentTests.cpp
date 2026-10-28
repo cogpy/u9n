@@ -237,13 +237,13 @@ bool FVirtualCNS_ProprioceptionTest::RunTest(const FString& Parameters)
     const FProprioceptiveSnapshot Retrieved = CNS->GetProprioceptiveSnapshot();
     TestTrue(TEXT("Proprioceptive event should fire"), bEventFired);
     TestEqual(TEXT("Location X should match"),
-              Retrieved.WorldLocation.X, 100.0f, 0.001f);
+              Retrieved.WorldLocation.X, 100.0, 0.001);
     TestEqual(TEXT("Location Y should match"),
-              Retrieved.WorldLocation.Y, 200.0f, 0.001f);
+              Retrieved.WorldLocation.Y, 200.0, 0.001);
     TestEqual(TEXT("Yaw should match"),
-              Retrieved.WorldRotation.Yaw, 45.0f, 0.001f);
+              Retrieved.WorldRotation.Yaw, 45.0, 0.001);
     TestEqual(TEXT("Velocity X should match"),
-              Retrieved.Velocity.X, 300.0f, 0.001f);
+              Retrieved.Velocity.X, 300.0, 0.001);
     TestTrue(TEXT("Grounded flag should match"), Retrieved.bIsGrounded);
 
     return true;

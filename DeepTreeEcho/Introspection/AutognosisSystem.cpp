@@ -192,8 +192,8 @@ FComponentObservation UAutognosisSystem::ObserveComponent(UActorComponent* Compo
     }
     else if (UWisdomCultivation* WC = Cast<UWisdomCultivation>(Component))
     {
-        Obs.PerformanceScore = WC->GetWisdomLevel();
-        Obs.RecentBehaviors.Add(FString::Printf(TEXT("Cultivation: %.2f"), WC->GetCultivationLevel()));
+        Obs.PerformanceScore = WC->GetOverallWisdomLevel();
+        Obs.RecentBehaviors.Add(FString::Printf(TEXT("Cultivation: %.2f"), WC->GetOverallVirtueDevelopment()));
     }
     else
     {

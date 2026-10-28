@@ -98,10 +98,9 @@ void UAnimationMontageSystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		ReactionHandle.Reset();
 	}
 
-	if (AnimInstance && MontageEndedHandle.IsValid())
+	if (AnimInstance)
 	{
-		AnimInstance->OnMontageEnded.Remove(MontageEndedHandle);
-		MontageEndedHandle.Reset();
+		AnimInstance->OnMontageEnded.RemoveDynamic(this, &UAnimationMontageSystem::OnMontageEndedInternal);
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -188,7 +187,7 @@ void UAnimationMontageSystem::Initialize(UAnimInstance* InAnimInstance)
 	if (AnimInstance)
 	{
 		// Bind to montage ended event
-		MontageEndedHandle = AnimInstance->OnMontageEnded.AddUObject(this, &UAnimationMontageSystem::OnMontageEndedInternal);
+		AnimInstance->OnMontageEnded.AddDynamic(this, &UAnimationMontageSystem::OnMontageEndedInternal);
 	}
 }
 

@@ -524,7 +524,7 @@ void UMetaHumanCNSBinding::ReadBodySchema(float DeltaTime)
             FKinematicJoint& Joint = KinematicChain[i];
             const FName BoneFName(*TrackedBones[i]);
 
-            if (!SkeletalMesh->DoesBoneExist(BoneFName)) { continue; }
+            if (SkeletalMesh->GetBoneIndex(BoneFName) == INDEX_NONE) { continue; }
 
             const FTransform BoneWorld =
                 SkeletalMesh->GetSocketTransform(BoneFName, RTS_World);
@@ -598,7 +598,7 @@ FProprioceptiveSnapshot UMetaHumanCNSBinding::BuildProprioceptiveSnapshot() cons
         Snap.WorldLocation = Owner->GetActorLocation();
         Snap.WorldRotation = Owner->GetActorRotation();
 
-        if (const UPrimitiveComponent* Prim =
+        if (UPrimitiveComponent* Prim =
                 Cast<UPrimitiveComponent>(Owner->GetRootComponent()))
         {
             Snap.Velocity = Prim->GetPhysicsLinearVelocity();

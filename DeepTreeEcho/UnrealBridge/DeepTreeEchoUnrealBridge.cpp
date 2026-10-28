@@ -128,7 +128,7 @@ void UDeepTreeEchoUnrealBridge::InitializeBridge()
 
     if (ReservoirSystem)
     {
-        ReservoirSystem->InitializeReservoir();
+        ReservoirSystem->InitializeReservoirs();
     }
 
     if (EmbodiedCognition)

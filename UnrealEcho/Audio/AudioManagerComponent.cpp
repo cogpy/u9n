@@ -294,13 +294,13 @@ void UAudioManagerComponent::UpdateVoiceModulation(float DeltaTime)
     }
     
     // Smooth interpolation
-    float CurrentPitch = VoiceAudioComponent->GetPitchMultiplier();
+    float CurrentPitch = VoiceAudioComponent->PitchMultiplier;
     float NewPitch = FMath::FInterpTo(CurrentPitch, TargetPitch, DeltaTime, 2.0f);
     VoiceAudioComponent->SetPitchMultiplier(NewPitch);
     
     // Modulate volume based on confidence
     float TargetVolume = FMath::Lerp(0.7f, 1.0f, Confidence);
-    float CurrentVolume = VoiceAudioComponent->GetVolumeMultiplier();
+    float CurrentVolume = VoiceAudioComponent->VolumeMultiplier;
     float NewVolume = FMath::FInterpTo(CurrentVolume, TargetVolume, DeltaTime, 1.0f);
     VoiceAudioComponent->SetVolumeMultiplier(NewVolume);
 }

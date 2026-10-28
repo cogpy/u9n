@@ -361,6 +361,9 @@ public:
      */
     void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
 
+    /** Character name reactions are addressed to (ReactionCharacterName, else the owner's name). */
+    FString GetReactionCharacterNameResolved() const;
+
     /** Expression currently rendered (last model reaction), empty before any. */
     UFUNCTION(BlueprintPure, Category="CNSBinding|Expression")
     FString GetCurrentReactionExpression() const { return CurrentReactionExpression; }
@@ -455,7 +458,6 @@ protected:
 
     // Model reactions
     FVector4 GetCognitiveVector() const;
-    FString GetReactionCharacterNameResolved() const;
     FString BuildReactionPrompt(const FString& Trigger) const;
     void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
     const FVector* FindPADForExpression(const FString& Name, FString& OutKey) const;

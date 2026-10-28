@@ -483,9 +483,9 @@ TMap<FString, float> UAvatarAtomSpaceClient::GetAllPersonalityTraits()
 
 // ===== Memory Queries =====
 
-TArray<FMemory> UAvatarAtomSpaceClient::QueryRelatedMemories(const FString& Context, int32 MaxResults)
+TArray<FRetrievedMemory> UAvatarAtomSpaceClient::QueryRelatedMemories(const FString& Context, int32 MaxResults)
 {
-    TArray<FMemory> Results;
+    TArray<FRetrievedMemory> Results;
 
     // Find memories related to context
     TArray<FAtomHandle> MemoryHandles = FindByType(EAtomType::MemoryNode);
@@ -509,7 +509,7 @@ TArray<FMemory> UAvatarAtomSpaceClient::QueryRelatedMemories(const FString& Cont
     for (int32 i = 0; i < Count; i++)
     {
         FAtom Atom = GetAtom(ScoredMemories[i].Key);
-        FMemory Memory;
+        FRetrievedMemory Memory;
         Memory.MemoryId = Atom.Name;
         Memory.Timestamp = Atom.CreatedAt;
         Memory.Relevance = ScoredMemories[i].Value;

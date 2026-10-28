@@ -198,7 +198,7 @@ struct FMontagePlayRequest
 
 // Delegates
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMontageStarted, FName, MontageId, UAnimMontage*, Montage);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnMontageEnded, FName, MontageId, UAnimMontage*, Montage, bool, bInterrupted);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnMontageSystemEnded, FName, MontageId, UAnimMontage*, Montage, bool, bInterrupted);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMontageNotify, FName, MontageId, FName, NotifyName);
 
 /**
@@ -292,7 +292,7 @@ public:
 	FOnMontageStarted OnMontageStarted;
 
 	UPROPERTY(BlueprintAssignable, Category = "Animation|Montage")
-	FOnMontageEnded OnMontageEnded;
+	FOnMontageSystemEnded OnMontageEnded;
 
 	UPROPERTY(BlueprintAssignable, Category = "Animation|Montage")
 	FOnMontageNotify OnMontageNotify;
@@ -358,10 +358,10 @@ protected:
 	float CalculateVariantScore(const FMontageVariant& Variant) const;
 	bool CanPlayMontage(const FMontageEntry& Entry, bool bForce) const;
 	void UpdateCooldowns(float DeltaTime);
+	UFUNCTION()
 	void OnMontageEndedInternal(UAnimMontage* Montage, bool bInterrupted);
 	void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
 
 	// Delegate handles
-	FDelegateHandle MontageEndedHandle;
 	FDelegateHandle ReactionHandle;
 };
