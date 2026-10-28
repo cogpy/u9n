@@ -452,9 +452,12 @@ protected:
 
     // Event Handlers
     UFUNCTION()
-    void HandleCognitiveStepChanged(int32 NewStep, EEchobeatStepType StepType, EEchobeatMode Mode);
+    void HandleCognitiveStepChanged(int32 OldStep, int32 NewStep);
     
+    /** Bound to UCognitiveCycleManager::OnPivotalStep (the relevance-realization steps) */
     UFUNCTION()
+    void HandlePivotalStep(int32 Step);
+
     void HandleRelevanceRealized(int32 Step, float Relevance);
 
     // Model reactions

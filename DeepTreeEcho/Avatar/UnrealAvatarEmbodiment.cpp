@@ -18,6 +18,7 @@
  */
 
 #include "UnrealAvatarEmbodiment.h"
+#include "../Core/CognitiveCycleManager.h"
 #include "../Model/EchoCharacterReaction.h"
 #include "../Model/EchoModelClient.h"
 #include "Dom/JsonObject.h"
@@ -115,7 +116,7 @@ void UUnrealAvatarEmbodiment::EndPlay(const EEndPlayReason::Type EndPlayReason)
     if (CognitiveCycleManager)
     {
         CognitiveCycleManager->OnStepChanged.RemoveDynamic(this, &UUnrealAvatarEmbodiment::HandleCognitiveStepChanged);
-        CognitiveCycleManager->OnRelevanceRealized.RemoveDynamic(this, &UUnrealAvatarEmbodiment::HandleRelevanceRealized);
+        CognitiveCycleManager->OnPivotalStep.RemoveDynamic(this, &UUnrealAvatarEmbodiment::HandlePivotalStep);
     }
 
     Super::EndPlay(EndPlayReason);
@@ -170,8 +171,8 @@ void UUnrealAvatarEmbodiment::FindComponentReferences()
     {
         CognitiveCycleManager->OnStepChanged.AddDynamic(
             this, &UUnrealAvatarEmbodiment::HandleCognitiveStepChanged);
-        CognitiveCycleManager->OnRelevanceRealized.AddDynamic(
-            this, &UUnrealAvatarEmbodiment::HandleRelevanceRealized);
+        CognitiveCycleManager->OnPivotalStep.AddDynamic(
+            this, &UUnrealAvatarEmbodiment::HandlePivotalStep);
     }
 }
 
@@ -265,7 +266,7 @@ void UUnrealAvatarEmbodiment::UpdateEmbodiedState(float DeltaTime)
     // Update arousal based on cognitive activity
     if (CognitiveCycleManager)
     {
-        float CognitiveLoad = CognitiveCycleManager->GetSyncQuality();
+        float CognitiveLoad = CognitiveCycleManager->GetInterStreamCoherence();
         EmbodiedState.ArousalLevel = FMath::Lerp(EmbodiedState.ArousalLevel, 
                                                    CognitiveLoad, 
                                                    0.1f * DeltaTime);
@@ -305,9 +306,17 @@ void UUnrealAvatarEmbodiment::UpdateEmbeddedState(float DeltaTime)
     FVector Location = Owner->GetActorLocation();
     
     // Check for nearby objects (simplified environmental awareness)
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), AllActors);
     TArray<AActor*> NearbyActors;
-    UGameplayStatics::GetAllActorsInRadius(GetWorld(), Location, 
-                                            EnvironmentScanRadius, NearbyActors);
+    const float ScanRadiusSq = FMath::Square(EnvironmentScanRadius);
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && FVector::DistSquared(Actor->GetActorLocation(), Location) <= ScanRadiusSq)
+        {
+            NearbyActors.Add(Actor);
+        }
+    }
     
     // Update environment awareness based on nearby objects
     float NewAwareness = FMath::Min(1.0f, NearbyActors.Num() / 10.0f);
@@ -618,7 +627,7 @@ void UUnrealAvatarEmbodiment::ApplyExpressionToAvatar(float DeltaTime)
     // Update aura based on cognitive state
     if (CognitiveCycleManager)
     {
-        float SyncQuality = CognitiveCycleManager->GetSyncQuality();
+        float SyncQuality = CognitiveCycleManager->GetInterStreamCoherence();
         ExpressionState.AuraPulseRate = 0.5f + SyncQuality * 1.5f;
         
         // Blend aura color based on valence
@@ -702,27 +711,39 @@ void UUnrealAvatarEmbodiment::CompleteCurrentAction()
 // Event Handlers
 // ============================================================================
 
-void UUnrealAvatarEmbodiment::HandleCognitiveStepChanged(int32 NewStep, 
-                                                          EEchobeatStepType StepType,
-                                                          EEchobeatMode Mode)
+void UUnrealAvatarEmbodiment::HandleCognitiveStepChanged(int32 OldStep, int32 NewStep)
 {
+    if (!CognitiveCycleManager)
+    {
+        return;
+    }
+
     // Recorded only: the step clock never selects an emotion
     LastCognitiveStep = NewStep;
-    if (const UEnum* StepEnum = StaticEnum<EEchobeatStepType>())
+    const FCognitiveStepConfig StepConfig = CognitiveCycleManager->GetStepConfig(NewStep);
+    if (const UEnum* StepEnum = StaticEnum<ECognitiveStepType>())
     {
-        LastStepTypeName = StepEnum->GetNameStringByValue(static_cast<int64>(StepType));
+        LastStepTypeName = StepEnum->GetNameStringByValue(static_cast<int64>(StepConfig.StepType));
     }
     
     // Update cognitive mode display (a status label, not an emotion)
-    ExpressionState.CognitiveMode = Mode == EEchobeatMode::Expressive 
+    ExpressionState.CognitiveMode = StepConfig.Mode == ECognitiveModeType::Expressive 
         ? TEXT("Expressive") 
         : TEXT("Reflective");
 
     // Optionally, a pivotal step is a moment to ask the model how the character reacts
     if (bRequestReactionOnCognitiveEvents && bRequestReactionOnPivotalSteps &&
-        StepType == EEchobeatStepType::Pivotal && CanRequestReaction())
+        StepConfig.bIsPivotalStep && CanRequestReaction())
     {
         RequestModelReaction(FString::Printf(TEXT("pivotal relevance-realization step %d"), NewStep));
+    }
+}
+
+void UUnrealAvatarEmbodiment::HandlePivotalStep(int32 Step)
+{
+    if (CognitiveCycleManager)
+    {
+        HandleRelevanceRealized(Step, CognitiveCycleManager->GetRelevanceRealizationLevel());
     }
 }
 
