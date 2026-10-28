@@ -301,10 +301,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Microexpression")
     void TriggerMicroExpression(EMicroExpression MicroExp, float Duration = 0.2f);
 
-    /** Trigger the Wonder-to-Joy transition pattern */
-    UFUNCTION(BlueprintCallable, Category = "Microexpression")
-    void TriggerWonderToJoyTransition(float Duration = 1.5f);
-
     // ========== Procedural Animation Control ==========
 
     /** Enable/disable procedural blinking */
@@ -386,7 +382,6 @@ protected:
     void UpdateProceduralSaccades(float DeltaTime);
     void UpdateMicroExpression(float DeltaTime);
     void UpdateEmissivePulse(float DeltaTime);
-    void UpdateWonderToJoyTransition(float DeltaTime);
 
     EExpressionState MapCognitiveToExpression(ECognitiveState CogState);
 
@@ -459,12 +454,6 @@ protected:
     EMicroExpression ActiveMicroExpression;
     float MicroExpressionTimer;
     float MicroExpressionDuration;
-
-    // ========== Wonder-to-Joy Transition State ==========
-
-    bool bWonderToJoyActive;
-    float WonderToJoyProgress;
-    float WonderToJoyDuration;
 
     // ========== Emissive State ==========
 

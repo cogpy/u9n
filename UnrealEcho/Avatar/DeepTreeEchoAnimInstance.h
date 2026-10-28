@@ -167,15 +167,3 @@ public:
     virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) override;
 };
 
-/**
- * Animation Notify State for Wonder-to-Joy transition
- */
-UCLASS()
-class DEEPTREECHO_API UAnimNotifyState_WonderToJoy : public UAnimNotifyState
-{
-    GENERATED_BODY()
-
-public:
-    virtual void NotifyBegin(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, float TotalDuration, const FAnimNotifyEventReference& EventReference) override;
-    virtual void NotifyEnd(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) override;
-};
