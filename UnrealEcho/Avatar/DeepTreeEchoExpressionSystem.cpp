@@ -9,7 +9,7 @@ namespace
 {
     /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
     template <typename TEnum>
-    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    bool ParseExpressionSystemEnum(const FString& Name, TEnum& OutValue)
     {
         const FString Trimmed = Name.TrimStartAndEnd();
         const UEnum* Enum = StaticEnum<TEnum>();
@@ -32,7 +32,7 @@ namespace
     }
 
     template <typename TEnum>
-    FString ReactionEnumName(TEnum Value)
+    FString ExpressionSystemEnumName(TEnum Value)
     {
         const UEnum* Enum = StaticEnum<TEnum>();
         return Enum ? Enum->GetNameStringByValue(static_cast<int64>(Value)) : FString();
@@ -485,7 +485,7 @@ void UDeepTreeEchoExpressionSystem::SetCognitiveState(ECognitiveState NewState)
     PreviousCognitiveState = CurrentCognitiveState;
     CurrentCognitiveState = NewState;
 
-    UE_LOG(LogTemp, Verbose, TEXT("Cognitive state recorded: %s"), *ReactionEnumName(NewState));
+    UE_LOG(LogTemp, Verbose, TEXT("Cognitive state recorded: %s"), *ExpressionSystemEnumName(NewState));
 
     // The state change is a moment to ask the model how the character reacts
     if (bRequestReactionOnCognitiveStateChange && !bReactionRequestPending)
@@ -558,15 +558,15 @@ FString UDeepTreeEchoExpressionSystem::BuildReactionPrompt() const
 {
     TMap<FString, FString> Slots;
     Slots.Add(TEXT("character"), GetReactionCharacterNameResolved());
-    Slots.Add(TEXT("previous_state"), ReactionEnumName(PreviousCognitiveState));
-    Slots.Add(TEXT("state"), ReactionEnumName(CurrentCognitiveState));
+    Slots.Add(TEXT("previous_state"), ExpressionSystemEnumName(PreviousCognitiveState));
+    Slots.Add(TEXT("state"), ExpressionSystemEnumName(CurrentCognitiveState));
     Slots.Add(TEXT("echobeats_step"), CurrentEchobeatsStep.StepNumber > 0
         ? FString::FromInt(CurrentEchobeatsStep.StepNumber) : FString(TEXT("(unknown)")));
     Slots.Add(TEXT("echobeats_phase"), CurrentEchobeatsStep.CognitivePhase.IsEmpty()
         ? FString(TEXT("(unknown)")) : CurrentEchobeatsStep.CognitivePhase);
     Slots.Add(TEXT("speaking"), (bTextLipSyncActive || CurrentSpeakingAmplitude > 0.05f) ? TEXT("yes") : TEXT("no"));
     Slots.Add(TEXT("current_expression"), FString::Printf(TEXT("%s at intensity %.2f"),
-        *ReactionEnumName(TargetExpressionState), ReactionIntensity));
+        *ExpressionSystemEnumName(TargetExpressionState), ReactionIntensity));
     Slots.Add(TEXT("expressions"), FString::Join(GetReactionVocabulary(), TEXT(", ")));
     return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
 }
@@ -653,13 +653,13 @@ void UDeepTreeEchoExpressionSystem::HandleCharacterReaction(const FEchoCharacter
 
     // Expression: a preset at the model's intensity, or a micro-expression the model named.
     // An empty or unrecognised name leaves the face unchanged.
-    EExpressionState NewExpression;
-    EMicroExpression NewMicro;
-    if (ParseReactionEnum(Reaction.Expression, NewExpression))
+    EExpressionState NewExpression = EExpressionState::Neutral;
+    EMicroExpression NewMicro = EMicroExpression::None;
+    if (ParseExpressionSystemEnum(Reaction.Expression, NewExpression))
     {
         ApplyReactionExpression(NewExpression, Intensity, 0.4f);
     }
-    else if (ParseReactionEnum(Reaction.Expression, NewMicro) && NewMicro != EMicroExpression::None)
+    else if (ParseExpressionSystemEnum(Reaction.Expression, NewMicro) && NewMicro != EMicroExpression::None)
     {
         TriggerMicroExpression(NewMicro, FMath::Lerp(0.15f, 0.4f, Intensity));
     }

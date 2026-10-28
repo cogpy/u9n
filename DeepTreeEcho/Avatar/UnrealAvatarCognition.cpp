@@ -11,7 +11,7 @@ namespace
 {
     /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
     template <typename TEnum>
-    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    bool ParseAvatarCognitionEnum(const FString& Name, TEnum& OutValue)
     {
         const FString Trimmed = Name.TrimStartAndEnd();
         const UEnum* Enum = StaticEnum<TEnum>();
@@ -35,7 +35,7 @@ namespace
 
     /** All names of an enum (without the generated _MAX). */
     template <typename TEnum>
-    TArray<FString> ReactionEnumNames()
+    TArray<FString> AvatarCognitionEnumNames()
     {
         TArray<FString> Names;
         if (const UEnum* Enum = StaticEnum<TEnum>())
@@ -744,7 +744,7 @@ FString UUnrealAvatarCognition::BuildReactionPrompt(const FString& Trigger) cons
     Slots.Add(TEXT("echobeat_step"), FString::FromInt(State.CurrentEchobeatStep));
     Slots.Add(TEXT("sys6_step"), FString::FromInt(State.CurrentSys6Step));
     Slots.Add(TEXT("current_emotion"), FString::Printf(TEXT("%s at intensity %.2f"), *CurrentEmotion, State.EmotionIntensity));
-    Slots.Add(TEXT("emotions"), FString::Join(ReactionEnumNames<EAvatarEmotionState>(), TEXT(", ")));
+    Slots.Add(TEXT("emotions"), FString::Join(AvatarCognitionEnumNames<EAvatarEmotionState>(), TEXT(", ")));
     return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
 }
 
@@ -798,8 +798,8 @@ void UUnrealAvatarCognition::HandleModelReactionReply(bool bSuccess, const FStri
         return;
     }
 
-    EAvatarEmotionState Emotion;
-    if (!ParseReactionEnum(EmotionName, Emotion))
+    EAvatarEmotionState Emotion = EAvatarEmotionState::Neutral;
+    if (!ParseAvatarCognitionEnum(EmotionName, Emotion))
     {
         LastReactionError = FString::Printf(TEXT("model chose an emotion outside the offered list: %s"), *EmotionName);
         UE_LOG(LogTemp, Error, TEXT("UnrealAvatarCognition: %s"), *LastReactionError);
@@ -825,8 +825,8 @@ void UUnrealAvatarCognition::HandleCharacterReaction(const FEchoCharacterReactio
     }
 
     // Render the model-chosen emotion; empty or unknown names leave the avatar unchanged
-    EAvatarEmotionState Emotion;
-    if (ParseReactionEnum(Reaction.Expression, Emotion))
+    EAvatarEmotionState Emotion = EAvatarEmotionState::Neutral;
+    if (ParseAvatarCognitionEnum(Reaction.Expression, Emotion))
     {
         BlendToEmotionState(Emotion, FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f), 0.5f);
         OnExpressionUpdated.Broadcast(EAvatarExpressionChannel::Facial);
