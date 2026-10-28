@@ -355,6 +355,12 @@ public:
     UFUNCTION(BlueprintCallable, Category="CNSBinding|Expression")
     bool RequestModelReaction(const FString& Trigger);
 
+    /**
+     * Reaction-bus subscriber: renders a model reaction addressed to this character (unmapped
+     * expressions leave the face unchanged). Public so a holder of a bus reaction can apply it.
+     */
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+
     /** Expression currently rendered (last model reaction), empty before any. */
     UFUNCTION(BlueprintPure, Category="CNSBinding|Expression")
     FString GetCurrentReactionExpression() const { return CurrentReactionExpression; }
@@ -452,6 +458,5 @@ protected:
     FString GetReactionCharacterNameResolved() const;
     FString BuildReactionPrompt(const FString& Trigger) const;
     void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
-    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
     const FVector* FindPADForExpression(const FString& Name, FString& OutKey) const;
 };

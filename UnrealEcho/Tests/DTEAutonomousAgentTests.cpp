@@ -33,6 +33,7 @@
 #include "CNS/AutonomousAgentController.h"
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
+#include "EchoCharacterReaction.h"
 
 // Dependencies (for integration tests)
 #include "Core/DeepTreeEchoCore.h"
@@ -821,7 +822,7 @@ bool FMetaHumanCNSBinding_AUTest::RunTest(const FString& Parameters)
 }
 
 // ============================================================
-// 21. MetaHumanCNSBinding — Emotion Trigger
+// 21. MetaHumanCNSBinding — Model Reaction Rendering
 // ============================================================
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMetaHumanCNSBinding_EmotionTriggerTest,
@@ -834,17 +835,22 @@ bool FMetaHumanCNSBinding_EmotionTriggerTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("MetaHumanCNSBinding should be created"), Binding);
     if (!Binding) { return false; }
 
-    bool bEventFired = false;
-    Binding->OnExpressionStateUpdated.AddLambda(
-        [&bEventFired](const FCognitiveExpressionState&) { bEventFired = true; });
+    // A reaction as the model client publishes it on the bus
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = Binding->GetReactionCharacterNameResolved();
+    Reaction.Expression = TEXT("fear");
+    Reaction.Intensity = 1.0f;
+    Binding->HandleCharacterReaction(Reaction);
 
-    // Trigger fear expression
-    Binding->TriggerEmotion(-0.8f, 0.9f, -0.5f, 2.0f);
-
-    TestTrue(TEXT("Emotion trigger should fire expression event"), bEventFired);
+    TestEqual(TEXT("Rendered expression is the model's"), Binding->GetCurrentReactionExpression(), FString(TEXT("Fear")));
     const FCognitiveExpressionState State = Binding->GetExpressionState();
-    TestEqual(TEXT("Valence should be -0.8 (fear)"), State.Valence, -0.8f, 0.001f);
-    TestEqual(TEXT("Arousal should be 0.9 (high)"), State.Arousal, 0.9f, 0.001f);
+    TestEqual(TEXT("Valence follows the Fear PAD entry"), State.Valence, -0.7f, 0.001f);
+    TestEqual(TEXT("Arousal follows the Fear PAD entry"), State.Arousal, 0.8f, 0.001f);
+
+    // An expression outside the vocabulary leaves the face unchanged
+    Reaction.Expression = TEXT("not-an-expression");
+    Binding->HandleCharacterReaction(Reaction);
+    TestEqual(TEXT("Unmapped expression is ignored"), Binding->GetCurrentReactionExpression(), FString(TEXT("Fear")));
 
     return true;
 }

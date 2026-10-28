@@ -610,7 +610,7 @@ public:
     // INTEGRATION API
     // ========================================
 
-    /** Get integrated decision from all streams */
+    /** Get integrated decision from all streams; empty until UpdateLearning has trained the weights */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Integration")
     FString GetIntegratedDecision();
 
@@ -741,6 +741,9 @@ private:
 
     /** Feature extraction weights */
     TArray<TArray<float>> FeatureWeights;
+
+    /** Reward-driven weight updates applied; decisions need at least one (initial weights are random). */
+    int32 LearningUpdateCount = 0;
 
     /** Pattern templates */
     TMap<FString, TArray<float>> PatternTemplates;

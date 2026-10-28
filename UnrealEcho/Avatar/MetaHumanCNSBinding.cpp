@@ -7,8 +7,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Actor.h"
 #include "Math/UnrealMathUtility.h"
-#include "Model/EchoCharacterReaction.h"
-#include "Model/EchoModelClient.h"
+#include "EchoCharacterReaction.h"
+#include "EchoModelClient.h"
 #include "Dom/JsonObject.h"
 
 // -------------------------------------------------------
@@ -326,6 +326,8 @@ void UMetaHumanCNSBinding::HandleCharacterReaction(const FEchoCharacterReaction&
     {
         return;
     }
+
+    InitialiseExpressionPADMap(); // no-op once populated
 
     // Empty or unmapped expression names leave the face unchanged
     FString Key;

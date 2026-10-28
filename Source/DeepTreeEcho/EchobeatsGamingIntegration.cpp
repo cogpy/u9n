@@ -911,6 +911,10 @@ void UEchobeatsGamingIntegration::UpdateLearning(float RewardSignal, const TArra
             FeatureWeights[i][j] = FMath::Clamp(FeatureWeights[i][j], -2.0f, 2.0f);
         }
     }
+    if (RewardSignal != 0.0f && FeatureWeights.Num() > 0 && StateFeatures.Num() > 0)
+    {
+        ++LearningUpdateCount;
+    }
 
     // Update Gaming Mastery System if available
     if (GamingMasterySystem)
@@ -997,6 +1001,9 @@ TMap<FString, float> UEchobeatsGamingIntegration::PredictOpponentBehavior(const 
 
 FString UEchobeatsGamingIntegration::GetIntegratedDecision()
 {
+    // Untrained (randomly initialised) weights carry no decision
+    if (LearningUpdateCount == 0) { return FString(); }
+
     // Combine outputs from all three streams
 
     // Get situation assessment from perception
