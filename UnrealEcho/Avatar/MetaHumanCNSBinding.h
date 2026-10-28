@@ -7,8 +7,13 @@
 //   MetaHuman Skeleton  ──▶  Body Schema  ──▶  Virtual CNS
 //        (joints)               (map)         (proprioception)
 //
-//   Virtual CNS  ──▶  Emotional State  ──▶  MetaHuman Blend Shapes
-//   (cognitive)                                 (expression)
+//   Model reaction (FEchoReactionBus)  ──▶  PAD  ──▶  FACS AUs  ──▶  MetaHuman Blend Shapes
+//   (expression chosen by the character model)                       (expression)
+//
+// The facial expression is never derived from cognitive metrics: cognition events (large
+// 4E / coherence shifts, RequestModelReaction) ask the model how the character reacts via
+// ReactionPromptTemplate; the validated reply is broadcast on the reaction bus and the FACS
+// writer renders the last bus reaction.
 //
 // The binding implements Merleau-Ponty's concept of body schema:
 // the pre-reflective sense of one's body that enables skilful
@@ -20,6 +25,8 @@
 #include "Components/ActorComponent.h"
 #include "CNS/VirtualCNS.h"
 #include "MetaHumanCNSBinding.generated.h"
+
+struct FEchoCharacterReaction;
 
 // Forward declarations
 class UVirtualCNS;
@@ -85,7 +92,7 @@ struct FFACSActionUnit
 // Emotional Expression State
 // ============================================================
 
-/** Full facial expression state driven by cognitive emotional state */
+/** Full facial expression state: PAD of the last model-chosen reaction (+ recorded cognitive telemetry) */
 USTRUCT(BlueprintType)
 struct FCognitiveExpressionState
 {
@@ -101,7 +108,7 @@ struct FCognitiveExpressionState
     UPROPERTY(BlueprintReadWrite, meta=(ClampMin="-1.0", ClampMax="1.0"))
     float Dominance = 0.0f; // Submissive → dominant
 
-    // Cognitive load affects micro-expressions
+    // Cognitive load (recorded; does not drive the face)
     UPROPERTY(BlueprintReadWrite, meta=(ClampMin="0.0", ClampMax="1.0"))
     float CognitiveLoad = 0.0f;
 
@@ -195,9 +202,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnExpressionStateUpdated,
  * agent by continuously reading the MetaHuman skeleton and
  * writing the proprioceptive snapshot into the Virtual CNS.
  *
- * The reverse path drives MetaHuman blend shapes from the
- * cognitive emotional state, creating authentic, real-time
- * facial expressions that reflect the agent's inner life.
+ * The reverse path renders the character model's reactions (from
+ * FEchoReactionBus) on the MetaHuman blend shapes. Cognitive data is
+ * sent to the model as prompt input; it never selects an expression.
  *
  * Body Schema reading (60Hz):
  *   MetaHuman bones → FKinematicJoint array
@@ -205,9 +212,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnExpressionStateUpdated,
  *                  → VirtualCNS::UpdateProprioception()
  *
  * Expression writing (30Hz):
- *   DTECore emotional state → FCognitiveExpressionState
- *                           → PAD → FACS AUs
- *                           → MetaHuman blend shapes
+ *   last model reaction → ExpressionPADMap → FCognitiveExpressionState
+ *                       → PAD → FACS AUs
+ *                       → MetaHuman blend shapes
  */
 UCLASS(ClassGroup=(DeepTreeEcho), meta=(BlueprintSpawnableComponent),
        DisplayName="MetaHuman CNS Binding")
@@ -219,6 +226,7 @@ public:
     UMetaHumanCNSBinding();
 
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void TickComponent(float DeltaTime, ELevelTick TickType,
                                FActorComponentTickFunction* ThisTickFunction) override;
 
@@ -234,9 +242,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Config")
     bool bEnableExpressionWriting = true;
 
-    /** Enable micro-expressions driven by cognitive load */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Config")
-    bool bEnableMicroExpressions = true;
 
     /** Body schema reading rate (Hz) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Config",
@@ -259,6 +264,38 @@ public:
     /** FACS Action Unit definitions */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Config")
     TArray<FFACSActionUnit> FACSUnits;
+
+    /**
+     * Renderer map: model-chosen expression name → PAD (X = valence, Y = arousal, Z = dominance).
+     * Its keys are the vocabulary offered to the model.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Reaction")
+    TMap<FString, FVector> ExpressionPADMap;
+
+    /** Only reactions for this character are rendered; empty = owner name, all reactions accepted. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Reaction")
+    FString ReactionCharacterName;
+
+    /** A large shift in 4E / coherence state asks the model how the character reacts. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Reaction")
+    bool bRequestReactionOnCognitiveShift = true;
+
+    /** Largest per-dimension change (motor readiness, enactive engagement, extension, coherence) that counts as a shift. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Reaction", meta=(ClampMin="0.0", ClampMax="1.0"))
+    float CognitiveShiftThreshold = 0.3f;
+
+    /** Minimum seconds between reaction requests. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Reaction", meta=(ClampMin="0.0"))
+    float MinSecondsBetweenReactionRequests = 6.0f;
+
+    /**
+     * Prompt template (model input). Slots: {character}, {trigger}, {motor_readiness}, {enactive_engagement},
+     * {extension_integration}, {environment_coupling}, {niche}, {relevance_coherence}, {gestalt_coherence},
+     * {body_schema_coherence}, {current_expression}, {expressions}.
+     * Reply: JSON {"expression": <one of {expressions}>, "intensity": 0..1}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNSBinding|Reaction", meta=(MultiLine="true"))
+    FString ReactionPromptTemplate;
 
     // ====================================================
     // EVENTS
@@ -298,7 +335,7 @@ public:
     UFUNCTION(BlueprintPure, Category="CNSBinding|Expression")
     FCognitiveExpressionState GetExpressionState() const { return ExpressionState; }
 
-    /** Manually set expression state (overrides cognitive driving) */
+    /** Renderer: set the PAD expression state directly (bus reactions use this path) */
     UFUNCTION(BlueprintCallable, Category="CNSBinding|Expression")
     void SetExpressionState(const FCognitiveExpressionState& State);
 
@@ -310,10 +347,21 @@ public:
     UFUNCTION(BlueprintPure, Category="CNSBinding|Expression")
     float GetAUActivation(int32 AUNumber) const;
 
-    /** Trigger a specific emotional expression */
+    /**
+     * Asks the character model how it reacts now (Trigger describes the event; the current 4E and
+     * coherence state fill the prompt). The face changes only if the validated reply arrives on the
+     * reaction bus. False if a request is already pending.
+     */
     UFUNCTION(BlueprintCallable, Category="CNSBinding|Expression")
-    void TriggerEmotion(float Valence, float Arousal, float Dominance,
-                        float Duration = 1.0f);
+    bool RequestModelReaction(const FString& Trigger);
+
+    /** Expression currently rendered (last model reaction), empty before any. */
+    UFUNCTION(BlueprintPure, Category="CNSBinding|Expression")
+    FString GetCurrentReactionExpression() const { return CurrentReactionExpression; }
+
+    /** Last model/validation error for reaction requests (system status only). */
+    UFUNCTION(BlueprintPure, Category="CNSBinding|Expression")
+    FString GetLastReactionError() const { return LastReactionError; }
 
     // ====================================================
     // TELEMETRY
@@ -358,9 +406,17 @@ protected:
     float BodySchemaTimer    = 0.0f;
     float ExpressionTimer    = 0.0f;
 
-    // Emotion override
-    float EmotionOverrideTimer    = 0.0f;
-    FCognitiveExpressionState EmotionOverride;
+    // Model reactions
+    FString CurrentReactionExpression;
+    float CurrentReactionIntensity = 0.0f;
+    bool bReactionRequestPending = false;
+    double LastReactionRequestTime = -1.0e9;
+    FString LastReactionError;
+    FDelegateHandle ReactionHandle;
+
+    // 4E / coherence values at the last reaction request (for shift detection)
+    bool bHasCognitiveBaseline = false;
+    FVector4 CognitiveBaseline = FVector4(0.5f, 0.5f, 0.5f, 1.0f);
 
     bool bInitialised = false;
 
@@ -371,6 +427,7 @@ protected:
     void FindAndCacheComponents();
     void InitialiseDefaultBones();
     void InitialiseFACSUnits();
+    void InitialiseExpressionPADMap();
 
     /** Read MetaHuman skeleton → kinematic chain */
     void ReadBodySchema(float DeltaTime);
@@ -387,9 +444,14 @@ protected:
     /** Apply FACS AUs to skeletal mesh blend shapes */
     void ApplyFACSToBlendShapes();
 
-    /** Generate micro-expression based on cognitive load */
-    void ApplyMicroExpression(float CognitiveLoad, float DeltaTime);
-
-    /** Sample DTE cognitive state and update expression */
+    /** Record DTE cognitive telemetry (load, flow) and detect shifts that ask the model for a reaction. Never sets PAD. */
     void SampleCognitiveExpression();
+
+    // Model reactions
+    FVector4 GetCognitiveVector() const;
+    FString GetReactionCharacterNameResolved() const;
+    FString BuildReactionPrompt(const FString& Trigger) const;
+    void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+    const FVector* FindPADForExpression(const FString& Name, FString& OutKey) const;
 };

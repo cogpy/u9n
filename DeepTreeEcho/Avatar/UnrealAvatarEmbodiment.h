@@ -14,6 +14,7 @@ class USkeletalMeshComponent;
 class UCognitiveCycleManager;
 class UEmbodied4ECognition;
 class UEchobeatsStreamEngine;
+struct FEchoCharacterReaction;
 
 /**
  * Body Part State - Physical state of a body part in the body schema
@@ -279,6 +280,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInsightRealized, float, Relevance
  * 
  * Implements full 4E embodied cognition for Unreal Engine avatars,
  * integrating with the Deep Tree Echo cognitive framework.
+ *
+ * The emotions shown on the face are chosen by the character model only. Cognition events
+ * (relevance realization, pivotal echobeat steps) send the real 4E/relevance data through
+ * ReactionPromptTemplate to the model; the reply is validated against GetReactionVocabulary()
+ * and broadcast on FEchoReactionBus, and this component renders bus reactions as blend shapes.
  */
 UCLASS(ClassGroup=(DeepTreeEcho), meta=(BlueprintSpawnableComponent))
 class UUnrealAvatarEmbodiment : public UActorComponent
@@ -289,6 +295,7 @@ public:
     UUnrealAvatarEmbodiment();
 
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, 
                                FActorComponentTickFunction* ThisTickFunction) override;
 
@@ -328,6 +335,35 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Config")
     int32 MaxStoredContingencies = 100;
 
+    /** Cognition events ask the model how the character reacts (the face shows only model reactions). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Reaction")
+    bool bRequestReactionOnCognitiveEvents = true;
+
+    /** Also ask on pivotal echobeat steps (throttled). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Reaction")
+    bool bRequestReactionOnPivotalSteps = false;
+
+    /** Relevance at or above which a relevance-realization event asks the model for a reaction. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Reaction", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float RelevanceReactionThreshold = 0.7f;
+
+    /** Minimum seconds between reaction requests. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Reaction", meta = (ClampMin = "0.0"))
+    float MinSecondsBetweenReactionRequests = 4.0f;
+
+    /** Only reactions for this character are rendered; empty = owner name, all reactions accepted. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Reaction")
+    FString ReactionCharacterName;
+
+    /**
+     * Prompt template (model input). Slots: {character}, {trigger}, {step}, {step_type}, {mode}, {relevance},
+     * {arousal}, {valence}, {energy}, {proprioception}, {embedded_coupling}, {environment_awareness},
+     * {social_presence}, {current_action}, {enacted_coupling}, {offloading}, {tool_count}, {coherence},
+     * {current_emotions}, {emotions}. Reply: JSON {"emotion": <one of {emotions}>, "intensity": 0..1}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Embodiment|Reaction", meta = (MultiLine = "true"))
+    FString ReactionPromptTemplate;
+
     // ========================================
     // EVENTS
     // ========================================
@@ -344,9 +380,21 @@ public:
     // BLUEPRINT CALLABLE FUNCTIONS
     // ========================================
 
-    /** Set emotion intensity */
+    /** Renderer: set an emotion intensity (model reactions arrive via the reaction bus) */
     UFUNCTION(BlueprintCallable, Category = "Embodiment|Expression")
     void SetEmotion(const FString& Emotion, float Intensity);
+
+    /** Asks the model how the character reacts to the current 4E state. False if a request is pending. */
+    UFUNCTION(BlueprintCallable, Category = "Embodiment|Reaction")
+    bool RequestModelReaction(const FString& Trigger);
+
+    /** Emotion names the model may choose from (the renderable emotions). */
+    UFUNCTION(BlueprintPure, Category = "Embodiment|Reaction")
+    TArray<FString> GetReactionVocabulary() const;
+
+    /** Last model/validation error for reaction requests (system status only). */
+    UFUNCTION(BlueprintPure, Category = "Embodiment|Reaction")
+    FString GetLastReactionError() const { return LastReactionError; }
 
     /** Initiate an action */
     UFUNCTION(BlueprintCallable, Category = "Embodiment|Action")
@@ -409,6 +457,13 @@ protected:
     UFUNCTION()
     void HandleRelevanceRealized(int32 Step, float Relevance);
 
+    // Model reactions
+    bool CanRequestReaction() const;
+    FString GetReactionCharacterNameResolved() const;
+    FString BuildReactionPrompt(const FString& Trigger) const;
+    void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+
 private:
     // Component references
     UPROPERTY()
@@ -444,4 +499,15 @@ private:
 
     // State
     bool bIsInitialized = false;
+
+    // Cognitive record (cadence; never selects an emotion)
+    int32 LastCognitiveStep = 0;
+    FString LastStepTypeName;
+    float LastRelevance = 0.0f;
+
+    // Model reaction state
+    bool bReactionRequestPending = false;
+    double LastReactionRequestTime = -1.0e9;
+    FString LastReactionError;
+    FDelegateHandle ReactionHandle;
 };

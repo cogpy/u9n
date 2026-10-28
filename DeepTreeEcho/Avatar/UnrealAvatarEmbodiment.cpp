@@ -18,6 +18,9 @@
  */
 
 #include "UnrealAvatarEmbodiment.h"
+#include "../Model/EchoCharacterReaction.h"
+#include "../Model/EchoModelClient.h"
+#include "Dom/JsonObject.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Kismet/GameplayStatics.h"
@@ -65,6 +68,18 @@ UUnrealAvatarEmbodiment::UUnrealAvatarEmbodiment()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PostPhysics;
+
+    // Prompt template (model input): the model chooses the reaction, the slots carry the real state
+    ReactionPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent. Event: {trigger} "
+        "(cognitive step {step}, step type {step_type}, mode {mode}, relevance {relevance}).\n"
+        "Embodied: arousal {arousal}, valence {valence} (-1..1), energy {energy}, proprioceptive awareness {proprioception}. "
+        "Embedded: environmental coupling {embedded_coupling}, environment awareness {environment_awareness}, "
+        "social presence {social_presence}. Enacted: current action {current_action}, sensorimotor coupling {enacted_coupling}. "
+        "Extended: cognitive offloading {offloading}, active tools {tool_count}. Overall 4E coherence {coherence}.\n"
+        "Your face currently shows: {current_emotions}.\n"
+        "Choose the emotion your face shows now, from exactly this list: {emotions}. "
+        "Reply with JSON only: {\"emotion\": \"<one name from the list>\", \"intensity\": <number 0..1>}");
 }
 
 void UUnrealAvatarEmbodiment::BeginPlay()
@@ -75,8 +90,35 @@ void UUnrealAvatarEmbodiment::BeginPlay()
     InitializeBodySchema();
     Initialize4EStates();
     InitializeVisualCoupling();
+
+    // The displayed emotion is chosen by the character model only
+    TWeakObjectPtr<UUnrealAvatarEmbodiment> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UUnrealAvatarEmbodiment* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
     
     bIsInitialized = true;
+}
+
+void UUnrealAvatarEmbodiment::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    if (CognitiveCycleManager)
+    {
+        CognitiveCycleManager->OnStepChanged.RemoveDynamic(this, &UUnrealAvatarEmbodiment::HandleCognitiveStepChanged);
+        CognitiveCycleManager->OnRelevanceRealized.RemoveDynamic(this, &UUnrealAvatarEmbodiment::HandleRelevanceRealized);
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 void UUnrealAvatarEmbodiment::TickComponent(float DeltaTime, ELevelTick TickType,
@@ -193,7 +235,7 @@ void UUnrealAvatarEmbodiment::InitializeVisualCoupling()
     VisualState.Bioluminescence = 0.3f;
     VisualState.ColorShift = FVector::ZeroVector;
     
-    // Initialize expression state
+    // Initialize expression state (resting face until the model chooses an emotion)
     ExpressionState.EmotionIntensities.Add(TEXT("Joy"), 0.0f);
     ExpressionState.EmotionIntensities.Add(TEXT("Focus"), 0.0f);
     ExpressionState.EmotionIntensities.Add(TEXT("Curiosity"), 0.0f);
@@ -516,47 +558,49 @@ void UUnrealAvatarEmbodiment::ApplyExpressionToAvatar(float DeltaTime)
         return;
     }
     
-    // Compute blend shape weights from emotional state
+    // Render the model-chosen emotion intensities as blend shape weights.
+    // Every controlled shape is present (0 when unused) so released emotions relax back.
     TMap<FName, float> BlendWeights;
+    for (const FName& Shape : {
+             AvatarVisualConstants::BS_JawOpen, AvatarVisualConstants::BS_SmileLeft, AvatarVisualConstants::BS_SmileRight,
+             AvatarVisualConstants::BS_BrowRaiseLeft, AvatarVisualConstants::BS_BrowRaiseRight,
+             AvatarVisualConstants::BS_EyeWideLeft, AvatarVisualConstants::BS_EyeWideRight,
+             AvatarVisualConstants::BS_EyeSquintLeft, AvatarVisualConstants::BS_EyeSquintRight })
+    {
+        BlendWeights.Add(Shape, 0.0f);
+    }
+    auto AddWeight = [&BlendWeights](const FName& Shape, float Weight)
+    {
+        float& Value = BlendWeights.FindOrAdd(Shape);
+        Value = FMath::Clamp(Value + Weight, 0.0f, 1.0f);
+    };
     
     // Joy expression
-    float JoyIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Joy"));
-    if (JoyIntensity > 0.0f)
-    {
-        BlendWeights.Add(AvatarVisualConstants::BS_SmileLeft, JoyIntensity * 0.8f);
-        BlendWeights.Add(AvatarVisualConstants::BS_SmileRight, JoyIntensity * 0.8f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeSquintLeft, JoyIntensity * 0.3f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeSquintRight, JoyIntensity * 0.3f);
-    }
+    const float JoyIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Joy"));
+    AddWeight(AvatarVisualConstants::BS_SmileLeft, JoyIntensity * 0.8f);
+    AddWeight(AvatarVisualConstants::BS_SmileRight, JoyIntensity * 0.8f);
+    AddWeight(AvatarVisualConstants::BS_EyeSquintLeft, JoyIntensity * 0.3f);
+    AddWeight(AvatarVisualConstants::BS_EyeSquintRight, JoyIntensity * 0.3f);
     
     // Focus expression
-    float FocusIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Focus"));
-    if (FocusIntensity > 0.0f)
-    {
-        BlendWeights.Add(AvatarVisualConstants::BS_BrowRaiseLeft, FocusIntensity * 0.4f);
-        BlendWeights.Add(AvatarVisualConstants::BS_BrowRaiseRight, FocusIntensity * 0.4f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeSquintLeft, FocusIntensity * 0.2f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeSquintRight, FocusIntensity * 0.2f);
-    }
+    const float FocusIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Focus"));
+    AddWeight(AvatarVisualConstants::BS_BrowRaiseLeft, FocusIntensity * 0.4f);
+    AddWeight(AvatarVisualConstants::BS_BrowRaiseRight, FocusIntensity * 0.4f);
+    AddWeight(AvatarVisualConstants::BS_EyeSquintLeft, FocusIntensity * 0.2f);
+    AddWeight(AvatarVisualConstants::BS_EyeSquintRight, FocusIntensity * 0.2f);
     
     // Curiosity expression
-    float CuriosityIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Curiosity"));
-    if (CuriosityIntensity > 0.0f)
-    {
-        BlendWeights.Add(AvatarVisualConstants::BS_BrowRaiseLeft, CuriosityIntensity * 0.6f);
-        BlendWeights.Add(AvatarVisualConstants::BS_BrowRaiseRight, CuriosityIntensity * 0.6f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeWideLeft, CuriosityIntensity * 0.4f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeWideRight, CuriosityIntensity * 0.4f);
-    }
+    const float CuriosityIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Curiosity"));
+    AddWeight(AvatarVisualConstants::BS_BrowRaiseLeft, CuriosityIntensity * 0.6f);
+    AddWeight(AvatarVisualConstants::BS_BrowRaiseRight, CuriosityIntensity * 0.6f);
+    AddWeight(AvatarVisualConstants::BS_EyeWideLeft, CuriosityIntensity * 0.4f);
+    AddWeight(AvatarVisualConstants::BS_EyeWideRight, CuriosityIntensity * 0.4f);
     
     // Wonder expression
-    float WonderIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Wonder"));
-    if (WonderIntensity > 0.0f)
-    {
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeWideLeft, WonderIntensity * 0.7f);
-        BlendWeights.Add(AvatarVisualConstants::BS_EyeWideRight, WonderIntensity * 0.7f);
-        BlendWeights.Add(AvatarVisualConstants::BS_JawOpen, WonderIntensity * 0.2f);
-    }
+    const float WonderIntensity = ExpressionState.EmotionIntensities.FindRef(TEXT("Wonder"));
+    AddWeight(AvatarVisualConstants::BS_EyeWideLeft, WonderIntensity * 0.7f);
+    AddWeight(AvatarVisualConstants::BS_EyeWideRight, WonderIntensity * 0.7f);
+    AddWeight(AvatarVisualConstants::BS_JawOpen, WonderIntensity * 0.2f);
     
     // Apply blend weights to morph targets
     for (const auto& Pair : BlendWeights)
@@ -662,36 +706,212 @@ void UUnrealAvatarEmbodiment::HandleCognitiveStepChanged(int32 NewStep,
                                                           EEchobeatStepType StepType,
                                                           EEchobeatMode Mode)
 {
-    // Adjust expression based on cognitive step
-    if (StepType == EEchobeatStepType::Pivotal)
+    // Recorded only: the step clock never selects an emotion
+    LastCognitiveStep = NewStep;
+    if (const UEnum* StepEnum = StaticEnum<EEchobeatStepType>())
     {
-        // Increase focus during pivotal steps
-        ExpressionState.EmotionIntensities[TEXT("Focus")] = FMath::Min(1.0f,
-            ExpressionState.EmotionIntensities[TEXT("Focus")] + 0.2f);
-    }
-    else if (StepType == EEchobeatStepType::Salience)
-    {
-        // Increase curiosity during salience steps
-        ExpressionState.EmotionIntensities[TEXT("Curiosity")] = FMath::Min(1.0f,
-            ExpressionState.EmotionIntensities[TEXT("Curiosity")] + 0.1f);
+        LastStepTypeName = StepEnum->GetNameStringByValue(static_cast<int64>(StepType));
     }
     
-    // Update cognitive mode display
+    // Update cognitive mode display (a status label, not an emotion)
     ExpressionState.CognitiveMode = Mode == EEchobeatMode::Expressive 
         ? TEXT("Expressive") 
         : TEXT("Reflective");
+
+    // Optionally, a pivotal step is a moment to ask the model how the character reacts
+    if (bRequestReactionOnCognitiveEvents && bRequestReactionOnPivotalSteps &&
+        StepType == EEchobeatStepType::Pivotal && CanRequestReaction())
+    {
+        RequestModelReaction(FString::Printf(TEXT("pivotal relevance-realization step %d"), NewStep));
+    }
 }
 
 void UUnrealAvatarEmbodiment::HandleRelevanceRealized(int32 Step, float Relevance)
 {
-    // Flash of insight expression
-    if (Relevance > 0.7f)
+    LastRelevance = Relevance;
+
+    if (Relevance >= RelevanceReactionThreshold)
     {
-        ExpressionState.EmotionIntensities[TEXT("Wonder")] = Relevance;
+        // Tech-element visualisation of the insight signal (not a facial expression)
         ExpressionState.EyeGlowIntensity = 1.0f;
-        
-        // Trigger visual feedback
         OnInsightRealized.Broadcast(Relevance);
+
+        // The facial reaction to the insight is the model's choice
+        if (bRequestReactionOnCognitiveEvents && CanRequestReaction())
+        {
+            RequestModelReaction(FString::Printf(TEXT("relevance realization (insight) at step %d with relevance %.2f"),
+                Step, Relevance));
+        }
+    }
+}
+
+// ============================================================================
+// Model Reactions
+// ============================================================================
+
+TArray<FString> UUnrealAvatarEmbodiment::GetReactionVocabulary() const
+{
+    TArray<FString> Names;
+    ExpressionState.EmotionIntensities.GetKeys(Names);
+    return Names;
+}
+
+bool UUnrealAvatarEmbodiment::CanRequestReaction() const
+{
+    if (bReactionRequestPending)
+    {
+        return false;
+    }
+    const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    return Now - LastReactionRequestTime >= MinSecondsBetweenReactionRequests;
+}
+
+FString UUnrealAvatarEmbodiment::GetReactionCharacterNameResolved() const
+{
+    if (!ReactionCharacterName.IsEmpty())
+    {
+        return ReactionCharacterName;
+    }
+    return GetOwner() ? GetOwner()->GetName() : FString(TEXT("Deep Tree Echo"));
+}
+
+FString UUnrealAvatarEmbodiment::BuildReactionPrompt(const FString& Trigger) const
+{
+    auto Num = [](float Value) { return FString::Printf(TEXT("%.2f"), Value); };
+
+    TArray<FString> Current;
+    for (const auto& Pair : ExpressionState.EmotionIntensities)
+    {
+        if (Pair.Value > 0.01f)
+        {
+            Current.Add(FString::Printf(TEXT("%s %.2f"), *Pair.Key, Pair.Value));
+        }
+    }
+
+    const F4ECoherenceState Coherence = Get4ECoherence();
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetReactionCharacterNameResolved());
+    Slots.Add(TEXT("trigger"), Trigger);
+    Slots.Add(TEXT("step"), FString::FromInt(LastCognitiveStep));
+    Slots.Add(TEXT("step_type"), LastStepTypeName.IsEmpty() ? FString(TEXT("(unknown)")) : LastStepTypeName);
+    Slots.Add(TEXT("mode"), ExpressionState.CognitiveMode);
+    Slots.Add(TEXT("relevance"), Num(LastRelevance));
+    Slots.Add(TEXT("arousal"), Num(EmbodiedState.ArousalLevel));
+    Slots.Add(TEXT("valence"), Num(EmbodiedState.Valence));
+    Slots.Add(TEXT("energy"), Num(EmbodiedState.EnergyLevel));
+    Slots.Add(TEXT("proprioception"), Num(EmbodiedState.ProprioceptiveAwareness));
+    Slots.Add(TEXT("embedded_coupling"), Num(EmbeddedState.CouplingStrength));
+    Slots.Add(TEXT("environment_awareness"), Num(EmbeddedState.EnvironmentAwareness));
+    Slots.Add(TEXT("social_presence"), Num(EmbeddedState.SocialPresence));
+    Slots.Add(TEXT("current_action"), EnactedState.CurrentAction);
+    Slots.Add(TEXT("enacted_coupling"), Num(EnactedState.CouplingStrength));
+    Slots.Add(TEXT("offloading"), Num(ExtendedState.OffloadingRatio));
+    Slots.Add(TEXT("tool_count"), FString::FromInt(ExtendedState.ActiveTools.Num()));
+    Slots.Add(TEXT("coherence"), Num(Coherence.OverallCoherence));
+    Slots.Add(TEXT("current_emotions"), Current.Num() > 0 ? FString::Join(Current, TEXT(", ")) : FString(TEXT("a resting face")));
+    Slots.Add(TEXT("emotions"), FString::Join(GetReactionVocabulary(), TEXT(", ")));
+    return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
+}
+
+bool UUnrealAvatarEmbodiment::RequestModelReaction(const FString& Trigger)
+{
+    if (bReactionRequestPending)
+    {
+        return false;
+    }
+
+    bReactionRequestPending = true;
+    LastReactionRequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), BuildReactionPrompt(Trigger)));
+
+    TWeakObjectPtr<UUnrealAvatarEmbodiment> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (UUnrealAvatarEmbodiment* Self = WeakThis.Get())
+            {
+                Self->HandleModelReactionReply(bSuccess, TextOrError);
+            }
+        }), 0.7f);
+    return true;
+}
+
+void UUnrealAvatarEmbodiment::HandleModelReactionReply(bool bSuccess, const FString& TextOrError)
+{
+    bReactionRequestPending = false;
+
+    // On any failure the face stays as it is; the error is a system event only
+    if (!bSuccess)
+    {
+        LastReactionError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("UnrealAvatarEmbodiment: no model reaction: %s"), *TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString EmotionName;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("emotion"), EmotionName) ||
+        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
+    {
+        LastReactionError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("UnrealAvatarEmbodiment: %s"), *LastReactionError);
+        return;
+    }
+
+    const FString Trimmed = EmotionName.TrimStartAndEnd();
+    const TArray<FString> Vocabulary = GetReactionVocabulary();
+    const FString* Allowed = Vocabulary.FindByPredicate(
+        [&Trimmed](const FString& Name) { return Name.Equals(Trimmed, ESearchCase::IgnoreCase); });
+    if (!Allowed)
+    {
+        LastReactionError = FString::Printf(TEXT("model chose an emotion outside the offered list: %s"), *EmotionName);
+        UE_LOG(LogTemp, Error, TEXT("UnrealAvatarEmbodiment: %s"), *LastReactionError);
+        return;
+    }
+
+    LastReactionError.Reset();
+
+    // Publish the model's reaction; every subscriber (including this component) renders it
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = GetReactionCharacterNameResolved();
+    Reaction.Expression = *Allowed;
+    Reaction.Intensity = FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f);
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+}
+
+void UUnrealAvatarEmbodiment::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    // Find the renderable emotion the model named; anything else leaves the face unchanged
+    const FString Trimmed = Reaction.Expression.TrimStartAndEnd();
+    FString Matched;
+    for (const auto& Pair : ExpressionState.EmotionIntensities)
+    {
+        if (Pair.Key.Equals(Trimmed, ESearchCase::IgnoreCase))
+        {
+            Matched = Pair.Key;
+            break;
+        }
+    }
+    if (Matched.IsEmpty())
+    {
+        return;
+    }
+
+    // The model's reaction replaces the previous one
+    for (auto& Pair : ExpressionState.EmotionIntensities)
+    {
+        Pair.Value = (Pair.Key == Matched) ? FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f) : 0.0f;
     }
 }
 
