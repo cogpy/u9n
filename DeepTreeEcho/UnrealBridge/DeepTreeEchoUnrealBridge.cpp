@@ -3,6 +3,8 @@
 #include "../Model/EchoModelClient.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "../Avatar/AvatarEvolutionSystem.h"
 #include "DrawDebugHelpers.h"
 #include "Kismet/KismetMathLibrary.h"
 
@@ -41,6 +43,23 @@ UDeepTreeEchoUnrealBridge::UDeepTreeEchoUnrealBridge()
         "Most salient items: {salience}.\n"
         "Choose the facial expression you show right now, from exactly this list: {expressions}. "
         "Reply with JSON only: {\"expression\": \"<one name from the list>\", \"intensity\": <number 0..1>}");
+
+    // Narrative prompt templates (model input). These replace the fixed insight line and the
+    // log-only diary / gesture stubs: the slots carry the real state, the model writes the words.
+    const TCHAR* StateBlock =
+        TEXT("Your current cognitive mode: {mode}. Relevance coherence: {coherence} (0..1). Relevance frame: {frame}. ")
+        TEXT("Most salient items: {salience}. 4E integration score: {integration_4e} (0..1).\n")
+        TEXT("Recent experiences (oldest first):\n{experiences}\nRecent diary entries:\n{diary}\n");
+    NarrativePromptTemplates.Add(TEXT("insight"), FString(TEXT("You are {character}, an embodied cognitive agent reflecting on your recent experience.\n")) + StateBlock +
+        TEXT("Write one insight (one or two sentences, first person) about a pattern you notice in these experiences. ")
+        TEXT("Base it only on what is listed; if there is too little to see a pattern, say so plainly."));
+    NarrativePromptTemplates.Add(TEXT("diary"), FString(TEXT("You are {character}, an embodied cognitive agent keeping a private diary.\n")) + StateBlock +
+        TEXT("Context for this entry: {context}\nWrite today's diary entry (two to four sentences, first person) about this context and how ")
+        TEXT("your current state relates to it. Use only the facts given."));
+    NarrativePromptTemplates.Add(TEXT("gesture"), FString(TEXT("You are {character}, an embodied cognitive agent with a body.\n")) + StateBlock +
+        TEXT("The animation system asks you to make the gesture \"{requested_gesture}\" at intensity {requested_intensity}. ")
+        TEXT("Decide which gesture you actually make now, choosing from exactly this list: {gestures}, or \"none\". ")
+        TEXT("Reply with JSON only: {\"gesture\": \"<name from the list or none>\", \"intensity\": <number 0..1>}"));
 }
 
 void UDeepTreeEchoUnrealBridge::BeginPlay()
@@ -278,6 +297,15 @@ void UDeepTreeEchoUnrealBridge::ProcessEnvironmentalInput(const TArray<FString>&
 
     AffordanceBuffer = Affordances;
 
+    const FString AffordanceText = FString::Join(Affordances, TEXT(", "));
+    if (AffordanceText != LastExperienceAffordances)
+    {
+        LastExperienceAffordances = AffordanceText;
+        RecordExperience(AffordanceText.IsEmpty()
+            ? FString(TEXT("no environmental affordances perceived"))
+            : FString::Printf(TEXT("environment affords: %s"), *AffordanceText));
+    }
+
     // Update embedded state in 4E cognition
     if (EmbodiedCognition)
     {
@@ -351,6 +379,21 @@ void UDeepTreeEchoUnrealBridge::UpdateMotorOutputs(float DeltaTime)
 
 void UDeepTreeEchoUnrealBridge::UpdateAvatarExpression()
 {
+    // Cognitive mode changes are experiences the narrative prompts draw on
+    if (CognitiveCore)
+    {
+        const FString Mode = GetCurrentCognitiveModeString();
+        if (Mode != LastExperienceMode)
+        {
+            if (!LastExperienceMode.IsEmpty())
+            {
+                RecordExperience(FString::Printf(TEXT("cognitive mode changed from %s to %s (relevance frame: %s)"),
+                    *LastExperienceMode, *Mode, *GetCurrentRelevanceFrame()));
+            }
+            LastExperienceMode = Mode;
+        }
+    }
+
     // The facial expression itself is applied only in HandleCharacterReaction (model reactions).
     // A cognitive mode change is the moment to ask the model how the character reacts.
     if (CognitiveCore && bRequestReactionOnModeChange && !bReactionRequestPending)
@@ -509,11 +552,19 @@ void UDeepTreeEchoUnrealBridge::HandleCharacterReaction(const FEchoCharacterReac
         return;
     }
 
+    // A model-chosen gesture is played if this avatar has a montage for it
+    if (!Reaction.Gesture.TrimStartAndEnd().IsEmpty())
+    {
+        PlayGestureMontage(Reaction.Gesture.TrimStartAndEnd(), Reaction.Intensity);
+    }
+
     // Empty expression = the model chose no change
     if (Reaction.Expression.IsEmpty())
     {
         return;
     }
+
+    RecordExperience(FString::Printf(TEXT("I showed %s (intensity %.2f)"), *Reaction.Expression, Reaction.Intensity));
 
     const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
     const TMap<FString, float> NewShapes = MapEmotionToBlendShapes(Reaction.Expression, Intensity);
@@ -567,16 +618,106 @@ void UDeepTreeEchoUnrealBridge::SetGazeTarget(const FVector& TargetLocation)
     }
 }
 
-void UDeepTreeEchoUnrealBridge::TriggerGesture(const FString& GestureName, float Intensity)
+bool UDeepTreeEchoUnrealBridge::TriggerGesture(const FString& GestureName, float Intensity)
 {
-    if (!AnimInstance)
+    // A gesture request is a stimulus, not a script: the model decides what the body does.
+    if (GestureMontages.Num() == 0)
     {
+        UE_LOG(LogTemp, Warning, TEXT("DeepTreeEchoUnrealBridge: gesture '%s' not requested: no GestureMontages configured"), *GestureName);
+        OnNarrativeFailed.Broadcast(0, TEXT("gesture"), TEXT("no GestureMontages configured; there is no gesture vocabulary to offer the model"));
+        return false;
+    }
+
+    TArray<FString> Names;
+    GestureMontages.GetKeys(Names);
+
+    TMap<FString, FString> Slots = BuildNarrativeSlots();
+    Slots.Add(TEXT("requested_gesture"), GestureName);
+    Slots.Add(TEXT("requested_intensity"), FString::Printf(TEXT("%.2f"), FMath::Clamp(Intensity, 0.0f, 1.0f)));
+    Slots.Add(TEXT("gestures"), FString::Join(Names, TEXT(", ")));
+
+    TWeakObjectPtr<UDeepTreeEchoUnrealBridge> WeakThis(this);
+    return SendNarrativeRequest(TEXT("gesture"), Slots, [WeakThis](int32 RequestId, const FString& Text)
+    {
+        if (UDeepTreeEchoUnrealBridge* Self = WeakThis.Get())
+        {
+            Self->HandleGestureReply(RequestId, Text);
+        }
+    }, 0.7f) != 0;
+}
+
+void UDeepTreeEchoUnrealBridge::HandleGestureReply(int32 RequestId, const FString& Text)
+{
+    TSharedPtr<FJsonObject> Json;
+    FString Gesture;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(Text, Json) || !Json->TryGetStringField(TEXT("gesture"), Gesture))
+    {
+        const FString Error = FString::Printf(TEXT("model reply is not the requested gesture JSON: %s"), *Text.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealBridge: %s"), *Error);
+        OnNarrativeFailed.Broadcast(RequestId, TEXT("gesture"), Error);
+        return;
+    }
+    Json->TryGetNumberField(TEXT("intensity"), Intensity);
+    Gesture.TrimStartAndEndInline();
+
+    if (Gesture.IsEmpty() || Gesture.Equals(TEXT("none"), ESearchCase::IgnoreCase))
+    {
+        return; // the model chose not to gesture
+    }
+
+    FString Canonical;
+    for (const auto& Pair : GestureMontages)
+    {
+        if (Pair.Key.Equals(Gesture, ESearchCase::IgnoreCase))
+        {
+            Canonical = Pair.Key;
+            break;
+        }
+    }
+    if (Canonical.IsEmpty())
+    {
+        const FString Error = FString::Printf(TEXT("model chose a gesture outside the offered list: %s"), *Gesture);
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealBridge: %s"), *Error);
+        OnNarrativeFailed.Broadcast(RequestId, TEXT("gesture"), Error);
         return;
     }
 
-    // Find and play gesture montage
-    // This would typically load from a data asset
-    UE_LOG(LogTemp, Log, TEXT("DeepTreeEchoUnrealBridge: Triggering gesture %s with intensity %.2f"), *GestureName, Intensity);
+    // Publish the model's gesture; HandleCharacterReaction (and other avatar systems) play it
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = GetReactionCharacterName();
+    Reaction.Gesture = Canonical;
+    Reaction.Intensity = FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f);
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+}
+
+void UDeepTreeEchoUnrealBridge::PlayGestureMontage(const FString& GestureName, float Intensity)
+{
+    UAnimMontage* Montage = nullptr;
+    for (const auto& Pair : GestureMontages)
+    {
+        if (Pair.Key.Equals(GestureName, ESearchCase::IgnoreCase))
+        {
+            Montage = Pair.Value;
+            break;
+        }
+    }
+
+    if (!Montage || !AnimInstance)
+    {
+        UE_LOG(LogTemp, Verbose, TEXT("DeepTreeEchoUnrealBridge: gesture '%s' not played (%s)"), *GestureName,
+            !Montage ? TEXT("no montage in GestureMontages") : TEXT("no anim instance"));
+        return;
+    }
+
+    if (AnimInstance->Montage_Play(Montage) > 0.0f)
+    {
+        RecordExperience(FString::Printf(TEXT("I made the gesture %s (intensity %.2f)"), *GestureName, FMath::Clamp(Intensity, 0.0f, 1.0f)));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("DeepTreeEchoUnrealBridge: montage for gesture '%s' failed to play"), *GestureName);
+    }
 }
 
 void UDeepTreeEchoUnrealBridge::UpdateBodyPosture()
@@ -755,17 +896,148 @@ TArray<float> UDeepTreeEchoUnrealBridge::GetReservoirStateSummary() const
 // NARRATIVE INTEGRATION
 // ========================================
 
-void UDeepTreeEchoUnrealBridge::AddDiaryEntryFromCognitiveState(const FString& Context)
+void UDeepTreeEchoUnrealBridge::RecordExperience(const FString& Experience)
 {
-    // Would integrate with diary system
-    UE_LOG(LogTemp, Log, TEXT("DeepTreeEchoUnrealBridge: Adding diary entry - Context: %s, Mode: %s"),
-        *Context, *GetCurrentCognitiveModeString());
+    const FString Trimmed = Experience.TrimStartAndEnd();
+    if (Trimmed.IsEmpty())
+    {
+        return;
+    }
+    const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    RecentExperiences.Add(FString::Printf(TEXT("[t=%.1fs] %s"), Now, *Trimmed));
+    const int32 Excess = RecentExperiences.Num() - FMath::Max(1, MaxRecentExperiences);
+    if (Excess > 0)
+    {
+        RecentExperiences.RemoveAt(0, Excess);
+    }
 }
 
-FString UDeepTreeEchoUnrealBridge::GenerateInsight()
+TMap<FString, FString> UDeepTreeEchoUnrealBridge::BuildNarrativeSlots() const
 {
-    // Would integrate with insight generation system
-    return TEXT("Insight: Patterns in recent experience suggest adaptive learning.");
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetReactionCharacterName());
+    Slots.Add(TEXT("mode"), GetCurrentCognitiveModeString());
+    Slots.Add(TEXT("integration_4e"), CognitiveCore ? FString::Printf(TEXT("%.2f"), Get4EIntegrationScore()) : FString(TEXT("(unknown)")));
+
+    if (CognitiveCore)
+    {
+        const FRelevanceRealizationState& RelevanceState = CognitiveCore->RelevanceState;
+        Slots.Add(TEXT("coherence"), FString::Printf(TEXT("%.2f"), RelevanceState.RelevanceCoherence));
+        Slots.Add(TEXT("frame"), RelevanceState.RelevanceFrame.IsEmpty() ? FString(TEXT("(none)")) : RelevanceState.RelevanceFrame);
+
+        TArray<TPair<FString, float>> Salient;
+        for (const auto& Pair : RelevanceState.SalienceLandscape)
+        {
+            Salient.Add(TPair<FString, float>(Pair.Key, Pair.Value));
+        }
+        Salient.Sort([](const TPair<FString, float>& A, const TPair<FString, float>& B) { return A.Value > B.Value; });
+        TArray<FString> SalienceText;
+        for (int32 i = 0; i < Salient.Num() && i < 5; ++i)
+        {
+            SalienceText.Add(FString::Printf(TEXT("%s (%.2f)"), *Salient[i].Key, Salient[i].Value));
+        }
+        Slots.Add(TEXT("salience"), SalienceText.Num() > 0 ? FString::Join(SalienceText, TEXT(", ")) : FString(TEXT("(none)")));
+    }
+    else
+    {
+        Slots.Add(TEXT("coherence"), TEXT("(unknown)"));
+        Slots.Add(TEXT("frame"), TEXT("(none)"));
+        Slots.Add(TEXT("salience"), TEXT("(none)"));
+    }
+
+    Slots.Add(TEXT("experiences"), RecentExperiences.Num() > 0 ? FString::Join(RecentExperiences, TEXT("\n")) : FString(TEXT("(none recorded)")));
+
+    TArray<FString> DiaryText;
+    for (int32 i = FMath::Max(0, DiaryEntries.Num() - 3); i < DiaryEntries.Num(); ++i)
+    {
+        DiaryText.Add(FString::Printf(TEXT("[t=%.1fs, %s] %s"), DiaryEntries[i].WorldTime, *DiaryEntries[i].Context, *DiaryEntries[i].Text));
+    }
+    Slots.Add(TEXT("diary"), DiaryText.Num() > 0 ? FString::Join(DiaryText, TEXT("\n")) : FString(TEXT("(none)")));
+    return Slots;
+}
+
+int32 UDeepTreeEchoUnrealBridge::SendNarrativeRequest(const FString& Kind, const TMap<FString, FString>& Slots,
+                                                      TFunction<void(int32, const FString&)> OnText, float Temperature)
+{
+    const FString* Template = NarrativePromptTemplates.Find(Kind);
+    if (!Template || Template->IsEmpty())
+    {
+        const FString Error = FString::Printf(TEXT("no narrative prompt template '%s'"), *Kind);
+        UE_LOG(LogTemp, Warning, TEXT("DeepTreeEchoUnrealBridge: %s"), *Error);
+        OnNarrativeFailed.Broadcast(0, Kind, Error);
+        return 0;
+    }
+
+    const int32 RequestId = NextNarrativeRequestId++;
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(*Template, Slots)));
+
+    TWeakObjectPtr<UDeepTreeEchoUnrealBridge> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestId, Kind, OnText = MoveTemp(OnText)](bool bSuccess, const FString& TextOrError)
+        {
+            UDeepTreeEchoUnrealBridge* Self = WeakThis.Get();
+            if (!Self)
+            {
+                return;
+            }
+            const FString Text = TextOrError.TrimStartAndEnd();
+            if (!bSuccess || Text.IsEmpty())
+            {
+                const FString Error = bSuccess ? FString(TEXT("model reply was empty")) : TextOrError;
+                UE_LOG(LogTemp, Warning, TEXT("DeepTreeEchoUnrealBridge: %s request %d not produced: %s"), *Kind, RequestId, *Error);
+                Self->OnNarrativeFailed.Broadcast(RequestId, Kind, Error);
+                return;
+            }
+            OnText(RequestId, Text);
+        }), Temperature);
+    return RequestId;
+}
+
+int32 UDeepTreeEchoUnrealBridge::AddDiaryEntryFromCognitiveState(const FString& Context)
+{
+    FEchoBridgeDiaryEntry Pending;
+    Pending.WorldTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    Pending.Context = Context.TrimStartAndEnd().IsEmpty() ? FString(TEXT("(no context given)")) : Context.TrimStartAndEnd();
+    Pending.CognitiveMode = GetCurrentCognitiveModeString();
+
+    TMap<FString, FString> Slots = BuildNarrativeSlots();
+    Slots.Add(TEXT("context"), Pending.Context);
+
+    TWeakObjectPtr<UDeepTreeEchoUnrealBridge> WeakThis(this);
+    return SendNarrativeRequest(TEXT("diary"), Slots, [WeakThis, Pending](int32 RequestId, const FString& Text)
+    {
+        UDeepTreeEchoUnrealBridge* Self = WeakThis.Get();
+        if (!Self)
+        {
+            return;
+        }
+        FEchoBridgeDiaryEntry Entry = Pending;
+        Entry.Text = Text;
+        Self->DiaryEntries.Add(Entry);
+        Self->OnDiaryEntryAdded.Broadcast(RequestId, Entry);
+    }, 0.8f);
+}
+
+int32 UDeepTreeEchoUnrealBridge::RequestInsight()
+{
+    if (RecentExperiences.Num() == 0 && DiaryEntries.Num() == 0)
+    {
+        const FString Error = TEXT("no recent experience or diary entries recorded; nothing to draw an insight from");
+        UE_LOG(LogTemp, Log, TEXT("DeepTreeEchoUnrealBridge: insight not requested: %s"), *Error);
+        OnNarrativeFailed.Broadcast(0, TEXT("insight"), Error);
+        return 0;
+    }
+
+    TWeakObjectPtr<UDeepTreeEchoUnrealBridge> WeakThis(this);
+    return SendNarrativeRequest(TEXT("insight"), BuildNarrativeSlots(), [WeakThis](int32 RequestId, const FString& Text)
+    {
+        if (UDeepTreeEchoUnrealBridge* Self = WeakThis.Get())
+        {
+            Self->LastInsight = Text;
+            Self->OnInsightReady.Broadcast(RequestId, Text);
+        }
+    }, 0.7f);
 }
 
 float UDeepTreeEchoUnrealBridge::GetCurrentWisdomWeight() const
@@ -782,16 +1054,29 @@ float UDeepTreeEchoUnrealBridge::GetCurrentWisdomWeight() const
 // EVOLUTION
 // ========================================
 
-void UDeepTreeEchoUnrealBridge::TriggerDevelopmentStep()
+bool UDeepTreeEchoUnrealBridge::TriggerDevelopmentStep(float StepSeconds)
 {
-    // Would integrate with AvatarEvolutionSystem
-    UE_LOG(LogTemp, Log, TEXT("DeepTreeEchoUnrealBridge: Triggering ontogenetic development step"));
+    UAvatarEvolutionSystem* Evolution = GetOwner() ? GetOwner()->FindComponentByClass<UAvatarEvolutionSystem>() : nullptr;
+    if (!Evolution)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("DeepTreeEchoUnrealBridge: development step not performed: owner has no AvatarEvolutionSystem"));
+        return false;
+    }
+
+    const EDevelopmentalStage Before = Evolution->GetCurrentStage();
+    Evolution->TriggerEvolutionStep(FMath::Max(0.0f, StepSeconds));
+    if (Evolution->GetCurrentStage() != Before)
+    {
+        RecordExperience(FString::Printf(TEXT("developmental stage advanced to %s"),
+            *UEnum::GetDisplayValueAsText(Evolution->GetCurrentStage()).ToString()));
+    }
+    return true;
 }
 
 int32 UDeepTreeEchoUnrealBridge::GetDevelopmentalStage() const
 {
-    // Would integrate with AvatarEvolutionSystem
-    return 1;
+    const UAvatarEvolutionSystem* Evolution = GetOwner() ? GetOwner()->FindComponentByClass<UAvatarEvolutionSystem>() : nullptr;
+    return Evolution ? static_cast<int32>(Evolution->GetCurrentStage()) + 1 : 0;
 }
 
 float UDeepTreeEchoUnrealBridge::GetEntelechyScore() const

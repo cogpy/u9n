@@ -6,6 +6,8 @@
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 DEFINE_LOG_CATEGORY_STATIC(Log4ECognition, Log, All);
 
@@ -18,6 +20,17 @@ UEnhanced4ECognitionComponent::UEnhanced4ECognitionComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    // Exploratory actions offered to the model (vocabulary = model input; the game may replace it)
+    SamplingActionVocabulary = { TEXT("LookAround"), TEXT("MoveForward"), TEXT("Reach"), TEXT("Touch"), TEXT("Turn"), TEXT("Observe") };
+
+    SamplingActionPromptTemplate = TEXT(
+        "You are the enacted-cognition layer of an embodied agent. You want to understand: {phenomenon}.\n"
+        "Exploration drive (uncertainty) {exploration_drive} (0..1). Unconfirmed sensorimotor predictions: {pending_predictions}.\n"
+        "Affordances detected: {affordances}. Niche: {niche} (familiarity {familiarity}). Body: {body}.\n"
+        "Choose the one exploratory action that best reduces your uncertainty, from exactly this list: {actions}. "
+        "Higher uncertainty favours active exploration; low uncertainty favours observing. "
+        "Reply with JSON only: {\"action\": \"<name from the list>\"}");
 }
 
 void UEnhanced4ECognitionComponent::BeginPlay()
@@ -483,34 +496,101 @@ void UEnhanced4ECognitionComponent::InitiateExploratorySampling(float Uncertaint
            UncertaintyLevel);
 }
 
-FString UEnhanced4ECognitionComponent::GenerateSamplingAction()
+bool UEnhanced4ECognitionComponent::RequestSamplingAction(const FString& Phenomenon)
 {
-    // Generate action to reduce uncertainty
-    // Higher exploration drive -> more exploratory actions
+    FString Error;
+    if (SamplingActionVocabulary.Num() == 0)
+    {
+        Error = TEXT("SamplingActionVocabulary is empty; no actions to choose from");
+    }
+    else if (SamplingActionPromptTemplate.IsEmpty())
+    {
+        Error = TEXT("SamplingActionPromptTemplate is empty");
+    }
+    else if (bSamplingRequestInFlight)
+    {
+        Error = TEXT("a sampling-action request is already in flight");
+    }
+    if (!Error.IsEmpty())
+    {
+        UE_LOG(Log4ECognition, Verbose, TEXT("Sampling action for '%s' not requested: %s"), *Phenomenon, *Error);
+        OnSamplingActionFailed.Broadcast(Phenomenon, Error);
+        return false;
+    }
 
-    TArray<FString> PossibleActions = {
-        TEXT("LookAround"),
-        TEXT("MoveForward"),
-        TEXT("Reach"),
-        TEXT("Touch"),
-        TEXT("Turn")
-    };
+    // Real enacted / embedded state for the slots
+    FString AffordanceText;
+    for (const FAffordance& Affordance : DetectedAffordances)
+    {
+        AffordanceText += FString::Printf(TEXT("%s%s on %s (salience %.2f, feasibility %.2f%s)"),
+            AffordanceText.IsEmpty() ? TEXT("") : TEXT("; "), *Affordance.AffordanceType,
+            Affordance.TargetObject ? *Affordance.TargetObject->GetName() : TEXT("(no object)"),
+            Affordance.Salience, Affordance.Feasibility, Affordance.bCurrentlyAvailable ? TEXT("") : TEXT(", unavailable"));
+    }
 
-    if (ExplorationDrive > 0.7f)
-    {
-        // High uncertainty - explore actively
-        return PossibleActions[FMath::RandRange(0, PossibleActions.Num() - 1)];
-    }
-    else if (ExplorationDrive > 0.4f)
-    {
-        // Medium uncertainty - look around
-        return TEXT("LookAround");
-    }
-    else
-    {
-        // Low uncertainty - minimal action
-        return TEXT("Observe");
-    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("phenomenon"), Phenomenon.IsEmpty() ? FString(TEXT("(unspecified)")) : Phenomenon);
+    Slots.Add(TEXT("exploration_drive"), FString::Printf(TEXT("%.2f"), ExplorationDrive));
+    Slots.Add(TEXT("pending_predictions"), PendingPredictions.Num() > 0 ? FString::Join(PendingPredictions, TEXT("; ")) : FString(TEXT("(none)")));
+    Slots.Add(TEXT("affordances"), AffordanceText.IsEmpty() ? FString(TEXT("(none detected)")) : AffordanceText);
+    Slots.Add(TEXT("niche"), CurrentNiche.NicheType.IsEmpty() ? FString(TEXT("(unknown)")) : CurrentNiche.NicheType);
+    Slots.Add(TEXT("familiarity"), FString::Printf(TEXT("%.2f"), CurrentNiche.Familiarity));
+    Slots.Add(TEXT("body"), FString::Printf(TEXT("extent %.0f x %.0f x %.0f"),
+        CurrentBodySchema.BodyExtent.X, CurrentBodySchema.BodyExtent.Y, CurrentBodySchema.BodyExtent.Z));
+    Slots.Add(TEXT("actions"), FString::Join(SamplingActionVocabulary, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(SamplingActionPromptTemplate, Slots)));
+
+    bSamplingRequestInFlight = true;
+    TWeakObjectPtr<UEnhanced4ECognitionComponent> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, Phenomenon](bool bSuccess, const FString& TextOrError)
+        {
+            UEnhanced4ECognitionComponent* Self = WeakThis.Get();
+            if (!Self)
+            {
+                return;
+            }
+            Self->bSamplingRequestInFlight = false;
+
+            FString ReplyError;
+            FString Action;
+            TSharedPtr<FJsonObject> Json;
+            if (!bSuccess)
+            {
+                ReplyError = TextOrError;
+            }
+            else if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("action"), Action))
+            {
+                ReplyError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+            }
+            else
+            {
+                Action.TrimStartAndEndInline();
+                const FString* Canonical = Self->SamplingActionVocabulary.FindByPredicate(
+                    [&Action](const FString& Allowed) { return Allowed.Equals(Action, ESearchCase::IgnoreCase); });
+                if (!Canonical)
+                {
+                    ReplyError = FString::Printf(TEXT("model chose an action outside the vocabulary: %s"), *Action);
+                }
+                else
+                {
+                    Action = *Canonical;
+                }
+            }
+
+            if (!ReplyError.IsEmpty())
+            {
+                UE_LOG(Log4ECognition, Warning, TEXT("Sampling action for '%s' not chosen: %s"), *Phenomenon, *ReplyError);
+                Self->OnSamplingActionFailed.Broadcast(Phenomenon, ReplyError);
+                return;
+            }
+
+            Self->LastSamplingAction = Action;
+            Self->OnSamplingActionChosen.Broadcast(Phenomenon, Action);
+        }), 0.5f);
+    return true;
 }
 
 void UEnhanced4ECognitionComponent::ValidateSensorimotorPrediction(const FString& Prediction,
@@ -600,10 +680,9 @@ void UEnhanced4ECognitionComponent::EngageParticipatoryKnowing(const FString& Ph
 
     UE_LOG(Log4ECognition, Verbose, TEXT("Engaging participatory knowing with: %s"), *Phenomenon);
 
-    // Generate exploratory action
-    FString Action = GenerateSamplingAction();
-
-    // This would trigger actual motor action in a full implementation
+    // The model chooses the exploratory action; it is delivered on OnSamplingActionChosen for the
+    // game's motor layer to perform (nothing is performed here).
+    RequestSamplingAction(Phenomenon);
 }
 
 void UEnhanced4ECognitionComponent::UpdateExplorationDrive(float DeltaTime)

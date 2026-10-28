@@ -492,11 +492,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Integration|Animation")
     void AnalyzeAnimationState(UAnimInstance* AnimInstance);
 
-    /** Get cancel window */
+    /**
+     * Current or next cancel window of the active montage, from notify states whose name contains
+     * "Cancel"; times normalized to the montage length. False when none is authored/playing.
+     */
     UFUNCTION(BlueprintCallable, Category = "Integration|Animation")
     bool GetCancelWindow(UAnimInstance* AnimInstance, FString& OutCancelType, float& OutWindowStart, float& OutWindowEnd);
 
-    /** Predict animation completion */
+    /** Progress of the active montage in [0, 1]; returns -1 when unknown (no montage playing) */
     UFUNCTION(BlueprintCallable, Category = "Integration|Animation")
     float PredictAnimationCompletion(UAnimInstance* AnimInstance) const;
 

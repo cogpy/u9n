@@ -7,6 +7,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
+#include <utility>
 
 namespace deep_tree_echo {
 namespace avatar {
@@ -262,7 +264,11 @@ ToolIntegration::ToolIntegration() {}
 void ToolIntegration::register_tool(const std::string& name,
                                      std::function<Vector(const Vector&)> tool_function,
                                      double initial_proficiency) {
-    tools_[name] = tool_function;
+    if (!tool_function) {
+        throw std::invalid_argument("ToolIntegration::register_tool: tool '" + name +
+                                    "' has no implementation");
+    }
+    tools_[name] = std::move(tool_function);
     embodiment_levels_[name] = initial_proficiency * 0.5;  // Start at half embodiment
     
     // Add to state
@@ -300,12 +306,18 @@ void ToolIntegration::deactivate_tool(const std::string& name) {
     }
 }
 
+bool ToolIntegration::has_tool(const std::string& name) const {
+    return tools_.find(name) != tools_.end();
+}
+
 Vector ToolIntegration::use_tool(const std::string& name, const Vector& input) {
     auto it = tools_.find(name);
-    if (it != tools_.end()) {
-        return it->second(input);
+    if (it == tools_.end()) {
+        // No implementation registered: the tool did not run, so there is no result to return.
+        throw std::out_of_range("ToolIntegration::use_tool: tool '" + name +
+                                "' is not registered (register it with a real implementation first)");
     }
-    return input;
+    return it->second(input);
 }
 
 void ToolIntegration::update_embodiment(const std::string& name, double usage_success) {
@@ -376,14 +388,8 @@ void Avatar4E::initialize() {
     // Initialize extended state
     extended_state_.offloading_ratio = 0.0;
     
-    // Register default tools
-    tool_integration_.register_tool("memory_search", [](const Vector& query) {
-        return query;  // Placeholder
-    }, 0.8);
-    
-    tool_integration_.register_tool("calculation", [](const Vector& input) {
-        return input * 2.0;  // Placeholder
-    }, 0.9);
+    // No default tools: tools are registered by the host with real implementations
+    // (tools().register_tool(...)); use_tool on an unregistered tool throws.
     
     initialized_ = true;
 }

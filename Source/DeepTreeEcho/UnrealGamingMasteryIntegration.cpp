@@ -8,6 +8,7 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 
@@ -729,26 +730,58 @@ void UUnrealGamingMasteryIntegration::AnalyzeAnimationState(UAnimInstance* AnimI
 
 bool UUnrealGamingMasteryIntegration::GetCancelWindow(UAnimInstance* AnimInstance, FString& OutCancelType, float& OutWindowStart, float& OutWindowEnd)
 {
+    OutCancelType.Reset();
+    OutWindowStart = 0.0f;
+    OutWindowEnd = 0.0f;
     if (!AnimInstance) return false;
 
-    // Check for cancel windows in current animation
-    // (In full implementation, read from animation notifies)
+    // Cancel windows are authored as notify states on the active montage whose name contains
+    // "Cancel" (e.g. "Cancel_Dodge"). Returns the current or next such window, normalized to the
+    // montage's play length. No such notify = no known cancel window.
+    UAnimMontage* Montage = AnimInstance->GetCurrentActiveMontage();
+    if (!Montage) return false;
 
-    OutCancelType = TEXT("dodge");
-    OutWindowStart = 0.3f;
-    OutWindowEnd = 0.7f;
+    const float Length = Montage->GetPlayLength();
+    if (Length <= KINDA_SMALL_NUMBER) return false;
+    const float Position = AnimInstance->Montage_GetPosition(Montage);
 
+    const FAnimNotifyEvent* Best = nullptr;
+    for (const FAnimNotifyEvent& Notify : Montage->Notifies)
+    {
+        const FString Name = Notify.NotifyName.ToString();
+        if (!Name.Contains(TEXT("Cancel")) || Notify.GetEndTriggerTime() < Position)
+        {
+            continue;
+        }
+        if (!Best || Notify.GetTriggerTime() < Best->GetTriggerTime())
+        {
+            Best = &Notify;
+        }
+    }
+    if (!Best) return false;
+
+    FString Type = Best->NotifyName.ToString();
+    Type.ReplaceInline(TEXT("Cancel"), TEXT(""));
+    Type.TrimStartAndEndInline();
+    while (Type.StartsWith(TEXT("_"))) Type.RightChopInline(1);
+    OutCancelType = Type.IsEmpty() ? FString(TEXT("any")) : Type;
+    OutWindowStart = FMath::Clamp(Best->GetTriggerTime() / Length, 0.0f, 1.0f);
+    OutWindowEnd = FMath::Clamp(Best->GetEndTriggerTime() / Length, 0.0f, 1.0f);
     return true;
 }
 
 float UUnrealGamingMasteryIntegration::PredictAnimationCompletion(UAnimInstance* AnimInstance) const
 {
-    if (!AnimInstance) return 0.0f;
+    // Progress of the active montage in [0, 1]; -1 = unknown (no anim instance or no montage playing).
+    if (!AnimInstance) return -1.0f;
 
-    // Get current montage position
-    // (In full implementation, get actual montage progress)
+    UAnimMontage* Montage = AnimInstance->GetCurrentActiveMontage();
+    if (!Montage) return -1.0f;
 
-    return 0.5f; // Placeholder
+    const float Length = Montage->GetPlayLength();
+    if (Length <= KINDA_SMALL_NUMBER) return -1.0f;
+
+    return FMath::Clamp(AnimInstance->Montage_GetPosition(Montage) / Length, 0.0f, 1.0f);
 }
 
 FString UUnrealGamingMasteryIntegration::GetOptimalAnimationTransition(UAnimInstance* AnimInstance, const FString& TargetAction) const

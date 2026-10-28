@@ -18,6 +18,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoaching, const FString
 /** A coaching request failed; Error is a system message, never shown as the companion's words. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoachingFailed, const FString&, Topic, const FString&, Error);
 
+/**
+ * Game forward model for MCTS: writes the state that results from taking Action in State into
+ * OutNextState. Returns false when the action is not legal/applicable in State.
+ */
+DECLARE_DYNAMIC_DELEGATE_RetVal_ThreeParams(bool, FEchoGameTransitionModel, const TArray<float>&, State, const FString&, Action, TArray<float>&, OutNextState);
+
 namespace EchoCoaching
 {
     /**
@@ -714,9 +720,28 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     void UpdateESNTraining(const TArray<float>& InputFeatures, const TArray<float>& TargetOutput);
 
-    /** Run Monte Carlo Tree Search for decision */
+    /**
+     * The game's legal action set searched by RunMCTS. Supplied by the game (it knows its actions);
+     * empty = MCTS is unavailable.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaming|ML")
+    TArray<FString> MCTSLegalActions;
+
+    /** Bind the game's forward model used by RunMCTS to apply actions to states */
+    UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
+    void SetMCTSTransitionModel(const FEchoGameTransitionModel& Model) { MCTSTransitionModel = Model; }
+
+    /**
+     * Run Monte Carlo Tree Search over MCTSLegalActions using the bound transition model and the
+     * ESN value estimate. Returns the most valuable root action, or an empty string when MCTS cannot
+     * run (no legal actions, no transition model, or no action applicable) - see GetLastMCTSError.
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     FString RunMCTS(const TArray<float>& GameState, int32 SimulationCount = 1000);
+
+    /** Why the last RunMCTS returned no action (empty if it succeeded) */
+    UFUNCTION(BlueprintPure, Category = "Gaming|ML")
+    FString GetLastMCTSError() const { return LastMCTSError; }
 
     /** Get value estimate for game state */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
@@ -808,7 +833,13 @@ private:
     /** Calculate flow state intensity */
     float CalculateFlowIntensity() const;
 
-    /** Generate MCTS node */
+    /** Game forward model for MCTS */
+    FEchoGameTransitionModel MCTSTransitionModel;
+
+    /** Why the last RunMCTS produced no action */
+    FString LastMCTSError;
+
+    /** Expand Parent with one child per applicable legal action; returns the first new child (or Parent if none) */
     struct FMCTSNode* ExpandMCTSNode(struct FMCTSNode* Parent, const TArray<float>& State);
 
     /** MCTS simulation */

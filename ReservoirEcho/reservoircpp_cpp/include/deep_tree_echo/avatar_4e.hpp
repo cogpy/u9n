@@ -271,6 +271,7 @@ public:
     ToolIntegration();
     
     // Tool management
+    /// @throws std::invalid_argument if tool_function is empty.
     void register_tool(const std::string& name, 
                        std::function<Vector(const Vector&)> tool_function,
                        double initial_proficiency = 0.5);
@@ -278,6 +279,10 @@ public:
     void deactivate_tool(const std::string& name);
     
     // Tool use
+    /// True if a tool with this name has been registered.
+    bool has_tool(const std::string& name) const;
+    /// Runs the registered tool on input and returns its result.
+    /// @throws std::out_of_range if no tool with this name is registered.
     Vector use_tool(const std::string& name, const Vector& input);
     
     // Tool embodiment

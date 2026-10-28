@@ -288,6 +288,44 @@ struct FPredictionState
 };
 
 /**
+ * Result of executing one action through the game's input system. Filled by the game's bound
+ * executor (see UEchobeatsGamingIntegration::SetActionExecutor); quality and timing are only
+ * recorded for learning when the game actually measured them.
+ */
+USTRUCT(BlueprintType)
+struct FEchoActionExecutionResult
+{
+    GENERATED_BODY()
+
+    /** True only if the game input system actually performed the action */
+    UPROPERTY(BlueprintReadWrite, Category = "Action")
+    bool bExecuted = false;
+
+    /** True if ExecutionQuality / TimingAccuracy were measured by the game */
+    UPROPERTY(BlueprintReadWrite, Category = "Action")
+    bool bMeasured = false;
+
+    /** Measured execution quality [0,1] (valid only when bMeasured) */
+    UPROPERTY(BlueprintReadWrite, Category = "Action")
+    float ExecutionQuality = 0.0f;
+
+    /** Measured timing accuracy [0,1] (valid only when bMeasured) */
+    UPROPERTY(BlueprintReadWrite, Category = "Action")
+    float TimingAccuracy = 0.0f;
+
+    /** Status / reason (system text, not character speech) */
+    UPROPERTY(BlueprintReadWrite, Category = "Action")
+    FString Status;
+};
+
+/** Game-side executor: performs ActionID through the game's input system and reports what happened. */
+DECLARE_DYNAMIC_DELEGATE_RetVal_OneParam(FEchoActionExecutionResult, FEchoGameActionExecutor, const FString&, ActionID);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchoActionPlanReady, const FString&, Strategy, const TArray<FString>&, Actions);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchoActionPlanFailed, const FString&, Strategy, const FString&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchoActionExecuted, const FString&, ActionID, const FEchoActionExecutionResult&, Result);
+
+/**
  * UEchobeatsGamingIntegration
  * 
  * Implements the Echobeats 3-stream concurrent cognitive processing
@@ -474,15 +512,69 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
     FString SelectStrategy(const TMap<FString, float>& GoalEvaluation);
 
-    /** Plan actions for strategy */
+    /**
+     * Action-plan prompt templates, keyed by strategy (the names SelectStrategy returns, plus
+     * "balanced"). Each is an instruction to the model with slots {strategy}, {game_state},
+     * {situation}, {affordances}, {salience}, {allowed_actions}, {max_actions}; the model returns
+     * the plan as JSON {"actions": [...]}, validated against AllowedActionVocabulary.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats|Action", meta = (MultiLine = true))
+    TMap<FString, FString> ActionPlanPromptTemplates;
+
+    /**
+     * The actions the game's input system understands. The model may only plan with these; the
+     * game should replace the defaults with its own action names.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats|Action")
+    TArray<FString> AllowedActionVocabulary;
+
+    /** Maximum number of actions accepted in one model plan */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats|Action", meta = (ClampMin = "1"))
+    int32 MaxPlannedActions = 5;
+
+    /**
+     * Asks the model to plan actions for SelectedStrategy from the current game state, affordances
+     * and the allowed action vocabulary. Asynchronous: the validated plan is queued and broadcast on
+     * OnActionPlanReady, or the reason on OnActionPlanFailed. Returns false (nothing requested)
+     * when no prompt template exists for the strategy, the vocabulary is empty, or a plan request
+     * is already in flight.
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
-    TArray<FString> PlanActions(const FString& SelectedStrategy);
+    bool PlanActions(const FString& SelectedStrategy);
+
+    /** True while a model plan request is in flight */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Action")
+    bool IsPlanningActions() const { return bPlanRequestInFlight; }
+
+    /** Actions planned by the model and not yet executed */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Action")
+    TArray<FString> GetQueuedActions() const { return ActionQueue; }
+
+    /** Bind the game's input-system executor; without one, actions are never executed */
+    UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
+    void SetActionExecutor(const FEchoGameActionExecutor& Executor) { ActionExecutor = Executor; }
+
+    /** Unbind the game's executor */
+    UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
+    void ClearActionExecutor() { ActionExecutor.Clear(); }
+
+    /** True when a game executor is bound */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Action")
+    bool HasActionExecutor() const { return ActionExecutor.IsBound(); }
+
+    /** Status of the most recent ExecuteAction call (system text) */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Action")
+    FString GetLastActionStatus() const { return LastActionStatus; }
 
     /** Prepare motor execution */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
     void PrepareMotorExecution(const TArray<FString>& PlannedActions);
 
-    /** Execute planned action */
+    /**
+     * Executes ActionID through the bound game executor. Returns true only if the game reports
+     * the action was performed; motor quality is recorded only when the game measured it. With no
+     * executor bound, returns false with status "not executed" and records nothing.
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
     bool ExecuteAction(const FString& ActionID);
 
@@ -597,6 +689,18 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
     FOnCompanionCoachingFailed OnCoachingFailed;
 
+    /** The model's validated action plan for a strategy (already queued) */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnEchoActionPlanReady OnActionPlanReady;
+
+    /** An action-plan request failed; nothing was queued */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnEchoActionPlanFailed OnActionPlanFailed;
+
+    /** An action was attempted through the game executor (see Result.bExecuted) */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnEchoActionExecuted OnActionExecuted;
+
 private:
     // ========================================
     // INTERNAL STATE
@@ -616,6 +720,21 @@ private:
 
     /** Action queue */
     TArray<FString> ActionQueue;
+
+    /** Game input executor (bound by the game) */
+    FEchoGameActionExecutor ActionExecutor;
+
+    /** A model plan request is in flight */
+    bool bPlanRequestInFlight = false;
+
+    /** Status of the most recent ExecuteAction call */
+    FString LastActionStatus;
+
+    /** Builds the default per-strategy plan prompt templates and action vocabulary */
+    void InitializeActionPlanning();
+
+    /** Validates the model's plan JSON against the vocabulary */
+    bool ParseActionPlan(const FString& ModelText, TArray<FString>& OutActions, FString& OutError) const;
 
     /** Prediction error history */
     TArray<float> PredictionErrorHistory;

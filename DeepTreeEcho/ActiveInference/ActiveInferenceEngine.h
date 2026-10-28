@@ -303,9 +303,17 @@ struct FActionOutcome
     UPROPERTY(BlueprintReadOnly)
     TArray<float> PredictedOutcome;
 
-    /** Actual outcome */
+    /** Actual outcome, as observed by the environment executor (empty when not executed) */
     UPROPERTY(BlueprintReadOnly)
     TArray<float> ActualOutcome;
+
+    /** True only if the environment executor performed the action and returned an observation */
+    UPROPERTY(BlueprintReadOnly)
+    bool bExecuted = false;
+
+    /** Execution status (system text), e.g. why the action was not executed */
+    UPROPERTY(BlueprintReadOnly)
+    FString Status;
 
     /** Prediction error */
     UPROPERTY(BlueprintReadOnly)
@@ -375,6 +383,14 @@ struct FInferenceCycleState
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnBeliefUpdated, const FBeliefState&, Belief);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPolicySelected, const FPolicy&, Policy);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActionExecuted, const FActionOutcome&, Outcome);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActiveInferenceActionFailed, const FActionOutcome&, Outcome);
+
+/**
+ * Environment executor: performs ActionIndex in the real environment and writes the resulting
+ * observation (same layout as RunPerceptualInference's input) into OutObservation. Returns false
+ * when the action could not be performed.
+ */
+DECLARE_DYNAMIC_DELEGATE_RetVal_TwoParams(bool, FActiveInferenceEnvironmentExecutor, int32, ActionIndex, TArray<float>&, OutObservation);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFreeEnergyComputed, float, Variational, float, Expected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInferenceModeChanged, EActiveInferenceMode, NewMode);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMarkovBlanketUpdated, const FMarkovBlanket&, Blanket);
@@ -479,8 +495,13 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnPolicySelected OnPolicySelected;
 
+    /** An action was performed by the environment; Outcome.ActualOutcome is the real observation */
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnActionExecuted OnActionExecuted;
+
+    /** An action could not be executed (no executor bound, or the environment refused it) */
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnActiveInferenceActionFailed OnActionFailed;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnFreeEnergyComputed OnFreeEnergyComputed;
@@ -499,7 +520,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Inference")
     void RunPerceptualInference(const TArray<float>& Observations);
 
-    /** Run active inference (select and execute action) */
+    /**
+     * Run active inference: select an action from the best policy and execute it through the
+     * environment executor. Returns the selected action index; whether it was actually executed is
+     * reported on OnActionExecuted (real observed outcome) or OnActionFailed (not executed).
+     */
     UFUNCTION(BlueprintCallable, Category = "Inference")
     int32 RunActiveInference();
 
@@ -571,7 +596,20 @@ public:
     // PUBLIC API - ACTION
     // ========================================
 
-    /** Execute action from policy */
+    /** Bind the environment that performs actions and reports their observed outcomes */
+    UFUNCTION(BlueprintCallable, Category = "Action")
+    void SetEnvironmentExecutor(const FActiveInferenceEnvironmentExecutor& Executor) { EnvironmentExecutor = Executor; }
+
+    /** True when an environment executor is bound */
+    UFUNCTION(BlueprintPure, Category = "Action")
+    bool HasEnvironmentExecutor() const { return EnvironmentExecutor.IsBound(); }
+
+    /**
+     * Execute an action through the environment executor. The returned outcome has bExecuted = true
+     * and the environment's real observation in ActualOutcome, from which prediction error and
+     * free-energy change are computed. Without an executor, or if the environment cannot perform
+     * the action, bExecuted = false, Status says why, and nothing is learned or recorded.
+     */
     UFUNCTION(BlueprintCallable, Category = "Action")
     FActionOutcome ExecuteAction(int32 ActionIndex);
 
@@ -685,6 +723,9 @@ protected:
     FMarkovBlanket MarkovBlanket;
     FInferenceCycleState CycleState;
     TArray<FActionOutcome> ActionHistory;
+
+    /** Environment that performs actions and returns observations */
+    FActiveInferenceEnvironmentExecutor EnvironmentExecutor;
 
     float CurrentVFE = 0.0f;
     float CurrentEFE = 0.0f;

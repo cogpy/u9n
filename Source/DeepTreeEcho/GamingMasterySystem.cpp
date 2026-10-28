@@ -1045,6 +1045,21 @@ void UGamingMasterySystem::UpdateESNTraining(const TArray<float>& InputFeatures,
 
 FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 SimulationCount)
 {
+    LastMCTSError.Reset();
+    if (MCTSLegalActions.Num() == 0)
+    {
+        LastMCTSError = TEXT("MCTS unavailable: MCTSLegalActions is empty (the game must supply its legal action set)");
+    }
+    else if (!MCTSTransitionModel.IsBound())
+    {
+        LastMCTSError = TEXT("MCTS unavailable: no transition model bound (SetMCTSTransitionModel); without one every action leads to the same state");
+    }
+    if (!LastMCTSError.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *LastMCTSError);
+        return FString();
+    }
+
     // Create root node
     FMCTSNode* Root = new FMCTSNode();
     Root->State = GameState;
@@ -1109,7 +1124,12 @@ FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 Simu
     }
     
     delete Root;
-    
+
+    if (BestAction.IsEmpty())
+    {
+        LastMCTSError = TEXT("MCTS produced no action: the transition model applied none of the legal actions to this state");
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *LastMCTSError);
+    }
     return BestAction;
 }
 
@@ -1295,29 +1315,25 @@ float UGamingMasterySystem::CalculateFlowIntensity() const
 FMCTSNode* UGamingMasterySystem::ExpandMCTSNode(FMCTSNode* Parent, const TArray<float>& State)
 {
     Parent->bExpanded = true;
-    
-    // Generate possible actions (placeholder - in full implementation, this would be game-specific)
-    TArray<FString> PossibleActions;
-    PossibleActions.Add(TEXT("action_1"));
-    PossibleActions.Add(TEXT("action_2"));
-    PossibleActions.Add(TEXT("action_3"));
-    
-    for (const FString& Action : PossibleActions)
+
+    // One child per legal action the game's forward model can apply to this state
+    for (const FString& Action : MCTSLegalActions)
     {
+        TArray<float> NextState;
+        if (!MCTSTransitionModel.IsBound() || !MCTSTransitionModel.Execute(State, Action, NextState))
+        {
+            continue;
+        }
         FMCTSNode* Child = new FMCTSNode();
         Child->Parent = Parent;
         Child->Action = Action;
-        Child->State = State; // In full implementation, apply action to get new state
+        Child->State = MoveTemp(NextState);
         Parent->Children.Add(Child);
     }
-    
-    // Return random child for simulation
-    if (Parent->Children.Num() > 0)
-    {
-        return Parent->Children[FMath::RandRange(0, Parent->Children.Num() - 1)];
-    }
-    
-    return Parent;
+
+    // Evaluate the first new child now; UCB selection visits the remaining unvisited children
+    // in later iterations. A node with no applicable action is a leaf.
+    return Parent->Children.Num() > 0 ? Parent->Children[0] : Parent;
 }
 
 float UGamingMasterySystem::SimulateMCTS(const TArray<float>& State, int32 Depth)
