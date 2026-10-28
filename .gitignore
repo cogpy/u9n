@@ -70,6 +70,9 @@
 !*.sh
 !*.pl
 !*.py
+
+# Go source files
+!*.go
 !*.ps1
 !*.js
 !*.ts
