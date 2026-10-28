@@ -87,7 +87,8 @@ void UAvatarCognitionBridge::InitializeBridge()
 
 void UAvatarCognitionBridge::UpdateFromCognitiveState(ECognitiveState NewState)
 {
-    // Recorded only; the displayed expression is the character model's choice
+    // Records the state; the expression system may ask the model (throttled) how the character
+    // reacts. The face changes only when the model's validated reaction arrives on the bus.
     if (ExpressionSystem)
     {
         ExpressionSystem->SetCognitiveState(NewState);

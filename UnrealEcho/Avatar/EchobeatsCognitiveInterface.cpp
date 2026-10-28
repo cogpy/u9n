@@ -383,7 +383,8 @@ FCognitiveStreamState UEchobeatsCognitiveInterface::GetStreamState(int32 StreamI
 
 void UEchobeatsCognitiveInterface::ReceiveCognitiveUpdate(ECognitiveState NewState, float Confidence)
 {
-    // Recorded only; the expression system does not derive an expression from it
+    // Records the state; the expression system does not derive an expression from it, but may
+    // ask the model (throttled) how the character reacts and render only the model's reply.
     if (ExpressionSystem)
     {
         ExpressionSystem->SetCognitiveState(NewState);

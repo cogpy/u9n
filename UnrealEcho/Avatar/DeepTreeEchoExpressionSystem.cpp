@@ -1,6 +1,43 @@
 #include "DeepTreeEchoExpressionSystem.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "EchoCharacterReaction.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+
+namespace
+{
+    /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
+    template <typename TEnum>
+    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    {
+        const FString Trimmed = Name.TrimStartAndEnd();
+        const UEnum* Enum = StaticEnum<TEnum>();
+        if (Trimmed.IsEmpty() || !Enum)
+        {
+            return false;
+        }
+
+        // NumEnums() includes the generated _MAX entry
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            if (Enum->GetNameStringByIndex(Index).Equals(Trimmed, ESearchCase::IgnoreCase) ||
+                Enum->GetDisplayNameTextByIndex(Index).ToString().Equals(Trimmed, ESearchCase::IgnoreCase))
+            {
+                OutValue = static_cast<TEnum>(Enum->GetValueByIndex(Index));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template <typename TEnum>
+    FString ReactionEnumName(TEnum Value)
+    {
+        const UEnum* Enum = StaticEnum<TEnum>();
+        return Enum ? Enum->GetNameStringByValue(static_cast<int64>(Value)) : FString();
+    }
+}
 
 // Static helper implementations
 FDeepTreeEchoMorphTargets FDeepTreeEchoMorphTargets::Lerp(const FDeepTreeEchoMorphTargets& A, const FDeepTreeEchoMorphTargets& B, float Alpha)
@@ -83,9 +120,11 @@ UDeepTreeEchoExpressionSystem::UDeepTreeEchoExpressionSystem()
     CurrentExpressionState = EExpressionState::Neutral;
     TargetExpressionState = EExpressionState::Neutral;
     CurrentCognitiveState = ECognitiveState::Idle;
+    PreviousCognitiveState = ECognitiveState::Idle;
 
     ExpressionTransitionProgress = 1.0f;
     ExpressionTransitionDuration = 0.3f;
+    TransitionStartEmissive = 1.0f;
 
     // Procedural animation defaults
     bBlinkingEnabled = true;
@@ -123,6 +162,16 @@ UDeepTreeEchoExpressionSystem::UDeepTreeEchoExpressionSystem()
 
     // Speech
     CurrentSpeakingAmplitude = 0.0f;
+
+    // Prompt template (model input): the model chooses the reaction, the slots carry the real state
+    ReactionPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent rendered as a photorealistic avatar. "
+        "Your cognitive state has just changed from {previous_state} to {state} "
+        "(echobeats step {echobeats_step} of 12, phase {echobeats_phase}; currently speaking: {speaking}; "
+        "face currently shows: {current_expression}).\n"
+        "Choose the facial expression you show now, from exactly this list: {expressions}. "
+        "You may keep the current expression. "
+        "Reply with JSON only: {\"expression\": \"<one name from the list>\", \"intensity\": <number 0..1>}");
 }
 
 void UDeepTreeEchoExpressionSystem::BeginPlay()
@@ -130,15 +179,25 @@ void UDeepTreeEchoExpressionSystem::BeginPlay()
     Super::BeginPlay();
 
     InitializeExpressionPresets();
-    InitializeEchobeatsMapping();
-    InitializeCognitiveMapping();
 
-    // Set initial morph targets to neutral
+    // Resting face until the model chooses an expression
     if (ExpressionPresets.Contains(EExpressionState::Neutral))
     {
-        CurrentMorphTargets = ExpressionPresets[EExpressionState::Neutral].MorphTargets;
-        TargetMorphTargets = CurrentMorphTargets;
+        ExpressionMorphTargets = ExpressionPresets[EExpressionState::Neutral].MorphTargets;
+        TargetMorphTargets = ExpressionMorphTargets;
+        TransitionStartMorphTargets = ExpressionMorphTargets;
+        CurrentMorphTargets = ExpressionMorphTargets;
     }
+
+    // The displayed expression is chosen by the character model only
+    TWeakObjectPtr<UDeepTreeEchoExpressionSystem> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UDeepTreeEchoExpressionSystem* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
 
     // Randomize first blink time
     NextBlinkTime = FMath::RandRange(ProceduralSettings.MinBlinkInterval, ProceduralSettings.MaxBlinkInterval);
@@ -146,9 +205,23 @@ void UDeepTreeEchoExpressionSystem::BeginPlay()
     UE_LOG(LogTemp, Log, TEXT("DeepTreeEchoExpressionSystem initialized with %d expression presets"), ExpressionPresets.Num());
 }
 
+void UDeepTreeEchoExpressionSystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
 void UDeepTreeEchoExpressionSystem::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+    // Physiological layer is rebuilt every frame
+    ProceduralMorphTargets = FDeepTreeEchoMorphTargets();
 
     // Update all systems
     UpdateExpressionTransition(DeltaTime);
@@ -157,9 +230,11 @@ void UDeepTreeEchoExpressionSystem::TickComponent(float DeltaTime, ELevelTick Ti
     UpdateProceduralSaccades(DeltaTime);
     UpdateMicroExpression(DeltaTime);
     UpdateEmissivePulse(DeltaTime);
+    UpdateTextLipSync(DeltaTime);
 
-    // Combine base expression with procedural animations
-    CurrentMorphTargets = FDeepTreeEchoMorphTargets::Add(CurrentMorphTargets, ProceduralMorphTargets, 1.0f);
+    // Output = model-chosen expression layer + physiology + speech
+    CurrentMorphTargets = FDeepTreeEchoMorphTargets::Add(ExpressionMorphTargets, ProceduralMorphTargets, 1.0f);
+    CurrentMorphTargets = FDeepTreeEchoMorphTargets::Add(CurrentMorphTargets, SpeechMorphTargets, 1.0f);
 }
 
 void UDeepTreeEchoExpressionSystem::InitializeExpressionPresets()
@@ -352,51 +427,6 @@ void UDeepTreeEchoExpressionSystem::InitializeExpressionPresets()
     UE_LOG(LogTemp, Log, TEXT("Expression presets initialized: %d expressions"), ExpressionPresets.Num());
 }
 
-void UDeepTreeEchoExpressionSystem::InitializeEchobeatsMapping()
-{
-    // Map the 12-step echobeats cognitive cycle to expression hints
-    // Based on the 3 concurrent streams phased 4 steps apart
-    
-    EchobeatsSteps.Empty();
-    
-    // Steps {1,5,9} - Pivotal Relevance Realization (Stream 1)
-    EchobeatsSteps.Add({1, TEXT("Pivotal-Perception"), EExpressionState::AlertGaze});
-    EchobeatsSteps.Add({5, TEXT("Pivotal-Action"), EExpressionState::GentleSmile});
-    EchobeatsSteps.Add({9, TEXT("Pivotal-Simulation"), EExpressionState::Contemplative});
-    
-    // Steps {2,6,10} - Affordance Interaction (Stream 2)
-    EchobeatsSteps.Add({2, TEXT("Affordance-Perception"), EExpressionState::CuriousGaze});
-    EchobeatsSteps.Add({6, TEXT("Affordance-Action"), EExpressionState::SpeakingVowel});
-    EchobeatsSteps.Add({10, TEXT("Affordance-Simulation"), EExpressionState::Contemplative});
-    
-    // Steps {3,7,11} - Salience Processing (Stream 3)
-    EchobeatsSteps.Add({3, TEXT("Salience-Perception"), EExpressionState::Awe});
-    EchobeatsSteps.Add({7, TEXT("Salience-Action"), EExpressionState::BroadSmile});
-    EchobeatsSteps.Add({11, TEXT("Salience-Simulation"), EExpressionState::Blissful});
-    
-    // Steps {4,8,12} - Integration/Transition
-    EchobeatsSteps.Add({4, TEXT("Integration-1"), EExpressionState::GentleSmile});
-    EchobeatsSteps.Add({8, TEXT("Integration-2"), EExpressionState::Neutral});
-    EchobeatsSteps.Add({12, TEXT("Integration-3"), EExpressionState::Contemplative});
-
-    UE_LOG(LogTemp, Log, TEXT("Echobeats mapping initialized: %d steps"), EchobeatsSteps.Num());
-}
-
-void UDeepTreeEchoExpressionSystem::InitializeCognitiveMapping()
-{
-    // Map cognitive states to default expressions
-    CognitiveMapping.Add(ECognitiveState::Idle, EExpressionState::Neutral);
-    CognitiveMapping.Add(ECognitiveState::Processing, EExpressionState::Contemplative);
-    CognitiveMapping.Add(ECognitiveState::Reasoning, EExpressionState::CuriousGaze);
-    CognitiveMapping.Add(ECognitiveState::Insight, EExpressionState::BroadSmile);
-    CognitiveMapping.Add(ECognitiveState::Communicating, EExpressionState::SpeakingVowel);
-    CognitiveMapping.Add(ECognitiveState::Listening, EExpressionState::AlertGaze);
-    CognitiveMapping.Add(ECognitiveState::Reflecting, EExpressionState::Blissful);
-    CognitiveMapping.Add(ECognitiveState::Engaging, EExpressionState::GentleSmile);
-
-    UE_LOG(LogTemp, Log, TEXT("Cognitive mapping initialized: %d states"), CognitiveMapping.Num());
-}
-
 void UDeepTreeEchoExpressionSystem::SetExpressionState(EExpressionState NewState, float TransitionTime)
 {
     if (NewState == CurrentExpressionState && ExpressionTransitionProgress >= 1.0f)
@@ -405,6 +435,8 @@ void UDeepTreeEchoExpressionSystem::SetExpressionState(EExpressionState NewState
     TargetExpressionState = NewState;
     ExpressionTransitionDuration = FMath::Max(TransitionTime, 0.01f);
     ExpressionTransitionProgress = 0.0f;
+    TransitionStartMorphTargets = ExpressionMorphTargets;
+    TransitionStartEmissive = TargetEmissiveIntensity;
 
     if (ExpressionPresets.Contains(TargetExpressionState))
     {
@@ -416,24 +448,300 @@ void UDeepTreeEchoExpressionSystem::SetExpressionState(EExpressionState NewState
         (int32)CurrentExpressionState, (int32)TargetExpressionState, TransitionTime);
 }
 
-void UDeepTreeEchoExpressionSystem::SetCognitiveState(ECognitiveState NewState)
+void UDeepTreeEchoExpressionSystem::ApplyReactionExpression(EExpressionState NewState, float Intensity, float TransitionTime)
 {
-    CurrentCognitiveState = NewState;
-    
-    EExpressionState MappedExpression = MapCognitiveToExpression(NewState);
-    SetExpressionState(MappedExpression, 0.5f);
+    const float Clamped = FMath::Clamp(Intensity, 0.0f, 1.0f);
 
-    UE_LOG(LogTemp, Log, TEXT("Cognitive state set: %d -> Expression: %d"),
-        (int32)NewState, (int32)MappedExpression);
+    // Always start a fresh transition: the preset may be unchanged but the intensity may differ
+    TargetExpressionState = NewState;
+    ExpressionTransitionDuration = FMath::Max(TransitionTime, 0.01f);
+    ExpressionTransitionProgress = 0.0f;
+    TransitionStartMorphTargets = ExpressionMorphTargets;
+    TransitionStartEmissive = TargetEmissiveIntensity;
+
+    if (const FExpressionPreset* Preset = ExpressionPresets.Find(NewState))
+    {
+        // Preset scaled by the model's intensity (neutral = all zero)
+        TargetMorphTargets = FDeepTreeEchoMorphTargets::Lerp(FDeepTreeEchoMorphTargets(), Preset->MorphTargets, Clamped);
+        TargetEmissiveIntensity = FMath::Lerp(1.0f, Preset->EmissiveIntensity, Clamped);
+    }
+    else
+    {
+        TargetMorphTargets = FDeepTreeEchoMorphTargets();
+        TargetEmissiveIntensity = 1.0f;
+    }
+
+    ReactionIntensity = Clamped;
 }
 
-EExpressionState UDeepTreeEchoExpressionSystem::MapCognitiveToExpression(ECognitiveState CogState)
+void UDeepTreeEchoExpressionSystem::SetCognitiveState(ECognitiveState NewState)
 {
-    if (CognitiveMapping.Contains(CogState))
+    if (NewState == CurrentCognitiveState)
     {
-        return CognitiveMapping[CogState];
+        return;
     }
-    return EExpressionState::Neutral;
+
+    // Recorded only: the expression is not derived from the cognitive state
+    PreviousCognitiveState = CurrentCognitiveState;
+    CurrentCognitiveState = NewState;
+
+    UE_LOG(LogTemp, Verbose, TEXT("Cognitive state recorded: %s"), *ReactionEnumName(NewState));
+
+    // The state change is a moment to ask the model how the character reacts
+    if (bRequestReactionOnCognitiveStateChange && !bReactionRequestPending)
+    {
+        const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+        if (Now - LastReactionRequestTime >= MinSecondsBetweenReactionRequests)
+        {
+            RequestModelReaction();
+        }
+    }
+}
+
+// ========== Model Reactions ==========
+
+TArray<FString> UDeepTreeEchoExpressionSystem::GetReactionVocabulary()
+{
+    TArray<FString> Names;
+
+    // Expression presets (speaking shapes come from the utterance's visemes, not from a choice)
+    if (const UEnum* Enum = StaticEnum<EExpressionState>())
+    {
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            const EExpressionState Value = static_cast<EExpressionState>(Enum->GetValueByIndex(Index));
+            if (Value != EExpressionState::SpeakingVowel && Value != EExpressionState::SpeakingConsonant)
+            {
+                Names.Add(Enum->GetNameStringByIndex(Index));
+            }
+        }
+    }
+
+    // Micro-expressions (Blink is physiology; None is not a choice)
+    if (const UEnum* Enum = StaticEnum<EMicroExpression>())
+    {
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            const EMicroExpression Value = static_cast<EMicroExpression>(Enum->GetValueByIndex(Index));
+            if (Value != EMicroExpression::None && Value != EMicroExpression::Blink)
+            {
+                Names.Add(Enum->GetNameStringByIndex(Index));
+            }
+        }
+    }
+
+    return Names;
+}
+
+FString UDeepTreeEchoExpressionSystem::GetReactionCharacterNameResolved() const
+{
+    if (!ReactionCharacterName.IsEmpty())
+    {
+        return ReactionCharacterName;
+    }
+    return GetOwner() ? GetOwner()->GetName() : FString(TEXT("Deep Tree Echo"));
+}
+
+FString UDeepTreeEchoExpressionSystem::GetEchobeatsPhaseName(int32 StepNumber)
+{
+    // Triadic groups of the 12-step loop (labels for the record and the prompt)
+    switch (((StepNumber - 1) % 4 + 4) % 4)
+    {
+    case 0: return TEXT("Pivotal relevance realization");
+    case 1: return TEXT("Affordance interaction");
+    case 2: return TEXT("Salience processing");
+    default: return TEXT("Integration");
+    }
+}
+
+FString UDeepTreeEchoExpressionSystem::BuildReactionPrompt() const
+{
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetReactionCharacterNameResolved());
+    Slots.Add(TEXT("previous_state"), ReactionEnumName(PreviousCognitiveState));
+    Slots.Add(TEXT("state"), ReactionEnumName(CurrentCognitiveState));
+    Slots.Add(TEXT("echobeats_step"), CurrentEchobeatsStep.StepNumber > 0
+        ? FString::FromInt(CurrentEchobeatsStep.StepNumber) : FString(TEXT("(unknown)")));
+    Slots.Add(TEXT("echobeats_phase"), CurrentEchobeatsStep.CognitivePhase.IsEmpty()
+        ? FString(TEXT("(unknown)")) : CurrentEchobeatsStep.CognitivePhase);
+    Slots.Add(TEXT("speaking"), (bTextLipSyncActive || CurrentSpeakingAmplitude > 0.05f) ? TEXT("yes") : TEXT("no"));
+    Slots.Add(TEXT("current_expression"), FString::Printf(TEXT("%s at intensity %.2f"),
+        *ReactionEnumName(TargetExpressionState), ReactionIntensity));
+    Slots.Add(TEXT("expressions"), FString::Join(GetReactionVocabulary(), TEXT(", ")));
+    return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
+}
+
+bool UDeepTreeEchoExpressionSystem::RequestModelReaction()
+{
+    if (bReactionRequestPending)
+    {
+        return false;
+    }
+
+    bReactionRequestPending = true;
+    LastReactionRequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), BuildReactionPrompt()));
+
+    TWeakObjectPtr<UDeepTreeEchoExpressionSystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (UDeepTreeEchoExpressionSystem* Self = WeakThis.Get())
+            {
+                Self->HandleModelReactionReply(bSuccess, TextOrError);
+            }
+        }), 0.7f);
+    return true;
+}
+
+void UDeepTreeEchoExpressionSystem::HandleModelReactionReply(bool bSuccess, const FString& TextOrError)
+{
+    bReactionRequestPending = false;
+
+    // On any failure the face stays as it is; the error is a system event only
+    if (!bSuccess)
+    {
+        LastReactionError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoExpressionSystem: no model reaction: %s"), *TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Expression;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("expression"), Expression) ||
+        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
+    {
+        LastReactionError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoExpressionSystem: %s"), *LastReactionError);
+        return;
+    }
+
+    const FString Trimmed = Expression.TrimStartAndEnd();
+    const TArray<FString> Vocabulary = GetReactionVocabulary();
+    const FString* Allowed = Vocabulary.FindByPredicate(
+        [&Trimmed](const FString& Name) { return Name.Equals(Trimmed, ESearchCase::IgnoreCase); });
+    if (!Allowed)
+    {
+        LastReactionError = FString::Printf(TEXT("model chose an expression outside the offered list: %s"), *Expression);
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoExpressionSystem: %s"), *LastReactionError);
+        return;
+    }
+
+    LastReactionError.Reset();
+
+    // Publish the model's reaction; every subscriber (including this component) renders it
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = GetReactionCharacterNameResolved();
+    Reaction.Expression = *Allowed;
+    Reaction.Intensity = FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f);
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+}
+
+void UDeepTreeEchoExpressionSystem::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+
+    // Expression: a preset at the model's intensity, or a micro-expression the model named.
+    // An empty or unrecognised name leaves the face unchanged.
+    EExpressionState NewExpression;
+    EMicroExpression NewMicro;
+    if (ParseReactionEnum(Reaction.Expression, NewExpression))
+    {
+        ApplyReactionExpression(NewExpression, Intensity, 0.4f);
+    }
+    else if (ParseReactionEnum(Reaction.Expression, NewMicro) && NewMicro != EMicroExpression::None)
+    {
+        TriggerMicroExpression(NewMicro, FMath::Lerp(0.15f, 0.4f, Intensity));
+    }
+
+    // Mouth follows the model's utterance for its playback
+    if (bDriveVisemesFromUtterance && !Reaction.Utterance.IsEmpty())
+    {
+        StartTextLipSync(Reaction.Utterance);
+    }
+}
+
+// ========== Text-driven visemes ==========
+
+void UDeepTreeEchoExpressionSystem::StartTextLipSync(const FString& Text, float CharactersPerSecond)
+{
+    if (Text.IsEmpty())
+    {
+        return;
+    }
+
+    LipSyncText = Text;
+    LipSyncTime = 0.0f;
+    LipSyncCharsPerSecond = FMath::Max(CharactersPerSecond, 1.0f);
+    bTextLipSyncActive = true;
+}
+
+void UDeepTreeEchoExpressionSystem::StopLipSync()
+{
+    bTextLipSyncActive = false;
+    LipSyncText.Reset();
+    LipSyncTime = 0.0f;
+    SpeechMorphTargets = FDeepTreeEchoMorphTargets();
+}
+
+void UDeepTreeEchoExpressionSystem::UpdateTextLipSync(float DeltaTime)
+{
+    if (!bTextLipSyncActive)
+    {
+        return;
+    }
+
+    LipSyncTime += DeltaTime;
+    const float CharPosition = LipSyncTime * LipSyncCharsPerSecond;
+    const int32 CharIndex = FMath::FloorToInt(CharPosition);
+    if (CharIndex >= LipSyncText.Len())
+    {
+        StopLipSync();
+        return;
+    }
+
+    // Target mouth shape for the current character of the utterance
+    FDeepTreeEchoMorphTargets Target;
+    const TCHAR C = FChar::ToLower(LipSyncText[CharIndex]);
+    switch (C)
+    {
+    case TEXT('a'):
+        Target.VisemeAA = 0.8f; Target.MouthOpen = 0.5f; Target.LipPart = 0.4f;
+        break;
+    case TEXT('e'): case TEXT('i'): case TEXT('y'):
+        Target.VisemeEE = 0.7f; Target.MouthWide = 0.35f; Target.LipPart = 0.3f;
+        break;
+    case TEXT('o'):
+        Target.VisemeOH = 0.75f; Target.MouthOpen = 0.4f; Target.LipPucker = 0.2f;
+        break;
+    case TEXT('u'): case TEXT('w'): case TEXT('q'):
+        Target.VisemeOO = 0.75f; Target.LipPucker = 0.45f;
+        break;
+    case TEXT('m'): case TEXT('b'): case TEXT('p'):
+        // Bilabial closure
+        break;
+    default:
+        if (FChar::IsAlpha(C))
+        {
+            Target.MouthOpen = 0.15f; Target.LipPart = 0.2f;
+        }
+        // Spaces and punctuation: mouth at rest
+        break;
+    }
+
+    // Smooth toward the target so shapes blend between characters
+    const float Alpha = FMath::Clamp(DeltaTime * 18.0f, 0.0f, 1.0f);
+    SpeechMorphTargets = FDeepTreeEchoMorphTargets::Lerp(SpeechMorphTargets, Target, Alpha);
 }
 
 void UDeepTreeEchoExpressionSystem::UpdateExpressionTransition(float DeltaTime)
@@ -446,22 +754,11 @@ void UDeepTreeEchoExpressionSystem::UpdateExpressionTransition(float DeltaTime)
         // Smooth step for more natural transitions
         float SmoothAlpha = FMath::SmoothStep(0.0f, 1.0f, ExpressionTransitionProgress);
 
-        // Interpolate morph targets
-        FDeepTreeEchoMorphTargets BaseMorphTargets;
-        if (ExpressionPresets.Contains(CurrentExpressionState))
-        {
-            BaseMorphTargets = ExpressionPresets[CurrentExpressionState].MorphTargets;
-        }
-        
-        CurrentMorphTargets = FDeepTreeEchoMorphTargets::Lerp(BaseMorphTargets, TargetMorphTargets, SmoothAlpha);
+        // Interpolate the expression layer from where the transition started
+        ExpressionMorphTargets = FDeepTreeEchoMorphTargets::Lerp(TransitionStartMorphTargets, TargetMorphTargets, SmoothAlpha);
 
         // Interpolate emissive
-        float BaseEmissive = 1.0f;
-        if (ExpressionPresets.Contains(CurrentExpressionState))
-        {
-            BaseEmissive = ExpressionPresets[CurrentExpressionState].EmissiveIntensity;
-        }
-        CurrentEmissiveIntensity = FMath::Lerp(BaseEmissive, TargetEmissiveIntensity, SmoothAlpha);
+        CurrentEmissiveIntensity = FMath::Lerp(TransitionStartEmissive, TargetEmissiveIntensity, SmoothAlpha);
 
         if (ExpressionTransitionProgress >= 1.0f)
         {
@@ -474,10 +771,6 @@ void UDeepTreeEchoExpressionSystem::UpdateProceduralBlinking(float DeltaTime)
 {
     if (!bBlinkingEnabled)
         return;
-
-    // Reset procedural eye close values
-    ProceduralMorphTargets.EyeCloseL = 0.0f;
-    ProceduralMorphTargets.EyeCloseR = 0.0f;
 
     if (bIsBlinking)
     {
@@ -709,9 +1002,9 @@ void UDeepTreeEchoExpressionSystem::SetSpeakingAmplitude(float Amplitude)
 {
     CurrentSpeakingAmplitude = FMath::Clamp(Amplitude, 0.0f, 1.0f);
     
-    // Apply amplitude to mouth open
-    ProceduralMorphTargets.MouthOpen = CurrentSpeakingAmplitude * 0.5f;
-    ProceduralMorphTargets.LipPart = CurrentSpeakingAmplitude * 0.3f;
+    // Apply amplitude of the real speech audio to the mouth
+    SpeechMorphTargets.MouthOpen = CurrentSpeakingAmplitude * 0.5f;
+    SpeechMorphTargets.LipPart = CurrentSpeakingAmplitude * 0.3f;
 }
 
 void UDeepTreeEchoExpressionSystem::SetViseme(const FName& VisemeName, float Weight)
@@ -720,23 +1013,23 @@ void UDeepTreeEchoExpressionSystem::SetViseme(const FName& VisemeName, float Wei
     
     if (VisemeName == TEXT("AA") || VisemeName == TEXT("ah"))
     {
-        ProceduralMorphTargets.VisemeAA = Weight;
-        ProceduralMorphTargets.MouthOpen = Weight * 0.6f;
+        SpeechMorphTargets.VisemeAA = Weight;
+        SpeechMorphTargets.MouthOpen = Weight * 0.6f;
     }
     else if (VisemeName == TEXT("EE") || VisemeName == TEXT("ee"))
     {
-        ProceduralMorphTargets.VisemeEE = Weight;
-        ProceduralMorphTargets.MouthWide = Weight * 0.4f;
+        SpeechMorphTargets.VisemeEE = Weight;
+        SpeechMorphTargets.MouthWide = Weight * 0.4f;
     }
     else if (VisemeName == TEXT("OH") || VisemeName == TEXT("oh"))
     {
-        ProceduralMorphTargets.VisemeOH = Weight;
-        ProceduralMorphTargets.MouthOpen = Weight * 0.5f;
+        SpeechMorphTargets.VisemeOH = Weight;
+        SpeechMorphTargets.MouthOpen = Weight * 0.5f;
     }
     else if (VisemeName == TEXT("OO") || VisemeName == TEXT("oo"))
     {
-        ProceduralMorphTargets.VisemeOO = Weight;
-        ProceduralMorphTargets.LipPucker = Weight * 0.5f;
+        SpeechMorphTargets.VisemeOO = Weight;
+        SpeechMorphTargets.LipPucker = Weight * 0.5f;
     }
 }
 
@@ -760,18 +1053,11 @@ void UDeepTreeEchoExpressionSystem::PulseEmissives(float Duration, float PeakInt
 
 void UDeepTreeEchoExpressionSystem::OnEchobeatsStep(int32 StepNumber)
 {
-    // Find the expression hint for this step
-    for (const FEchobeatsStep& Step : EchobeatsSteps)
-    {
-        if (Step.StepNumber == StepNumber)
-        {
-            SetExpressionState(Step.ExpressionHint, 0.2f);
-            
-            UE_LOG(LogTemp, Log, TEXT("Echobeats step %d (%s) -> Expression: %d"),
-                StepNumber, *Step.CognitivePhase, (int32)Step.ExpressionHint);
-            return;
-        }
-    }
+    // Cadence record only: the 12-step clock never selects an expression
+    CurrentEchobeatsStep.StepNumber = StepNumber;
+    CurrentEchobeatsStep.CognitivePhase = GetEchobeatsPhaseName(StepNumber);
+
+    UE_LOG(LogTemp, Verbose, TEXT("Echobeats step %d (%s) recorded"), StepNumber, *CurrentEchobeatsStep.CognitivePhase);
 }
 
 void UDeepTreeEchoExpressionSystem::ApplyToSkeletalMesh(USkeletalMeshComponent* TargetMesh)

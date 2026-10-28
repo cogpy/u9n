@@ -2,12 +2,67 @@
 // Implementation of Unreal Engine avatar cognitive integration
 
 #include "UnrealAvatarCognition.h"
+#include "../Model/EchoCharacterReaction.h"
+#include "../Model/EchoModelClient.h"
+#include "Dom/JsonObject.h"
 #include "Math/UnrealMathUtility.h"
+
+namespace
+{
+    /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
+    template <typename TEnum>
+    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    {
+        const FString Trimmed = Name.TrimStartAndEnd();
+        const UEnum* Enum = StaticEnum<TEnum>();
+        if (Trimmed.IsEmpty() || !Enum)
+        {
+            return false;
+        }
+
+        // NumEnums() includes the generated _MAX entry
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            if (Enum->GetNameStringByIndex(Index).Equals(Trimmed, ESearchCase::IgnoreCase) ||
+                Enum->GetDisplayNameTextByIndex(Index).ToString().Equals(Trimmed, ESearchCase::IgnoreCase))
+            {
+                OutValue = static_cast<TEnum>(Enum->GetValueByIndex(Index));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** All names of an enum (without the generated _MAX). */
+    template <typename TEnum>
+    TArray<FString> ReactionEnumNames()
+    {
+        TArray<FString> Names;
+        if (const UEnum* Enum = StaticEnum<TEnum>())
+        {
+            for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+            {
+                Names.Add(Enum->GetNameStringByIndex(Index));
+            }
+        }
+        return Names;
+    }
+}
 
 UUnrealAvatarCognition::UUnrealAvatarCognition()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PostPhysics;
+
+    // Prompt template (model input): the model chooses the reaction, the slots carry the real state
+    ReactionPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent. Event: {trigger}.\n"
+        "Cognitive state: coherence {coherence}, entelechy (purposeful direction) {entelechy}, "
+        "4E cognition embodied {embodied}, embedded {embedded}, enacted {enacted}, extended {extended}; "
+        "latest relevance realization {relevance}; echobeat step {echobeat_step} of 12; sys6 step {sys6_step}. "
+        "You currently show: {current_emotion}.\n"
+        "Choose the emotion your face and body show now, from exactly this list: {emotions}. "
+        "Reply with JSON only: {\"emotion\": \"<one name from the list>\", \"intensity\": <number 0..1>}");
 }
 
 void UUnrealAvatarCognition::BeginPlay()
@@ -21,6 +76,40 @@ void UUnrealAvatarCognition::BeginPlay()
     State.E4State.Add(TEXT("Embedded"), 0.5f);
     State.E4State.Add(TEXT("Enacted"), 0.5f);
     State.E4State.Add(TEXT("Extended"), 0.5f);
+
+    // Resting body until the model chooses an emotion
+    ReactionBodySchema = GetEmotionBodySchema(EAvatarEmotionState::Neutral, 0.0f);
+    TargetBodySchema = ReactionBodySchema;
+    TargetFacialExpression = GetEmotionFacialExpression(EAvatarEmotionState::Neutral, 0.0f);
+    CoherenceAtLastRequest = State.CognitiveCoherence;
+
+    // The displayed emotion is chosen by the character model only
+    TWeakObjectPtr<UUnrealAvatarCognition> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UUnrealAvatarCognition* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
+}
+
+void UUnrealAvatarCognition::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    if (EchobeatsEngine)
+    {
+        EchobeatsEngine->OnStepChanged.RemoveDynamic(this, &UUnrealAvatarCognition::HandleEchobeatStepChanged);
+        EchobeatsEngine->OnRelevanceRealized.RemoveDynamic(this, &UUnrealAvatarCognition::HandleRelevanceRealized);
+        EchobeatsEngine->OnStreamActivated.RemoveDynamic(this, &UUnrealAvatarCognition::HandleStreamActivated);
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 void UUnrealAvatarCognition::TickComponent(float DeltaTime, ELevelTick TickType,
@@ -28,28 +117,18 @@ void UUnrealAvatarCognition::TickComponent(float DeltaTime, ELevelTick TickType,
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    if (!bEnableAutoExpression)
-    {
-        return;
-    }
-
-    // Update expression timer
+    // Postural/physiological tone from 4E state (never selects an emotion or facial expression)
     ExpressionTimer += DeltaTime;
-    float UpdateInterval = 1.0f / ExpressionUpdateRate;
+    const float UpdateInterval = 1.0f / FMath::Max(ExpressionUpdateRate, 1.0f);
 
     if (ExpressionTimer >= UpdateInterval)
     {
         ExpressionTimer -= UpdateInterval;
-
-        // Update expression from cognitive state
-        ComputeExpressionFromCognition();
         UpdateExpressionFromMappings();
     }
 
-    // Blend expression states
+    // Render: blend toward the model-chosen targets and apply
     BlendExpressionStates(DeltaTime);
-
-    // Apply expression to avatar
     ApplyExpressionToAvatar();
 
     // Handle emotion blending
@@ -59,8 +138,13 @@ void UUnrealAvatarCognition::TickComponent(float DeltaTime, ELevelTick TickType,
         if (EmotionBlendTimer <= 0.0f)
         {
             EmotionBlendTimer = 0.0f;
+            const EAvatarEmotionState OldState = State.EmotionState;
             State.EmotionState = TargetEmotionState;
             State.EmotionIntensity = TargetEmotionIntensity;
+            if (OldState != State.EmotionState)
+            {
+                OnEmotionStateChanged.Broadcast(OldState, State.EmotionState);
+            }
         }
         else
         {
@@ -155,7 +239,8 @@ void UUnrealAvatarCognition::SetEmotionState(EAvatarEmotionState NewState, float
 
         // Update facial expression for new emotion
         TargetFacialExpression = GetEmotionFacialExpression(NewState, State.EmotionIntensity);
-        TargetBodySchema = GetEmotionBodySchema(NewState, State.EmotionIntensity);
+        ReactionBodySchema = GetEmotionBodySchema(NewState, State.EmotionIntensity);
+        TargetBodySchema = ReactionBodySchema;
     }
 }
 
@@ -167,8 +252,9 @@ void UUnrealAvatarCognition::BlendToEmotionState(EAvatarEmotionState TargetState
     EmotionTransitionDuration = BlendTime;
 
     // Set target expressions
-    TargetFacialExpression = GetEmotionFacialExpression(TargetState, TargetIntensity);
-    TargetBodySchema = GetEmotionBodySchema(TargetState, TargetIntensity);
+    TargetFacialExpression = GetEmotionFacialExpression(TargetState, TargetEmotionIntensity);
+    ReactionBodySchema = GetEmotionBodySchema(TargetState, TargetEmotionIntensity);
+    TargetBodySchema = ReactionBodySchema;
 }
 
 EAvatarEmotionState UUnrealAvatarCognition::GetEmotionState() const
@@ -189,6 +275,7 @@ void UUnrealAvatarCognition::UpdateFacialExpression(const FFacialExpressionState
 
 void UUnrealAvatarCognition::UpdateBodySchema(const FAvatarBodySchema& NewSchema)
 {
+    ReactionBodySchema = NewSchema;
     TargetBodySchema = NewSchema;
     OnExpressionUpdated.Broadcast(EAvatarExpressionChannel::Body);
 }
@@ -215,9 +302,6 @@ void UUnrealAvatarCognition::ProcessEchobeatsState(const FEchobeatsFullState& Ec
     State.CurrentEchobeatStep = EchobeatsState.CurrentStep;
     State.CognitiveCoherence = EchobeatsState.OverallCoherence;
 
-    // Map echobeats state to emotion
-    ComputeEmotionFromCognition();
-
     // Update 4E state based on stream activations
     for (const FCognitiveStreamState& StreamState : EchobeatsState.StreamStates)
     {
@@ -236,6 +320,15 @@ void UUnrealAvatarCognition::ProcessEchobeatsState(const FEchobeatsFullState& Ec
     }
 
     OnCognitiveStateChanged.Broadcast(TEXT("EchobeatsStep"), (float)EchobeatsState.CurrentStep);
+
+    // A large coherence shift is a cognition event: ask the model how the character reacts
+    if (bRequestReactionOnCognitiveEvents &&
+        FMath::Abs(State.CognitiveCoherence - CoherenceAtLastRequest) >= CoherenceShiftReactionThreshold &&
+        CanRequestReaction())
+    {
+        RequestModelReaction(FString::Printf(TEXT("cognitive coherence shifted from %.2f to %.2f"),
+            CoherenceAtLastRequest, State.CognitiveCoherence));
+    }
 }
 
 void UUnrealAvatarCognition::ProcessSys6State(const FSys6FullState& Sys6State)
@@ -258,39 +351,28 @@ void UUnrealAvatarCognition::Update4EState(const TMap<FString, float>& E4Values)
     }
 }
 
-void UUnrealAvatarCognition::ComputeExpressionFromCognition()
+bool UUnrealAvatarCognition::ComputeExpressionFromCognition()
 {
-    // Compute emotion from cognitive state
-    ComputeEmotionFromCognition();
-
-    // Get target expressions for current emotion
-    TargetFacialExpression = GetEmotionFacialExpression(State.EmotionState, State.EmotionIntensity);
-    TargetBodySchema = GetEmotionBodySchema(State.EmotionState, State.EmotionIntensity);
-
-    // Modulate based on 4E state
-    float* Embodied = State.E4State.Find(TEXT("Embodied"));
-    float* Enacted = State.E4State.Find(TEXT("Enacted"));
-
-    if (Embodied)
-    {
-        TargetBodySchema.ShoulderTension *= *Embodied;
-        TargetBodySchema.BreathingDepth = FMath::Lerp(0.3f, 0.8f, *Embodied);
-    }
-
-    if (Enacted)
-    {
-        TargetBodySchema.HandExpressiveness = FMath::Lerp(0.1f, 0.9f, *Enacted);
-    }
-
-    // Modulate based on coherence
-    TargetFacialExpression.EyeOpenness = FMath::Lerp(0.5f, 0.9f, State.CognitiveCoherence);
-
-    // Modulate based on entelechy
-    TargetBodySchema.SpineCurvature = FMath::Lerp(0.3f, 0.0f, State.EntelechyLevel);
+    // The expression is the model's choice; this asks for it with the real cognitive data
+    return RequestModelReaction(TEXT("an explicit check-in on your current cognitive state"));
 }
 
 void UUnrealAvatarCognition::UpdateExpressionFromMappings()
 {
+    // Start from the body schema of the model-chosen emotion, then apply 4E postural tone
+    TargetBodySchema = ReactionBodySchema;
+
+    if (const float* Embodied = State.E4State.Find(TEXT("Embodied")))
+    {
+        TargetBodySchema.ShoulderTension *= *Embodied;
+        TargetBodySchema.BreathingDepth = FMath::Lerp(0.3f, 0.8f, *Embodied);
+    }
+    if (const float* Enacted = State.E4State.Find(TEXT("Enacted")))
+    {
+        TargetBodySchema.HandExpressiveness = FMath::Lerp(0.1f, 0.9f, *Enacted);
+    }
+    TargetBodySchema.SpineCurvature = FMath::Lerp(0.3f, 0.0f, State.EntelechyLevel);
+
     for (const FCognitiveExpressionMapping& Mapping : ExpressionMappings)
     {
         float CognitiveValue = 0.0f;
@@ -322,12 +404,9 @@ void UUnrealAvatarCognition::UpdateExpressionFromMappings()
         // Apply mapping weight
         float MappedValue = CognitiveValue * Mapping.MappingWeight;
 
-        // Apply to expression channel
+        // Apply to body-tone channels. Facial expression is not driven by cognition values.
         switch (Mapping.ExpressionChannel)
         {
-        case EAvatarExpressionChannel::Facial:
-            TargetFacialExpression.EyeOpenness = FMath::Lerp(TargetFacialExpression.EyeOpenness, MappedValue, 0.5f);
-            break;
         case EAvatarExpressionChannel::Body:
             TargetBodySchema.ShoulderTension = FMath::Lerp(TargetBodySchema.ShoulderTension, MappedValue, 0.5f);
             break;
@@ -389,57 +468,6 @@ void UUnrealAvatarCognition::ApplyExpressionToAvatar()
 
     // Body schema would be applied through animation blueprint parameters
     // This is a placeholder for the actual implementation
-}
-
-void UUnrealAvatarCognition::ComputeEmotionFromCognition()
-{
-    // Compute emotion based on cognitive state
-    float Coherence = State.CognitiveCoherence;
-    float Entelechy = State.EntelechyLevel;
-
-    float* Embodied = State.E4State.Find(TEXT("Embodied"));
-    float* Enacted = State.E4State.Find(TEXT("Enacted"));
-
-    // High coherence + high entelechy = Determination
-    if (Coherence > 0.8f && Entelechy > 0.7f)
-    {
-        if (State.EmotionState != EAvatarEmotionState::Determination)
-        {
-            BlendToEmotionState(EAvatarEmotionState::Determination, 0.7f, 0.5f);
-        }
-    }
-    // High coherence + moderate entelechy = Focus
-    else if (Coherence > 0.7f && Entelechy > 0.5f)
-    {
-        if (State.EmotionState != EAvatarEmotionState::Focus)
-        {
-            BlendToEmotionState(EAvatarEmotionState::Focus, 0.6f, 0.5f);
-        }
-    }
-    // High enacted = Curiosity
-    else if (Enacted && *Enacted > 0.7f)
-    {
-        if (State.EmotionState != EAvatarEmotionState::Curiosity)
-        {
-            BlendToEmotionState(EAvatarEmotionState::Curiosity, 0.65f, 0.5f);
-        }
-    }
-    // High embodied = Serenity
-    else if (Embodied && *Embodied > 0.7f)
-    {
-        if (State.EmotionState != EAvatarEmotionState::Serenity)
-        {
-            BlendToEmotionState(EAvatarEmotionState::Serenity, 0.5f, 0.5f);
-        }
-    }
-    // Low coherence = Contemplation
-    else if (Coherence < 0.4f)
-    {
-        if (State.EmotionState != EAvatarEmotionState::Contemplation)
-        {
-            BlendToEmotionState(EAvatarEmotionState::Contemplation, 0.4f, 0.5f);
-        }
-    }
 }
 
 FFacialExpressionState UUnrealAvatarCognition::GetEmotionFacialExpression(EAvatarEmotionState Emotion, float Intensity)
@@ -645,7 +673,7 @@ void UUnrealAvatarCognition::HandleEchobeatStepChanged(int32 OldStep, int32 NewS
 {
     State.CurrentEchobeatStep = NewStep;
 
-    // Get full echobeats state and process
+    // Record the full echobeats state (cadence; the step never selects an emotion)
     if (EchobeatsEngine)
     {
         ProcessEchobeatsState(EchobeatsEngine->GetFullState());
@@ -654,17 +682,154 @@ void UUnrealAvatarCognition::HandleEchobeatStepChanged(int32 OldStep, int32 NewS
 
 void UUnrealAvatarCognition::HandleRelevanceRealized(int32 Step, float RelevanceLevel)
 {
+    LastRelevanceLevel = RelevanceLevel;
+
     // Trigger relevance realization event
     OnRelevanceRealizationTriggered.Broadcast(RelevanceLevel);
 
-    // Potentially trigger emotion transition
-    if (RelevanceLevel > 0.8f)
+    // Significant relevance realization: ask the model how the character reacts
+    if (bRequestReactionOnCognitiveEvents && RelevanceLevel >= RelevanceReactionThreshold && CanRequestReaction())
     {
-        BlendToEmotionState(EAvatarEmotionState::Wonder, 0.7f, 0.3f);
+        RequestModelReaction(FString::Printf(TEXT("relevance realization at echobeat step %d with relevance %.2f"),
+            Step, RelevanceLevel));
     }
-    else if (RelevanceLevel > 0.6f)
+}
+
+// ========================================
+// MODEL REACTIONS
+// ========================================
+
+bool UUnrealAvatarCognition::CanRequestReaction() const
+{
+    if (bReactionRequestPending)
     {
-        BlendToEmotionState(EAvatarEmotionState::Curiosity, 0.6f, 0.4f);
+        return false;
+    }
+    const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    return Now - LastReactionRequestTime >= MinSecondsBetweenReactionRequests;
+}
+
+FString UUnrealAvatarCognition::GetReactionCharacterNameResolved() const
+{
+    if (!ReactionCharacterName.IsEmpty())
+    {
+        return ReactionCharacterName;
+    }
+    return GetOwner() ? GetOwner()->GetName() : FString(TEXT("Deep Tree Echo"));
+}
+
+FString UUnrealAvatarCognition::BuildReactionPrompt(const FString& Trigger) const
+{
+    auto E4 = [this](const TCHAR* Key) -> FString
+    {
+        const float* Value = State.E4State.Find(Key);
+        return Value ? FString::Printf(TEXT("%.2f"), *Value) : FString(TEXT("(unknown)"));
+    };
+
+    const UEnum* EmotionEnum = StaticEnum<EAvatarEmotionState>();
+    const FString CurrentEmotion = EmotionEnum
+        ? EmotionEnum->GetNameStringByValue(static_cast<int64>(State.EmotionState))
+        : FString(TEXT("(unknown)"));
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetReactionCharacterNameResolved());
+    Slots.Add(TEXT("trigger"), Trigger);
+    Slots.Add(TEXT("coherence"), FString::Printf(TEXT("%.2f"), State.CognitiveCoherence));
+    Slots.Add(TEXT("entelechy"), FString::Printf(TEXT("%.2f"), State.EntelechyLevel));
+    Slots.Add(TEXT("embodied"), E4(TEXT("Embodied")));
+    Slots.Add(TEXT("embedded"), E4(TEXT("Embedded")));
+    Slots.Add(TEXT("enacted"), E4(TEXT("Enacted")));
+    Slots.Add(TEXT("extended"), E4(TEXT("Extended")));
+    Slots.Add(TEXT("relevance"), FString::Printf(TEXT("%.2f"), LastRelevanceLevel));
+    Slots.Add(TEXT("echobeat_step"), FString::FromInt(State.CurrentEchobeatStep));
+    Slots.Add(TEXT("sys6_step"), FString::FromInt(State.CurrentSys6Step));
+    Slots.Add(TEXT("current_emotion"), FString::Printf(TEXT("%s at intensity %.2f"), *CurrentEmotion, State.EmotionIntensity));
+    Slots.Add(TEXT("emotions"), FString::Join(ReactionEnumNames<EAvatarEmotionState>(), TEXT(", ")));
+    return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
+}
+
+bool UUnrealAvatarCognition::RequestModelReaction(const FString& Trigger)
+{
+    if (bReactionRequestPending)
+    {
+        return false;
+    }
+
+    bReactionRequestPending = true;
+    LastReactionRequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    CoherenceAtLastRequest = State.CognitiveCoherence;
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), BuildReactionPrompt(Trigger)));
+
+    TWeakObjectPtr<UUnrealAvatarCognition> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (UUnrealAvatarCognition* Self = WeakThis.Get())
+            {
+                Self->HandleModelReactionReply(bSuccess, TextOrError);
+            }
+        }), 0.7f);
+    return true;
+}
+
+void UUnrealAvatarCognition::HandleModelReactionReply(bool bSuccess, const FString& TextOrError)
+{
+    bReactionRequestPending = false;
+
+    // On any failure the avatar stays as it is; the error is a system event only
+    if (!bSuccess)
+    {
+        LastReactionError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("UnrealAvatarCognition: no model reaction: %s"), *TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString EmotionName;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("emotion"), EmotionName) ||
+        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
+    {
+        LastReactionError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("UnrealAvatarCognition: %s"), *LastReactionError);
+        return;
+    }
+
+    EAvatarEmotionState Emotion;
+    if (!ParseReactionEnum(EmotionName, Emotion))
+    {
+        LastReactionError = FString::Printf(TEXT("model chose an emotion outside the offered list: %s"), *EmotionName);
+        UE_LOG(LogTemp, Error, TEXT("UnrealAvatarCognition: %s"), *LastReactionError);
+        return;
+    }
+
+    LastReactionError.Reset();
+
+    // Publish the model's reaction; every subscriber (including this component) renders it
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = GetReactionCharacterNameResolved();
+    Reaction.Expression = StaticEnum<EAvatarEmotionState>()->GetNameStringByValue(static_cast<int64>(Emotion));
+    Reaction.Intensity = FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f);
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+}
+
+void UUnrealAvatarCognition::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    // Render the model-chosen emotion; empty or unknown names leave the avatar unchanged
+    EAvatarEmotionState Emotion;
+    if (ParseReactionEnum(Reaction.Expression, Emotion))
+    {
+        BlendToEmotionState(Emotion, FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f), 0.5f);
+        OnExpressionUpdated.Broadcast(EAvatarExpressionChannel::Facial);
     }
 }
 
