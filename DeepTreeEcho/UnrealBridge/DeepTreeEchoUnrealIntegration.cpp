@@ -13,6 +13,18 @@ UDeepTreeEchoUnrealIntegration::UDeepTreeEchoUnrealIntegration()
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
 
+    // Insight prompt templates (the two insight forms the bridge used to word itself)
+    InsightPromptTemplates.Add(TEXT("entity_pattern"),
+        TEXT("These {entry_count} diary entries share a {valence} emotional valence, and {entities} recur in at least half of them ")
+        TEXT("(pattern confidence {confidence}).\nEntries:\n{entries}\n")
+        TEXT("Write one short first-person insight (one or two sentences) about what connects you to {entities} in these moments. ")
+        TEXT("Reply with the insight text only."));
+    InsightPromptTemplates.Add(TEXT("emotional_pattern"),
+        TEXT("These {entry_count} diary entries share a {valence} emotional valence, with no single recurring subject ")
+        TEXT("(pattern confidence {confidence}).\nEntries:\n{entries}\n")
+        TEXT("Write one short first-person insight (one or two sentences) about this recurring emotional pattern. ")
+        TEXT("Reply with the insight text only."));
+
     // Initialize proprioceptive state (6 DOF)
     ProprioceptiveState.SetNum(6);
     for (int i = 0; i < 6; i++)
@@ -423,19 +435,58 @@ void UDeepTreeEchoUnrealIntegration::RequestInsightText(const FInsightEntry& Pat
             Entry.Reflection.IsEmpty() ? TEXT("") : TEXT(" | reflection: "), *Entry.Reflection);
     }
 
+    // Pattern router: recurring entities vs a purely emotional pattern picks the template.
+    const FString TemplateKey = Pattern.SupportingPatterns.Num() > 0 ? TEXT("entity_pattern") : TEXT("emotional_pattern");
+    const FString* Template = InsightPromptTemplates.Find(TemplateKey);
+    if (!Template || Template->IsEmpty())
+    {
+        RequestedInsightGroupSizes.Remove(GroupKey);
+        const FString Error = FString::Printf(TEXT("no insight prompt template '%s'"), *TemplateKey);
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealIntegration: %s"), *Error);
+        OnInsightFailed.Broadcast(Error);
+        return;
+    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("valence"), GroupKey);
+    Slots.Add(TEXT("entities"), FString::Join(Pattern.SupportingPatterns, TEXT(", ")));
+    Slots.Add(TEXT("entry_count"), FString::FromInt(RelevantEntries.Num()));
+    Slots.Add(TEXT("entries"), EntriesText);
+    Slots.Add(TEXT("confidence"), FString::Printf(TEXT("%.2f"), Pattern.Confidence));
+
     TArray<FEchoModelMessage> Messages;
     Messages.Add(FEchoModelMessage(TEXT("system"), FString::Printf(
-        TEXT("You are %s, an embodied AI reflecting on your own diary. ")
-        TEXT("Write one short first-person insight (one or two sentences) about the recurring pattern ")
-        TEXT("in these entries. Reply with the insight text only."), *InsightCharacterName)));
-    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
-        TEXT("Emotional valence of these entries: %s\nEntities recurring in at least half of them: %s\nEntries:\n%s"),
-        *GroupKey,
-        Pattern.SupportingPatterns.Num() > 0 ? *FString::Join(Pattern.SupportingPatterns, TEXT(", ")) : TEXT("(none)"),
-        *EntriesText)));
+        TEXT("You are %s, an embodied AI reflecting on your own diary."), *InsightCharacterName)));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(*Template, Slots)));
 
     UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateUObject(
         this, &UDeepTreeEchoUnrealIntegration::HandleInsightText, Pattern, GroupKey, GroupSize));
+}
+
+bool UDeepTreeEchoUnrealIntegration::GenerateInsightFromPatterns(const TArray<FDiaryEntry>& RelevantEntries)
+{
+    const FInsightEntry Pattern = ComputeInsightPattern(RelevantEntries);
+    if (RelevantEntries.Num() == 0 || Pattern.Confidence <= 0.5f)
+    {
+        return false;
+    }
+    // Label the group by its most common valence label (model input only).
+    TMap<FString, int32> LabelCounts;
+    for (const FDiaryEntry& Entry : RelevantEntries)
+    {
+        LabelCounts.FindOrAdd(Entry.EmotionalValence)++;
+    }
+    FString GroupKey;
+    int32 Best = 0;
+    for (const auto& Pair : LabelCounts)
+    {
+        if (Pair.Value > Best)
+        {
+            Best = Pair.Value;
+            GroupKey = Pair.Key;
+        }
+    }
+    RequestInsightText(Pattern, RelevantEntries, GroupKey.IsEmpty() ? FString(TEXT("unlabelled")) : GroupKey, RelevantEntries.Num());
+    return true;
 }
 
 void UDeepTreeEchoUnrealIntegration::HandleInsightText(bool bSuccess, const FString& TextOrError,

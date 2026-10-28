@@ -342,6 +342,23 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Insights")
     FString InsightCharacterName = TEXT("Deep Tree Echo");
 
+    /**
+     * Insight prompt templates: "entity_pattern" (entities recur in at least half of the
+     * entries) and "emotional_pattern" (no recurring entity; the shared valence is the pattern).
+     * Slots: {valence}, {entities}, {entry_count}, {entries}, {confidence}. The model writes the
+     * insight text.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Insights", meta = (MultiLine = true))
+    TMap<FString, FString> InsightPromptTemplates;
+
+    /**
+     * Blueprint-compatible: computes the pattern of RelevantEntries and asks the model to word
+     * the insight. Returns false (nothing requested) when the entries show no confident pattern;
+     * the insight arrives via OnInsightDiscovered or OnInsightFailed.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Insights")
+    bool GenerateInsightFromPatterns(const TArray<FDiaryEntry>& RelevantEntries);
+
     /** Cultivate wisdom from insights */
     UFUNCTION(BlueprintCallable, Category = "Wisdom")
     void CultivateWisdom();
