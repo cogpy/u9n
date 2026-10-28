@@ -332,6 +332,16 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     float ReflectionInterval = 30.0f;
 
+    /**
+     * Meta-reflection prompt templates, one per self-awareness level that reflects (pattern
+     * analysis, meta-cognitive, recursive modeling, transcendent awareness). Each is an
+     * instruction to the model filled with that level's real measurements; the model writes the
+     * reflection. Slots: {pattern_count}, {patterns}, {level1_confidence}, {assessment},
+     * {recursive_depth}, {self_images}, {anomalies}, {cycle_count}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (MultiLine = true))
+    TMap<ESelfAwarenessLevel, FString> MetaReflectionPromptTemplates;
+
     // ========================================
     // EVENTS
     // ========================================
@@ -519,6 +529,8 @@ protected:
 
     FComponentObservation ObserveComponent(UActorComponent* Component);
     FString DescribeSelfImagesForModel() const;
+    void InitializeMetaReflectionTemplates();
+    static const TCHAR* ReflectionField(ESelfAwarenessLevel Level);
     void HandleMetaReflectionReply(bool bSuccess, const FString& TextOrError);
     FBehavioralPattern AnalyzePatternFromObservations(const TArray<FComponentObservation>& Observations);
 

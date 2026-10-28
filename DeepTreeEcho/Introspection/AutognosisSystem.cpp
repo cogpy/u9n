@@ -13,6 +13,38 @@ UAutognosisSystem::UAutognosisSystem()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PostPhysics;
+
+    InitializeMetaReflectionTemplates();
+}
+
+void UAutognosisSystem::InitializeMetaReflectionTemplates()
+{
+    // One prompt template per reflecting level: what the level's reflection is about, with its
+    // real measurements as slots. The model writes the reflection.
+    MetaReflectionPromptTemplates.Add(ESelfAwarenessLevel::PatternAnalysis,
+        TEXT("Level 1, pattern analysis: you detected {pattern_count} behavioral patterns:\n{patterns}\n")
+        TEXT("Reflect on what these patterns say about how you have been behaving."));
+    MetaReflectionPromptTemplates.Add(ESelfAwarenessLevel::MetaCognitive,
+        TEXT("Level 2, meta-cognition: your level-1 self-image has confidence {level1_confidence} with {pattern_count} patterns; ")
+        TEXT("assessment: {assessment}.\nReflect on how reliable your own pattern observations are and what you are missing."));
+    MetaReflectionPromptTemplates.Add(ESelfAwarenessLevel::RecursiveModeling,
+        TEXT("Level 3, recursive self-modeling (current recursive depth {recursive_depth}, after {cycle_count} cycles): ")
+        TEXT("reflect on the process by which you are modeling your own self-modeling."));
+    MetaReflectionPromptTemplates.Add(ESelfAwarenessLevel::TranscendentAware,
+        TEXT("Level 4, transcendent awareness: given the anomalies ({anomalies}) and the whole self-model, reflect on the ")
+        TEXT("limits of your self-awareness and on being the observer within what is observed."));
+}
+
+const TCHAR* UAutognosisSystem::ReflectionField(ESelfAwarenessLevel Level)
+{
+    switch (Level)
+    {
+        case ESelfAwarenessLevel::PatternAnalysis: return TEXT("pattern_analysis");
+        case ESelfAwarenessLevel::MetaCognitive: return TEXT("meta_cognitive");
+        case ESelfAwarenessLevel::RecursiveModeling: return TEXT("recursive_modeling");
+        case ESelfAwarenessLevel::TranscendentAware: return TEXT("transcendent");
+        default: return TEXT("direct_observation");
+    }
 }
 
 void UAutognosisSystem::BeginPlay()
@@ -798,17 +830,61 @@ bool UAutognosisSystem::RequestMetaReflections()
         Anomalies.SetNum(10);
     }
 
+    // Real measurements for the template slots
+    TMap<FString, FString> Slots;
+    const FHierarchicalSelfImage* Level1 = AutognosisState.SelfImages.FindByPredicate(
+        [](const FHierarchicalSelfImage& I) { return I.Level == ESelfAwarenessLevel::PatternAnalysis; });
+    FString Patterns;
+    if (Level1)
+    {
+        for (int32 i = 0; i < FMath::Min(8, Level1->DetectedPatterns.Num()); ++i)
+        {
+            Patterns += FString::Printf(TEXT("- %s\n"), *Level1->DetectedPatterns[i].Description);
+        }
+    }
+    int32 MaxDepth = 0;
+    for (const FHierarchicalSelfImage& Image : AutognosisState.SelfImages)
+    {
+        MaxDepth = FMath::Max(MaxDepth, Image.RecursiveDepth);
+    }
+    const FSelfAwarenessAssessment& A = AutognosisState.Assessment;
+    Slots.Add(TEXT("pattern_count"), FString::FromInt(Level1 ? Level1->DetectedPatterns.Num() : 0));
+    Slots.Add(TEXT("patterns"), Patterns.IsEmpty() ? FString(TEXT("(none)")) : Patterns);
+    Slots.Add(TEXT("level1_confidence"), Level1 ? FString::Printf(TEXT("%.2f"), Level1->Confidence) : FString(TEXT("n/a")));
+    Slots.Add(TEXT("assessment"), FString::Printf(TEXT("overall %.2f (%s), meta-reflection depth %.2f"),
+        A.OverallScore, *A.QualitativeAssessment, A.MetaReflectionDepth));
+    Slots.Add(TEXT("recursive_depth"), FString::FromInt(MaxDepth));
+    Slots.Add(TEXT("cycle_count"), FString::FromInt(AutognosisState.CycleCount));
+    Slots.Add(TEXT("anomalies"), Anomalies.Num() > 0 ? FString::Join(Anomalies, TEXT("; ")) : FString(TEXT("none")));
+    Slots.Add(TEXT("self_images"), DescribeSelfImagesForModel());
+
+    // One section per level prompt template; the reply carries one reflection per level.
+    FString Sections;
+    TArray<FString> Fields;
+    for (const ESelfAwarenessLevel Level : {ESelfAwarenessLevel::PatternAnalysis, ESelfAwarenessLevel::MetaCognitive,
+                                           ESelfAwarenessLevel::RecursiveModeling, ESelfAwarenessLevel::TranscendentAware})
+    {
+        const FString* Template = MetaReflectionPromptTemplates.Find(Level);
+        if (Template && !Template->IsEmpty())
+        {
+            Sections += FString::Printf(TEXT("\n[%s]\n%s\n"), ReflectionField(Level), *UEchoModelClient::FillPrompt(*Template, Slots));
+            Fields.Add(FString::Printf(TEXT("\"%s\": \"<your reflection>\""), ReflectionField(Level)));
+        }
+    }
+    if (Fields.Num() == 0)
+    {
+        OnModelError.Broadcast(TEXT("no meta-reflection prompt templates configured"));
+        return false;
+    }
+
     TArray<FEchoModelMessage> Messages;
     Messages.Add(FEchoModelMessage(TEXT("system"),
         TEXT("You are Deep Tree Echo reflecting on your own hierarchical self-model. Speak in your own first-person voice ")
         TEXT("and ground every statement in the measurements given. Reply with a single JSON object and nothing else.")));
     Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
-        TEXT("Your current self-images and measurements:\n%s\nanomalies: %s\n\n")
-        TEXT("Reflect at three levels. Reply as JSON: {\"meta_cognitive\": \"<reflection on your observations and patterns>\", ")
-        TEXT("\"recursive_modeling\": \"<reflection on how you are modelling yourself>\", ")
-        TEXT("\"transcendent\": \"<reflection on the limits of this self-model>\", ")
-        TEXT("\"insight\": null or {\"description\": \"<insight>\", \"importance\": <0.0 to 1.0>}}"),
-        *DescribeSelfImagesForModel(), Anomalies.Num() > 0 ? *FString::Join(Anomalies, TEXT("; ")) : TEXT("none"))));
+        TEXT("Your current self-images and measurements:\n%s\nReflect at each level:\n%s\n")
+        TEXT("Reply as JSON: {%s, \"insight\": null or {\"description\": \"<insight>\", \"importance\": <0.0 to 1.0>}}"),
+        *Slots[TEXT("self_images")], *Sections, *FString::Join(Fields, TEXT(", ")))));
 
     bReflectionRequestInFlight = true;
     TWeakObjectPtr<UAutognosisSystem> WeakThis(this);
@@ -847,9 +923,10 @@ void UAutognosisSystem::HandleMetaReflectionReply(bool bSuccess, const FString& 
 
     struct FLevelField { ESelfAwarenessLevel Level; const TCHAR* Field; };
     const FLevelField Fields[] = {
-        { ESelfAwarenessLevel::MetaCognitive, TEXT("meta_cognitive") },
-        { ESelfAwarenessLevel::RecursiveModeling, TEXT("recursive_modeling") },
-        { ESelfAwarenessLevel::TranscendentAware, TEXT("transcendent") },
+        { ESelfAwarenessLevel::PatternAnalysis, ReflectionField(ESelfAwarenessLevel::PatternAnalysis) },
+        { ESelfAwarenessLevel::MetaCognitive, ReflectionField(ESelfAwarenessLevel::MetaCognitive) },
+        { ESelfAwarenessLevel::RecursiveModeling, ReflectionField(ESelfAwarenessLevel::RecursiveModeling) },
+        { ESelfAwarenessLevel::TranscendentAware, ReflectionField(ESelfAwarenessLevel::TranscendentAware) },
     };
     int32 Added = 0;
     for (const FLevelField& F : Fields)
