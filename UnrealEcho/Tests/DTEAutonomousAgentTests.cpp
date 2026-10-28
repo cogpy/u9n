@@ -34,6 +34,7 @@
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
 #include "EchoCharacterReaction.h"
+#include "DTEAutonomousAgentTestReceiver.h"
 
 // Dependencies (for integration tests)
 #include "Core/DeepTreeEchoCore.h"
@@ -127,11 +128,8 @@ bool FVirtualCNS_ReflexArcTest::RunTest(const FString& Parameters)
              CNS->HasReflexArc(TEXT("TestReflex")));
 
     // Test manual fire
-    bool bFired = false;
-    CNS->OnReflexFired.AddLambda([&bFired](const FString&, const FControllerOutputCommand&)
-    {
-        bFired = true;
-    });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    CNS->OnReflexFired.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleReflexFired);
 
     // Advance reflex timer past refractory period
     for (FReflexArc& R : CNS->ReflexArcs)
@@ -144,7 +142,7 @@ bool FVirtualCNS_ReflexArcTest::RunTest(const FString& Parameters)
 
     CNS->FireReflex(TEXT("TestReflex"));
 
-    TestTrue(TEXT("Reflex should fire"), bFired);
+    TestTrue(TEXT("Reflex should fire"), Receiver->bReflexFired);
     TestTrue(TEXT("Motor command should be queued after reflex"),
              CNS->HasPendingMotorCommand());
 
@@ -183,18 +181,14 @@ bool FVirtualCNS_PathwayTierTest::RunTest(const FString& Parameters)
               CNS->GetActivePathwayTier(), ECNSPathwayTier::Cortical);
 
     // Set to spinal reflex
-    ECNSPathwayTier ChangedTo = ECNSPathwayTier::Cortical;
-    CNS->OnCNSPathwayChanged.AddLambda(
-        [&ChangedTo](ECNSPathwayTier /*Old*/, ECNSPathwayTier New)
-        {
-            ChangedTo = New;
-        });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    CNS->OnCNSPathwayChanged.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandlePathwayChanged);
 
     CNS->SetPathwayTier(ECNSPathwayTier::SpinalReflex);
     TestEqual(TEXT("Tier should be SpinalReflex after set"),
               CNS->GetActivePathwayTier(), ECNSPathwayTier::SpinalReflex);
     TestEqual(TEXT("Event should fire with SpinalReflex"),
-              ChangedTo, ECNSPathwayTier::SpinalReflex);
+              Receiver->LastPathwayTier, ECNSPathwayTier::SpinalReflex);
 
     // Elevate tier — should not downgrade
     CNS->SetPathwayTier(ECNSPathwayTier::Cortical);
@@ -228,14 +222,13 @@ bool FVirtualCNS_ProprioceptionTest::RunTest(const FString& Parameters)
     Snap.bIsGrounded   = true;
     Snap.Timestamp     = 1.0f;
 
-    bool bEventFired = false;
-    CNS->OnProprioceptiveUpdate.AddLambda(
-        [&bEventFired](const FProprioceptiveSnapshot&) { bEventFired = true; });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    CNS->OnProprioceptiveUpdate.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleProprioceptiveUpdate);
 
     CNS->UpdateProprioception(Snap);
 
     const FProprioceptiveSnapshot Retrieved = CNS->GetProprioceptiveSnapshot();
-    TestTrue(TEXT("Proprioceptive event should fire"), bEventFired);
+    TestTrue(TEXT("Proprioceptive event should fire"), Receiver->bProprioceptiveUpdated);
     TestEqual(TEXT("Location X should match"),
               Retrieved.WorldLocation.X, 100.0, 0.001);
     TestEqual(TEXT("Location Y should match"),
@@ -270,13 +263,12 @@ bool FVirtualCNS_ThreatTest::RunTest(const FString& Parameters)
     Threat.TimeToImpact     = 0.5f;
     Threat.SuggestedReflex  = TEXT("DodgeLeft");
 
-    bool bThreatEventFired = false;
-    CNS->OnThreatDetected.AddLambda(
-        [&bThreatEventFired](const FThreatSignal&) { bThreatEventFired = true; });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    CNS->OnThreatDetected.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleThreatDetected);
 
     CNS->SubmitThreatSignal(Threat);
 
-    TestTrue(TEXT("Threat event should fire"), bThreatEventFired);
+    TestTrue(TEXT("Threat event should fire"), Receiver->bThreatDetected);
 
     // A high threat should escalate the pathway tier
     TestTrue(TEXT("Pathway should not be Cortical under high threat"),
@@ -371,12 +363,11 @@ bool FAutoAgent_GoalLifecycleTest::RunTest(const FString& Parameters)
               AfterProgress[0].Progress, 0.5f, 0.001f);
 
     // Complete goal via progress = 1.0
-    bool bCompletedFired = false;
-    Agent->OnGoalCompleted.AddLambda(
-        [&bCompletedFired](const FCognitiveGoal&) { bCompletedFired = true; });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    Agent->OnGoalCompleted.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleGoalCompleted);
 
     Agent->SetGoalProgress(TEXT("G1"), 1.0f);
-    TestTrue(TEXT("OnGoalCompleted should fire"), bCompletedFired);
+    TestTrue(TEXT("OnGoalCompleted should fire"), Receiver->bGoalCompleted);
 
     const TArray<FCognitiveGoal> AfterComplete = Agent->GetActiveGoals();
     TestEqual(TEXT("No active goals after completion"), AfterComplete.Num(), 0);
@@ -567,12 +558,11 @@ bool FGaming_ComboTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Next action after A,A should be B"),
               GMS->GetNextComboAction(), TEXT("B"));
 
-    bool bComboFired = false;
-    GMS->OnComboExecuted.AddLambda(
-        [&bComboFired](const FString&, bool) { bComboFired = true; });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    GMS->OnComboExecuted.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleComboExecuted);
 
     GMS->AdvanceComboState(TEXT("B"));
-    TestTrue(TEXT("Combo should fire on completion"), bComboFired);
+    TestTrue(TEXT("Combo should fire on completion"), Receiver->bComboExecuted);
     TestTrue(TEXT("Next combo action should be empty after completion"),
              GMS->GetNextComboAction().IsEmpty());
 
@@ -672,12 +662,11 @@ bool FGaming_TimingWindowTest::RunTest(const FString& Parameters)
     Wnd.LatestTime   = 0.1f;
     Wnd.PerfectMultiplier = 3.0f;
 
-    bool bOpened = false;
-    GMS->OnTimingWindowOpened.AddLambda(
-        [&bOpened](const FTimingWindow&) { bOpened = true; });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    GMS->OnTimingWindowOpened.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleTimingWindowOpened);
 
     GMS->OpenTimingWindow(Wnd);
-    TestTrue(TEXT("TimingWindowOpened event should fire"), bOpened);
+    TestTrue(TEXT("TimingWindowOpened event should fire"), Receiver->bTimingWindowOpened);
 
     // At t=0 elapsed, window should be open
     const float Remaining = GMS->GetWindowRemainingTime(TEXT("Parry"));
@@ -769,9 +758,8 @@ bool FMetaHumanCNSBinding_ExpressionTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("MetaHumanCNSBinding should be created"), Binding);
     if (!Binding) { return false; }
 
-    bool bEventFired = false;
-    Binding->OnExpressionStateUpdated.AddLambda(
-        [&bEventFired](const FCognitiveExpressionState&) { bEventFired = true; });
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    Binding->OnExpressionStateUpdated.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleExpressionStateUpdated);
 
     FCognitiveExpressionState State;
     State.Valence   =  0.8f;  // happy
@@ -781,7 +769,7 @@ bool FMetaHumanCNSBinding_ExpressionTest::RunTest(const FString& Parameters)
 
     Binding->SetExpressionState(State);
 
-    TestTrue(TEXT("Expression update event should fire"), bEventFired);
+    TestTrue(TEXT("Expression update event should fire"), Receiver->bExpressionStateUpdated);
 
     const FCognitiveExpressionState Retrieved = Binding->GetExpressionState();
     TestEqual(TEXT("Valence should match"), Retrieved.Valence, 0.8f, 0.001f);
