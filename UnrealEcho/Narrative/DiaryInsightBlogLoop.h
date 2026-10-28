@@ -156,6 +156,31 @@ struct FNarrativeBlogPost
     TArray<FNarrativeInsight> SourceInsights;
 };
 
+/**
+ * Insight prompt template for one pattern the router can detect in the diary's measurements.
+ * The router picks the template; the model writes the insight.
+ */
+USTRUCT(BlueprintType)
+struct FNarrativeInsightPromptTemplate
+{
+    GENERATED_BODY()
+
+    /** Pattern key: "EmotionalVolatility", "SustainedPositive", "HighEnergy" or "StableEquilibrium". */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    FString Pattern;
+
+    /** Category recorded on the insight (a classification label). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
+    FString Category;
+
+    /**
+     * Instruction to the model. Slots: {entries}, {avg_valence}, {valence_variance},
+     * {avg_arousal}, {entry_count}, {category}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative", meta = (MultiLine = true))
+    FString PromptTemplate;
+};
+
 USTRUCT(BlueprintType)
 struct FNarrativeLoopConfig
 {
@@ -188,6 +213,30 @@ struct FNarrativeLoopConfig
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative")
     bool bAutoPublish = true;
+
+    // ===== Prompt templates (instructions to the model; the model writes every word) =====
+
+    /**
+     * Diary prompt. Slots: {window_seconds}, {measurements}, {mood}, {energy},
+     * {personality_notes}, {previous_entries}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative|Prompts", meta = (MultiLine = true))
+    FString DiaryPromptTemplate;
+
+    /** Insight prompts, one per detectable pattern. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative|Prompts")
+    TArray<FNarrativeInsightPromptTemplate> InsightPromptTemplates;
+
+    /**
+     * Blog prompt (title series form, introduction, one section per insight, closing).
+     * Slots: {insights}, {lead_category}, {insight_count}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative|Prompts", meta = (MultiLine = true))
+    FString BlogPromptTemplate;
+
+    /** Tags every post carries in addition to its insights' categories and the model's tags. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Narrative|Prompts")
+    TArray<FString> BlogBaseTags;
 };
 
 USTRUCT(BlueprintType)
@@ -349,8 +398,15 @@ protected:
     static FString DescribeObservation(const FNarrativeObservation& Average, int32 Count);
     FString BuildPersonaPrompt() const;
 
+    /** Fills Config's prompt templates when they are empty (editor values are kept). */
+    void InitializePromptTemplates();
+
+    /** Pattern router: picks the insight prompt template from the entries' measured state. */
+    const FNarrativeInsightPromptTemplate* SelectInsightTemplate(const TArray<const FNarrativeDiaryEntry*>& Entries,
+        TMap<FString, FString>& OutSlots) const;
+
     void HandleDiaryReply(bool bSuccess, const FString& TextOrError, int32 ConsumedObservations, FNarrativeObservation Average);
-    void HandleInsightReply(bool bSuccess, const FString& TextOrError, TArray<FGuid> SourceEntryIDs);
+    void HandleInsightReply(bool bSuccess, const FString& TextOrError, TArray<FGuid> SourceEntryIDs, FString Category);
     void HandleBlogReply(bool bSuccess, const FString& TextOrError, TArray<FNarrativeInsight> SourceInsights);
     void ReportFailure(ENarrativePhase Phase, const FString& Error);
 

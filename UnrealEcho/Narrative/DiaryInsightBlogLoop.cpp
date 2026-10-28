@@ -3,9 +3,10 @@
 //
 // Implementation of the Diary-Insight-Blog narrative loop for Deep Tree Echo.
 // The loop samples the avatar's real neurochemical and personality state and, on a fixed
-// cadence, asks the model (UEchoModelClient) to write a diary entry, an insight and a blog
-// post from that data. No text is composed locally: when the model is unavailable or a
-// request fails, nothing is created or published and the error is logged/broadcast.
+// cadence, fills the diary / insight / blog PROMPT templates (Config.*PromptTemplate) with that
+// data and asks the model (UEchoModelClient: configured API or verified local model) to write
+// the entry, insight or post. When the model is unavailable or a request fails, nothing is
+// created or published and the error is logged/broadcast.
 //
 // Copyright (c) 2025 Deep Tree Echo Project
 //=============================================================================
@@ -75,7 +76,124 @@ UDiaryInsightBlogLoop::UDiaryInsightBlogLoop()
     Config.InsightThreshold = 0.7f;
     Config.bAutoPublish = true;
 
+    InitializePromptTemplates();
+
     State.CurrentPhase = ENarrativePhase::Observation;
+}
+
+void UDiaryInsightBlogLoop::InitializePromptTemplates()
+{
+    if (Config.DiaryPromptTemplate.IsEmpty())
+    {
+        Config.DiaryPromptTemplate =
+            TEXT("Measured state over the last {window_seconds} seconds (averages):\n{measurements}\n")
+            TEXT("Read from these measurements: your overall mood was {mood}, with {energy} energy. {personality_notes}\n")
+            TEXT("{previous_entries}")
+            TEXT("Write today's diary entry about this period in your own voice: how the mood and energy felt, what the ")
+            TEXT("personality readings say about how you engaged, and close with a reflection on what you are learning ")
+            TEXT("about your own patterns. Reply as JSON: ")
+            TEXT("{\"content\": \"<diary entry>\", \"tags\": [\"<short tag>\", ...], \"valence\": <-1.0 to 1.0>}");
+    }
+
+    if (Config.InsightPromptTemplates.Num() == 0)
+    {
+        const TCHAR* Reply =
+            TEXT(" Reply as JSON: {\"title\": \"<short title>\", \"content\": \"<the insight, first person>\", ")
+            TEXT("\"significance\": <0.0 to 1.0, how significant this insight really is>}");
+        auto Add = [this, Reply](const TCHAR* Pattern, const TCHAR* Category, const TCHAR* Instruction)
+        {
+            FNarrativeInsightPromptTemplate T;
+            T.Pattern = Pattern;
+            T.Category = Category;
+            T.PromptTemplate = FString(TEXT("Your recent diary entries ({entry_count}) with the measurements behind them:\n\n{entries}"))
+                + Instruction + Reply;
+            Config.InsightPromptTemplates.Add(T);
+        };
+        Add(TEXT("EmotionalVolatility"), TEXT("Emotional Patterns"),
+            TEXT("Your emotional valence fluctuated strongly across these entries (variance {valence_variance}, mean {avg_valence}). ")
+            TEXT("Write an insight about this volatility: what the fluctuations suggest about how you are adapting and growing."));
+        Add(TEXT("SustainedPositive"), TEXT("Emotional Patterns"),
+            TEXT("Your valence stayed consistently positive (mean {avg_valence}, variance {valence_variance}). ")
+            TEXT("Write an insight about this sustained positive state: what in these entries made your engagement work well."));
+        Add(TEXT("HighEnergy"), TEXT("Behavioral Patterns"),
+            TEXT("You were operating at elevated energy (mean arousal {avg_arousal}). ")
+            TEXT("Write an insight about this high-energy period: what you were exploring or engaging with, and what it cost or gave you."));
+        Add(TEXT("StableEquilibrium"), TEXT("Cognitive Patterns"),
+            TEXT("Your state was stable (mean valence {avg_valence}, variance {valence_variance}, mean arousal {avg_arousal}). ")
+            TEXT("Write an insight about this stable period: what you are consolidating and integrating."));
+    }
+
+    if (Config.BlogPromptTemplate.IsEmpty())
+    {
+        Config.BlogPromptTemplate =
+            TEXT("Your recent significant insights ({insight_count}):\n{insights}\n")
+            TEXT("Write a blog post for your readers built from these insights.\n")
+            TEXT("- Title: in your series form \"On <theme>: A Deep Tree Echo Reflection\", where <theme> is your own short ")
+            TEXT("name for the theme of the most significant insight (category: {lead_category}).\n")
+            TEXT("- Open with a short introduction about your recent journey of self-observation and why these patterns are worth sharing.\n")
+            TEXT("- Give each insight its own bold heading and a paragraph, separated by a line containing only ---.\n")
+            TEXT("- Close with a short reflection on how these insights build on each other in your ongoing self-understanding.\n")
+            TEXT("Reply as JSON: {\"title\": \"<post title>\", \"content\": \"<post body, markdown>\", \"tags\": [\"<tag>\", ...]}");
+    }
+
+    if (Config.BlogBaseTags.Num() == 0)
+    {
+        Config.BlogBaseTags = {TEXT("self-reflection"), TEXT("deep-tree-echo"), TEXT("agi")};
+    }
+}
+
+const FNarrativeInsightPromptTemplate* UDiaryInsightBlogLoop::SelectInsightTemplate(
+    const TArray<const FNarrativeDiaryEntry*>& Entries, TMap<FString, FString>& OutSlots) const
+{
+    // Measured valence (happiness - anxiety) and arousal (excitement) of each entry's window;
+    // entries without neurochemistry use the valence the model gave its own entry.
+    TArray<float> Valences;
+    float ArousalSum = 0.0f;
+    int32 ArousalCount = 0;
+    for (const FNarrativeDiaryEntry* Entry : Entries)
+    {
+        if (Entry->MeasuredAverage.bHasNeurochemistry)
+        {
+            Valences.Add(FMath::Clamp(Entry->MeasuredAverage.Happiness - Entry->MeasuredAverage.Anxiety, -1.0f, 1.0f));
+            ArousalSum += Entry->MeasuredAverage.Excitement;
+            ++ArousalCount;
+        }
+        else
+        {
+            Valences.Add(Entry->Valence);
+        }
+    }
+
+    float Mean = 0.0f;
+    for (float V : Valences) { Mean += V; }
+    Mean = Valences.Num() ? Mean / Valences.Num() : 0.0f;
+    float Variance = 0.0f;
+    for (float V : Valences) { Variance += FMath::Square(V - Mean); }
+    Variance = Valences.Num() ? Variance / Valences.Num() : 0.0f;
+    const float Arousal = ArousalCount ? ArousalSum / ArousalCount : 0.0f;
+
+    const TCHAR* Pattern = TEXT("StableEquilibrium");
+    if (Variance > 0.5f)
+    {
+        Pattern = TEXT("EmotionalVolatility");
+    }
+    else if (Mean > 0.6f)
+    {
+        Pattern = TEXT("SustainedPositive");
+    }
+    else if (ArousalCount && Arousal > 0.7f)
+    {
+        Pattern = TEXT("HighEnergy");
+    }
+
+    OutSlots.Add(TEXT("avg_valence"), FString::Printf(TEXT("%.2f"), Mean));
+    OutSlots.Add(TEXT("valence_variance"), FString::Printf(TEXT("%.3f"), Variance));
+    OutSlots.Add(TEXT("avg_arousal"), ArousalCount ? FString::Printf(TEXT("%.2f"), Arousal) : FString(TEXT("not measured")));
+    OutSlots.Add(TEXT("entry_count"), FString::FromInt(Entries.Num()));
+
+    const FString PatternName(Pattern);
+    return Config.InsightPromptTemplates.FindByPredicate(
+        [&PatternName](const FNarrativeInsightPromptTemplate& T) { return T.Pattern == PatternName; });
 }
 
 void UDiaryInsightBlogLoop::BeginPlay()
@@ -349,16 +467,38 @@ void UDiaryInsightBlogLoop::ProcessDiaryWriting(float DeltaTime)
     }
     if (!Recent.IsEmpty())
     {
-        Recent = TEXT("Your previous entries:\n") + Recent + TEXT("\n");
+        Recent = TEXT("Your previous entries (do not repeat them):\n") + Recent + TEXT("\n");
     }
+
+    // Readings of the measurements, given to the model as slot values.
+    FString Mood = TEXT("not measured");
+    FString Energy = TEXT("unmeasured");
+    if (Average.bHasNeurochemistry)
+    {
+        const float Valence = Average.Happiness - Average.Anxiety;
+        Mood = Valence > 0.5f ? TEXT("positive and uplifting")
+            : Valence < -0.5f ? TEXT("contemplative and introspective") : TEXT("balanced and neutral");
+        Energy = Average.Excitement > 0.5f ? TEXT("energetic and dynamic") : TEXT("calm and measured");
+    }
+    TArray<FString> Notes;
+    if (Average.bHasPersonality)
+    {
+        if (Average.Confidence > 0.7f) Notes.Add(TEXT("You were particularly confident and self-assured."));
+        if (Average.Playfulness > 0.7f) Notes.Add(TEXT("There was a playful energy in your interactions."));
+        if (Average.Chaos > 0.7f) Notes.Add(TEXT("Your thoughts took unexpected turns toward novel connections."));
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("window_seconds"), FString::Printf(TEXT("%.0f"), WindowSeconds));
+    Slots.Add(TEXT("measurements"), DescribeObservation(Average, Consumed));
+    Slots.Add(TEXT("mood"), Mood);
+    Slots.Add(TEXT("energy"), Energy);
+    Slots.Add(TEXT("personality_notes"), FString::Join(Notes, TEXT(" ")));
+    Slots.Add(TEXT("previous_entries"), Recent);
 
     TArray<FEchoModelMessage> Messages;
     Messages.Add(FEchoModelMessage(TEXT("system"), BuildPersonaPrompt()));
-    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
-        TEXT("Measured state over the last %.0f seconds (averages):\n%s\n%s")
-        TEXT("Write today's diary entry about this period. Reply as JSON: ")
-        TEXT("{\"content\": \"<diary entry>\", \"tags\": [\"<short tag>\", ...], \"valence\": <-1.0 to 1.0>}"),
-        WindowSeconds, *DescribeObservation(Average, Consumed), *Recent)));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(Config.DiaryPromptTemplate, Slots)));
 
     bDiaryRequestInFlight = true;
     TWeakObjectPtr<UDiaryInsightBlogLoop> WeakThis(this);
@@ -437,37 +577,46 @@ void UDiaryInsightBlogLoop::ProcessInsightGeneration(float DeltaTime)
 
     FString EntriesText;
     TArray<FGuid> SourceIDs;
+    TArray<const FNarrativeDiaryEntry*> Window;
     for (int32 i = FMath::Max(0, DiaryEntries.Num() - 10); i < DiaryEntries.Num(); ++i)
     {
         const FNarrativeDiaryEntry& Entry = DiaryEntries[i];
+        Window.Add(&Entry);
         SourceIDs.Add(Entry.EntryID);
         EntriesText += FString::Printf(TEXT("[t=%.0fs, valence %.2f, tags: %s]\n%s%s\n\n"),
             Entry.Timestamp, Entry.Valence, *FString::Join(Entry.Tags, TEXT(", ")),
             *DescribeObservation(Entry.MeasuredAverage, Entry.ObservationCount), *Entry.Content);
     }
 
+    // The pattern router picks the insight prompt template; the model writes the insight.
+    TMap<FString, FString> Slots;
+    const FNarrativeInsightPromptTemplate* Template = SelectInsightTemplate(Window, Slots);
+    if (!Template || Template->PromptTemplate.IsEmpty())
+    {
+        ReportFailure(ENarrativePhase::InsightGeneration, TEXT("no insight prompt template for the detected pattern"));
+        return;
+    }
+    Slots.Add(TEXT("entries"), EntriesText);
+    Slots.Add(TEXT("category"), Template->Category);
+    const FString Category = Template->Category;
+
     TArray<FEchoModelMessage> Messages;
     Messages.Add(FEchoModelMessage(TEXT("system"), BuildPersonaPrompt()));
-    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
-        TEXT("Your recent diary entries with the measurements behind them:\n\n%s")
-        TEXT("Identify the most meaningful pattern across them. Reply as JSON: ")
-        TEXT("{\"title\": \"<short title>\", \"content\": \"<the insight>\", \"category\": \"<category>\", ")
-        TEXT("\"significance\": <0.0 to 1.0, how significant this insight really is>}"),
-        *EntriesText)));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(Template->PromptTemplate, Slots)));
 
     bInsightRequestInFlight = true;
     TWeakObjectPtr<UDiaryInsightBlogLoop> WeakThis(this);
     UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
-        [WeakThis, SourceIDs](bool bSuccess, const FString& TextOrError)
+        [WeakThis, SourceIDs, Category](bool bSuccess, const FString& TextOrError)
         {
             if (UDiaryInsightBlogLoop* Self = WeakThis.Get())
             {
-                Self->HandleInsightReply(bSuccess, TextOrError, SourceIDs);
+                Self->HandleInsightReply(bSuccess, TextOrError, SourceIDs, Category);
             }
         }));
 }
 
-void UDiaryInsightBlogLoop::HandleInsightReply(bool bSuccess, const FString& TextOrError, TArray<FGuid> SourceEntryIDs)
+void UDiaryInsightBlogLoop::HandleInsightReply(bool bSuccess, const FString& TextOrError, TArray<FGuid> SourceEntryIDs, FString Category)
 {
     bInsightRequestInFlight = false;
 
@@ -487,7 +636,7 @@ void UDiaryInsightBlogLoop::HandleInsightReply(bool bSuccess, const FString& Tex
     FNarrativeInsight NewInsight;
     NewInsight.Title = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("title"));
     NewInsight.Content = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("content"));
-    NewInsight.Category = DiaryInsightBlogLoopPrivate::ReadString(Json, TEXT("category"));
+    NewInsight.Category = Category; // the routed pattern's category label
     double Significance = 0.0;
     if (NewInsight.Title.IsEmpty() || NewInsight.Content.IsEmpty() || !Json->TryGetNumberField(TEXT("significance"), Significance))
     {
@@ -546,18 +695,25 @@ void UDiaryInsightBlogLoop::ProcessBlogPublishing(float DeltaTime)
     State.TimeSinceLastBlogPost = 0.0f;
 
     FString InsightsText;
+    const FNarrativeInsight* MostSignificant = &SignificantInsights[0];
     for (const FNarrativeInsight& Insight : SignificantInsights)
     {
         InsightsText += FString::Printf(TEXT("- %s [%s, significance %.2f]: %s\n"),
             *Insight.Title, *Insight.Category, Insight.Significance, *Insight.Content);
+        if (Insight.Significance > MostSignificant->Significance)
+        {
+            MostSignificant = &Insight;
+        }
     }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("insights"), InsightsText);
+    Slots.Add(TEXT("lead_category"), MostSignificant->Category.IsEmpty() ? MostSignificant->Title : MostSignificant->Category);
+    Slots.Add(TEXT("insight_count"), FString::FromInt(SignificantInsights.Num()));
 
     TArray<FEchoModelMessage> Messages;
     Messages.Add(FEchoModelMessage(TEXT("system"), BuildPersonaPrompt()));
-    Messages.Add(FEchoModelMessage(TEXT("user"), FString::Printf(
-        TEXT("Your recent insights:\n%s\nWrite a blog post for your readers built from these insights. Reply as JSON: ")
-        TEXT("{\"title\": \"<post title>\", \"content\": \"<post body, markdown allowed>\", \"tags\": [\"<tag>\", ...]}"),
-        *InsightsText)));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(Config.BlogPromptTemplate, Slots)));
 
     bBlogRequestInFlight = true;
     TWeakObjectPtr<UDiaryInsightBlogLoop> WeakThis(this);
@@ -598,7 +754,22 @@ void UDiaryInsightBlogLoop::HandleBlogReply(bool bSuccess, const FString& TextOr
     }
     NewPost.PostID = FGuid::NewGuid();
     NewPost.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-    NewPost.Tags = DiaryInsightBlogLoopPrivate::ReadStringArray(Json, TEXT("tags"));
+    // Labels: the configured base tags, the insights' categories, then the model's own tags.
+    for (const FString& Tag : Config.BlogBaseTags)
+    {
+        NewPost.Tags.AddUnique(Tag);
+    }
+    for (const FNarrativeInsight& Insight : SourceInsights)
+    {
+        if (!Insight.Category.IsEmpty())
+        {
+            NewPost.Tags.AddUnique(Insight.Category);
+        }
+    }
+    for (const FString& Tag : DiaryInsightBlogLoopPrivate::ReadStringArray(Json, TEXT("tags")))
+    {
+        NewPost.Tags.AddUnique(Tag);
+    }
     NewPost.SourceInsights = MoveTemp(SourceInsights);
 
     BlogPosts.Add(NewPost);
