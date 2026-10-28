@@ -115,9 +115,9 @@ type PlaymateConfig struct {
 	WisdomAffinity   float64
 	SocialAffinity   float64
 	// Model produces every thought, wonder, insight and mood change presented as the
-	// playmate's own. When nil, NewPlaymate configures one from the ECHO_MODEL_* environment;
-	// if that is not configured either, model-backed operations return an error and produce
-	// no character output.
+	// playmate's own. When nil, NewPlaymate configures one from the ECHO_MODEL_* environment
+	// (explicit endpoint, else a verified locally served model); when no model can be resolved,
+	// model-backed operations return an error and produce no character output.
 	Model *ModelClient
 }
 
@@ -171,6 +171,9 @@ type Playmate struct {
 	// Language model behind every character output
 	model *ModelClient
 
+	// thoughtCount rotates the thought prompt templates
+	thoughtCount int
+
 	// Channels for autonomous operation
 	discussionChan chan *Discussion
 	stopChan       chan struct{}
@@ -204,7 +207,7 @@ func NewPlaymate(config *PlaymateConfig) (*Playmate, error) {
 	if p.model == nil {
 		model, err := NewModelClientFromEnv()
 		if err != nil {
-			log.Printf("playmate %s: %v; thoughts, wonders and insights are disabled until a model is configured", config.Name, err)
+			log.Printf("playmate %s: %v; thoughts, wonders and insights are unavailable until this is fixed", config.Name, err)
 		} else {
 			p.model = model
 		}
@@ -287,7 +290,7 @@ func (p *Playmate) wakeRestCycle(ctx context.Context) {
 			p.mu.Unlock()
 
 			if woke {
-				if _, err := p.generateWonder(ctx, "wake: transitioned from rest to awake"); err != nil {
+				if _, err := p.generateWakeWonder(ctx); err != nil {
 					log.Printf("playmate %s: no wake wonder produced: %v", p.Name, err)
 				}
 			}
@@ -307,23 +310,22 @@ type thoughtReply struct {
 }
 
 // generateThought asks the model for a spontaneous thought grounded in the current state.
-// On error no thought is recorded and the mood is left unchanged.
+// The thought's theme (wonder, interest-driven or skill practice) selects the prompt template;
+// the model writes the thought. On error no thought is recorded and the mood is left unchanged.
 func (p *Playmate) generateThought(ctx context.Context) error {
 	p.mu.Lock()
 	// Thinking costs a little energy
 	p.Energy = max(0, p.Energy-0.01)
 	system := p.personaPromptLocked()
-	state := p.describeStateLocked()
+	_, prompt := p.thoughtPromptLocked()
+	p.thoughtCount++
 	model := p.model
 	p.mu.Unlock()
 
 	var reply thoughtReply
 	err := model.ChatJSON(ctx, []ChatMessage{
 		{Role: "system", Content: system},
-		{Role: "user", Content: "Your current internal state:\n" + state +
-			"\nLet one spontaneous thought arise from this state. Reply with only a JSON object: " +
-			`{"thought": "<your thought, first person>", "mood": <your mood after this thought, -1.0 to 1.0>, ` +
-			`"wonder": null or {"description": "<what moved you>", "reflection": "<your reflection>", "intensity": <0.0 to 1.0>}}`},
+		{Role: "user", Content: prompt},
 	}, &reply)
 	if err != nil {
 		return err
@@ -353,12 +355,92 @@ func (p *Playmate) generateThought(ctx context.Context) error {
 	return nil
 }
 
+// thoughtPromptLocked routes to a thought theme and fills its prompt template with real state
+// (caller holds the lock). Themes available: wonder always; interest when an interest is
+// stronger than 0.5; skill practice when a skill is below 0.8 proficiency. They are taken in
+// turn so the stream of thought moves between them.
+func (p *Playmate) thoughtPromptLocked() (ThoughtTheme, string) {
+	slots := map[string]string{"state": p.describeStateLocked()}
+
+	var strong []*Interest
+	for _, in := range p.Interests {
+		if in.Strength > 0.5 {
+			strong = append(strong, in)
+		}
+	}
+	sort.Slice(strong, func(i, j int) bool {
+		if strong[i].Strength != strong[j].Strength {
+			return strong[i].Strength > strong[j].Strength
+		}
+		return strong[i].ID < strong[j].ID
+	})
+	var learning []*Skill
+	for _, sk := range p.Skills {
+		if sk.Proficiency < 0.8 {
+			learning = append(learning, sk)
+		}
+	}
+	sort.Slice(learning, func(i, j int) bool {
+		if learning[i].Proficiency != learning[j].Proficiency {
+			return learning[i].Proficiency < learning[j].Proficiency
+		}
+		return learning[i].ID < learning[j].ID
+	})
+
+	themes := []ThoughtTheme{ThoughtWonder}
+	if len(strong) > 0 {
+		themes = append(themes, ThoughtInterest)
+	}
+	if len(learning) > 0 {
+		themes = append(themes, ThoughtSkillPractice)
+	}
+	theme := themes[p.thoughtCount%len(themes)]
+	round := p.thoughtCount / len(themes)
+
+	switch theme {
+	case ThoughtInterest:
+		in := strong[round%len(strong)]
+		slots["topic"] = in.Topic
+		slots["category"] = string(in.Category)
+		slots["strength"] = fmt.Sprintf("%.2f", in.Strength)
+		slots["keywords"] = strings.Join(in.Keywords, ", ")
+	case ThoughtSkillPractice:
+		sk := learning[round%len(learning)]
+		slots["skill"] = sk.Name
+		slots["skill_description"] = sk.Description
+		slots["proficiency"] = fmt.Sprintf("%.2f", sk.Proficiency)
+		slots["practice_count"] = fmt.Sprintf("%d", sk.PracticeCount)
+	}
+	return theme, FillPrompt(ThoughtPromptTemplates[theme], slots)
+}
+
+// generateWakeWonder asks the model for the moment of wonder of waking from rest.
+func (p *Playmate) generateWakeWonder(ctx context.Context) (*WonderEvent, error) {
+	p.mu.RLock()
+	prompt := FillPrompt(WakeWonderPromptTemplate, map[string]string{
+		"state":     p.describeStateLocked(),
+		"wake_hour": fmt.Sprintf("%02d", p.Config.WakeHour),
+		"rest_hour": fmt.Sprintf("%02d", p.Config.RestHour),
+	})
+	p.mu.RUnlock()
+	return p.generateWonderFromPrompt(ctx, prompt, "awakening: a new cycle of awareness after rest")
+}
+
 // generateWonder asks the model to describe a moment of wonder triggered by a real event.
 // On error nothing is recorded.
 func (p *Playmate) generateWonder(ctx context.Context, trigger string) (*WonderEvent, error) {
 	p.mu.RLock()
+	prompt := FillPrompt(EventWonderPromptTemplate, map[string]string{
+		"state": p.describeStateLocked(),
+		"event": trigger,
+	})
+	p.mu.RUnlock()
+	return p.generateWonderFromPrompt(ctx, prompt, trigger)
+}
+
+func (p *Playmate) generateWonderFromPrompt(ctx context.Context, prompt, trigger string) (*WonderEvent, error) {
+	p.mu.RLock()
 	system := p.personaPromptLocked()
-	state := p.describeStateLocked()
 	model := p.model
 	p.mu.RUnlock()
 
@@ -369,9 +451,7 @@ func (p *Playmate) generateWonder(ctx context.Context, trigger string) (*WonderE
 	}
 	err := model.ChatJSON(ctx, []ChatMessage{
 		{Role: "system", Content: system},
-		{Role: "user", Content: "Event: " + trigger + "\nYour current internal state:\n" + state +
-			"\nDescribe the moment of wonder this event stirs in you. Reply with only a JSON object: " +
-			`{"description": "<short description>", "reflection": "<your reflection, first person>", "intensity": <0.0 to 1.0>}`},
+		{Role: "user", Content: prompt},
 	}, &reply)
 	if err != nil {
 		return nil, err
@@ -382,7 +462,23 @@ func (p *Playmate) generateWonder(ctx context.Context, trigger string) (*WonderE
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.recordWonder(reply.Description, trigger, clamp(reply.Intensity, 0, 1), reply.Reflection), nil
+	return p.recordWonder(strings.TrimSpace(reply.Description), trigger, clamp(reply.Intensity, 0, 1),
+		strings.TrimSpace(reply.Reflection)), nil
+}
+
+// ExperienceWonder asks the model for the moment of wonder a real event stirs and records it.
+func (p *Playmate) ExperienceWonder(ctx context.Context, event string) (*WonderEvent, error) {
+	return p.generateWonder(ctx, event)
+}
+
+// Think produces one spontaneous thought now (the autonomous loop calls this every 5 s).
+func (p *Playmate) Think(ctx context.Context) (string, error) {
+	if err := p.generateThought(ctx); err != nil {
+		return "", err
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.StreamOfThoughts[len(p.StreamOfThoughts)-1], nil
 }
 
 // personaPromptLocked returns the persona description used as model input (caller holds the lock).
@@ -542,7 +638,6 @@ func (p *Playmate) EndDiscussion(ctx context.Context, discussionID string) error
 
 	system := p.personaPromptLocked()
 	var transcript strings.Builder
-	fmt.Fprintf(&transcript, "Topic: %s\nParticipants: %s\n", discussion.Topic, strings.Join(discussion.Participants, ", "))
 	msgs := discussion.Messages
 	if len(msgs) > 40 {
 		msgs = msgs[len(msgs)-40:]
@@ -550,6 +645,18 @@ func (p *Playmate) EndDiscussion(ctx context.Context, discussionID string) error
 	for _, m := range msgs {
 		fmt.Fprintf(&transcript, "%s: %s\n", m.From, m.Content)
 	}
+	others := make([]string, 0, len(discussion.Participants))
+	for _, who := range discussion.Participants {
+		if who != p.Name {
+			others = append(others, who)
+		}
+	}
+	prompt := FillPrompt(DiscussionInsightPromptTemplate, map[string]string{
+		"topic":        discussion.Topic,
+		"participants": strings.Join(others, ", "),
+		"depth":        fmt.Sprintf("%d", discussion.Depth),
+		"transcript":   transcript.String(),
+	})
 	model := p.model
 	p.mu.Unlock()
 
@@ -559,9 +666,7 @@ func (p *Playmate) EndDiscussion(ctx context.Context, discussionID string) error
 	}
 	err := model.ChatJSON(ctx, []ChatMessage{
 		{Role: "system", Content: system},
-		{Role: "user", Content: "This discussion has just ended:\n" + transcript.String() +
-			"\nWhat did you take away from it, and what was its mood? Reply with only a JSON object: " +
-			`{"insight": "<your insight, first person>", "mood": "<one or two words>"}`},
+		{Role: "user", Content: prompt},
 	}, &reply)
 	if err != nil {
 		return fmt.Errorf("discussion %s ended; no insight recorded: %w", discussionID, err)

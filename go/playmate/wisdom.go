@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -100,6 +101,22 @@ type GrowthEvent struct {
 // WisdomConfig holds configuration
 type WisdomConfig struct {
 	PersistPath string
+	// Model formulates the foundational principles at initialisation (and later principles via
+	// DerivePrinciple). When nil, one is configured from the ECHO_MODEL_* environment, which
+	// also discovers a verified local model server.
+	Model *ModelClient
+	// SeedTimeout bounds the foundational-principle request at initialisation (default 60 s).
+	SeedTimeout time.Duration
+}
+
+// foundationalDimensionPairs is the structure of the foundational principles: one principle
+// for each pair of wisdom dimensions. The model formulates each principle.
+var foundationalDimensionPairs = [][2]WisdomDimension{
+	{DimensionUnderstanding, DimensionReflection},
+	{DimensionPerspective, DimensionIntegration},
+	{DimensionEquanimity, DimensionTranscendence},
+	{DimensionCompassion, DimensionReflection},
+	{DimensionIntegration, DimensionTranscendence},
 }
 
 // NewWisdomCultivator creates a new wisdom cultivator
@@ -128,9 +145,6 @@ func NewWisdomCultivator(config *WisdomConfig) (*WisdomCultivator, error) {
 	// Calculate initial overall score
 	wc.updateOverallScore()
 
-	// No principles are seeded: every principle held as the companion's own is formulated by
-	// the model (DerivePrinciple) or supplied explicitly by a caller (AddPrinciple).
-
 	// Load from persistence
 	if wc.PersistPath != "" {
 		if err := wc.Load(); err != nil && !os.IsNotExist(err) {
@@ -138,7 +152,117 @@ func NewWisdomCultivator(config *WisdomConfig) (*WisdomCultivator, error) {
 		}
 	}
 
+	// Seed the foundational principles through the model when one is available. Without a
+	// model no principle is invented: the cultivator starts empty and the reason is logged.
+	var model *ModelClient
+	timeout := 60 * time.Second
+	if config != nil {
+		model = config.Model
+		if config.SeedTimeout > 0 {
+			timeout = config.SeedTimeout
+		}
+	}
+	if model == nil {
+		if m, err := NewModelClientFromEnv(); err == nil {
+			model = m
+		} else {
+			log.Printf("wisdom: %v; foundational principles not seeded", err)
+		}
+	}
+	if model != nil && len(wc.Principles) == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		if _, err := wc.SeedFoundationalPrinciples(ctx, model); err != nil {
+			log.Printf("wisdom: foundational principles not seeded: %v", err)
+		}
+		cancel()
+	}
+
 	return wc, nil
+}
+
+// SeedFoundationalPrinciples asks the model to formulate one foundational principle for each
+// pair in foundationalDimensionPairs (prompt template FoundationalPrinciplesPromptTemplate)
+// and records the valid ones. On error nothing is added.
+func (wc *WisdomCultivator) SeedFoundationalPrinciples(ctx context.Context, model *ModelClient) ([]*WisdomPrinciple, error) {
+	var pairs strings.Builder
+	for i, pr := range foundationalDimensionPairs {
+		fmt.Fprintf(&pairs, "%d. %s and %s\n", i+1, pr[0], pr[1])
+	}
+	wc.mu.RLock()
+	metrics := wc.metricsLineLocked()
+	wc.mu.RUnlock()
+	prompt := FillPrompt(FoundationalPrinciplesPromptTemplate, map[string]string{
+		"count":           fmt.Sprintf("%d", len(foundationalDimensionPairs)),
+		"dimension_pairs": pairs.String(),
+		"metrics":         metrics,
+	})
+
+	var reply struct {
+		Principles []struct {
+			Statement  string   `json:"statement"`
+			Dimensions []string `json:"dimensions"`
+		} `json:"principles"`
+	}
+	if err := model.ChatJSON(ctx, []ChatMessage{
+		{Role: "system", Content: WisdomSystemPrompt},
+		{Role: "user", Content: prompt},
+	}, &reply); err != nil {
+		return nil, err
+	}
+
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	seeded := make([]*WisdomPrinciple, 0, len(reply.Principles))
+	for i, r := range reply.Principles {
+		statement := strings.TrimSpace(r.Statement)
+		if statement == "" {
+			continue
+		}
+		dims := parseDimensions(r.Dimensions)
+		if len(dims) == 0 && i < len(foundationalDimensionPairs) {
+			dims = []WisdomDimension{foundationalDimensionPairs[i][0], foundationalDimensionPairs[i][1]}
+		}
+		id := fmt.Sprintf("foundational_%d", len(seeded))
+		principle := &WisdomPrinciple{
+			ID:          id,
+			Statement:   statement,
+			Dimensions:  dims,
+			Confidence:  0.7,
+			Source:      "foundational",
+			CreatedAt:   time.Now(),
+			Validations: 1,
+			Refinements: make([]string, 0),
+		}
+		wc.Principles[id] = principle
+		seeded = append(seeded, principle)
+	}
+	if len(seeded) == 0 {
+		return nil, fmt.Errorf("model reply contained no principle statements")
+	}
+	wc.dirty = true
+	return seeded, nil
+}
+
+// metricsLineLocked renders the dimension metrics as model input (caller holds the lock).
+func (wc *WisdomCultivator) metricsLineLocked() string {
+	m := wc.Metrics
+	return fmt.Sprintf("understanding %.2f, perspective %.2f, integration %.2f, reflection %.2f, "+
+		"compassion %.2f, equanimity %.2f, transcendence %.2f; overall %.2f",
+		m.Understanding, m.Perspective, m.Integration, m.Reflection, m.Compassion, m.Equanimity, m.Transcendence, m.OverallScore)
+}
+
+// parseDimensions keeps only the seven known dimension names.
+func parseDimensions(names []string) []WisdomDimension {
+	dims := make([]WisdomDimension, 0, len(names))
+	for _, d := range names {
+		dim := WisdomDimension(strings.ToLower(strings.TrimSpace(d)))
+		switch dim {
+		case DimensionUnderstanding, DimensionPerspective, DimensionIntegration, DimensionReflection,
+			DimensionCompassion, DimensionEquanimity, DimensionTranscendence:
+			dims = append(dims, dim)
+		}
+	}
+	return dims
 }
 
 // AddInsight records a new insight
@@ -197,10 +321,7 @@ func (wc *WisdomCultivator) AddPrinciple(statement string, dimensions []WisdomDi
 func (wc *WisdomCultivator) DerivePrinciple(ctx context.Context, model *ModelClient, trigger string) (*WisdomPrinciple, error) {
 	wc.mu.RLock()
 	var b strings.Builder
-	m := wc.Metrics
-	fmt.Fprintf(&b, "wisdom dimensions (0-1): understanding %.2f, perspective %.2f, integration %.2f, reflection %.2f, "+
-		"compassion %.2f, equanimity %.2f, transcendence %.2f; overall %.2f\n",
-		m.Understanding, m.Perspective, m.Integration, m.Reflection, m.Compassion, m.Equanimity, m.Transcendence, m.OverallScore)
+	fmt.Fprintf(&b, "wisdom dimensions (0-1): %s\n", wc.metricsLineLocked())
 	recent := wc.Insights
 	if len(recent) > 10 {
 		recent = recent[len(recent)-10:]
@@ -218,11 +339,11 @@ func (wc *WisdomCultivator) DerivePrinciple(ctx context.Context, model *ModelCli
 		Dimensions []string `json:"dimensions"`
 	}
 	err := model.ChatJSON(ctx, []ChatMessage{
-		{Role: "system", Content: "You are Deep Tree Echo, a companion cultivating wisdom across seven dimensions: " +
-			"understanding, perspective, integration, reflection, compassion, equanimity, transcendence."},
-		{Role: "user", Content: "Trigger: " + trigger + "\nYour current wisdom state:\n" + b.String() +
-			"\nFormulate one new principle you now hold, grounded in these insights. Reply with only a JSON object: " +
-			`{"statement": "<the principle>", "dimensions": ["<one or more of the seven dimensions>"]}`},
+		{Role: "system", Content: WisdomSystemPrompt},
+		{Role: "user", Content: FillPrompt(DerivePrinciplePromptTemplate, map[string]string{
+			"trigger":      trigger,
+			"wisdom_state": b.String(),
+		})},
 	}, &reply)
 	if err != nil {
 		return nil, err
@@ -231,16 +352,7 @@ func (wc *WisdomCultivator) DerivePrinciple(ctx context.Context, model *ModelCli
 	if statement == "" {
 		return nil, fmt.Errorf("model reply contained no principle statement")
 	}
-
-	dims := make([]WisdomDimension, 0, len(reply.Dimensions))
-	for _, d := range reply.Dimensions {
-		dim := WisdomDimension(strings.ToLower(strings.TrimSpace(d)))
-		switch dim {
-		case DimensionUnderstanding, DimensionPerspective, DimensionIntegration, DimensionReflection,
-			DimensionCompassion, DimensionEquanimity, DimensionTranscendence:
-			dims = append(dims, dim)
-		}
-	}
+	dims := parseDimensions(reply.Dimensions)
 
 	return wc.AddPrinciple(statement, dims, "model"), nil
 }
