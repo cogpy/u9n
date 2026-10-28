@@ -131,10 +131,7 @@ void UDeepTreeEchoUnrealBridge::InitializeBridge()
         ReservoirSystem->InitializeReservoirs();
     }
 
-    if (EmbodiedCognition)
-    {
-        EmbodiedCognition->Initialize();
-    }
+    // EmbodiedCognition initializes its body schema in its own BeginPlay.
 
     UE_LOG(LogTemp, Log, TEXT("DeepTreeEchoUnrealBridge: Bridge initialized successfully"));
 }
@@ -251,6 +248,8 @@ void UDeepTreeEchoUnrealBridge::ProcessProprioceptiveInput()
     }
 
     ProprioceptiveBuffer.Reset();
+    TMap<FString, FVector> BodyPartPositions;
+    TMap<FString, FRotator> BodyPartOrientations;
 
     // Get bone transforms for proprioception
     TArray<FName> BoneNames = {
@@ -270,6 +269,8 @@ void UDeepTreeEchoUnrealBridge::ProcessProprioceptiveInput()
         {
             FTransform BoneTransform = AvatarMesh->GetBoneTransform(BoneIndex);
             FRotator BoneRotation = BoneTransform.Rotator();
+            BodyPartPositions.Add(BoneName.ToString(), BoneTransform.GetLocation());
+            BodyPartOrientations.Add(BoneName.ToString(), BoneRotation);
 
             // Encode rotation as normalized values
             ProprioceptiveBuffer.Add(BoneRotation.Pitch / 180.0f);
@@ -281,8 +282,7 @@ void UDeepTreeEchoUnrealBridge::ProcessProprioceptiveInput()
     // Update embodied cognition component
     if (EmbodiedCognition)
     {
-        TArray<float> InteroceptiveData; // Would come from physiological simulation
-        EmbodiedCognition->UpdateEmbodiedState(ProprioceptiveBuffer, InteroceptiveData);
+        EmbodiedCognition->UpdateBodySchema(BodyPartPositions, BodyPartOrientations);
     }
 
     CognitiveCore->ProcessSensoryInput(ProprioceptiveBuffer, TEXT("Proprioceptive"));
@@ -327,7 +327,7 @@ void UDeepTreeEchoUnrealBridge::ProcessEnvironmentalInput(const TArray<FString>&
             }
         }
 
-        EmbodiedCognition->UpdateEmbeddedState(Affordances, CurrentNiche);
+        EmbodiedCognition->SetCurrentNiche(CurrentNiche);
     }
 }
 
@@ -351,13 +351,6 @@ void UDeepTreeEchoUnrealBridge::ProcessSocialInput(const TArray<AActor*>& Nearby
 
         FString SocialContext = FString::Printf(TEXT("%s:%.0f"), *CharacterName, Distance);
         SocialContextBuffer.Add(SocialContext);
-    }
-
-    // Update extended cognition with social context
-    if (EmbodiedCognition)
-    {
-        TArray<FString> EmptyTools;
-        EmbodiedCognition->UpdateExtendedState(SocialContextBuffer, EmptyTools);
     }
 }
 
@@ -886,7 +879,16 @@ TArray<float> UDeepTreeEchoUnrealBridge::GetReservoirStateSummary() const
 
     if (ReservoirSystem)
     {
-        Summary = ReservoirSystem->GetReservoirStateSummary();
+        // Mean activation of each hierarchical reservoir level
+        for (const FReservoirState& Level : ReservoirSystem->HierarchicalReservoirs)
+        {
+            float Sum = 0.0f;
+            for (float Activation : Level.ActivationState)
+            {
+                Sum += Activation;
+            }
+            Summary.Add(Level.ActivationState.Num() > 0 ? Sum / Level.ActivationState.Num() : 0.0f);
+        }
     }
 
     return Summary;
