@@ -31,6 +31,112 @@ UAvatarCommunicationManager::UAvatarCommunicationManager()
     bEmailRequestInFlight = false;
     CharacterName = TEXT("Deep Tree Echo");
     MaxHistoryLinesForModel = 12;
+    MaxChatReplyChars = 500;
+
+    InitializePromptTemplates();
+}
+
+// ===== Prompt Templates =====
+//
+// The intent and channel tables below are the structure the replies used to be built from
+// (per-intent reply lines, chat vs email form, the email signature). Each entry is now an
+// instruction to the model; the model writes the words.
+
+void UAvatarCommunicationManager::InitializePromptTemplates()
+{
+    IntentPromptTemplates.Add(TEXT("greeting"),
+        TEXT("{participant} greeted you: \"{message}\". Greet them back in your own voice and ask what is on their mind."));
+    IntentPromptTemplates.Add(TEXT("farewell"),
+        TEXT("{participant} is saying goodbye: \"{message}\". Say goodbye warmly; you may mention talking again soon."));
+    IntentPromptTemplates.Add(TEXT("compliment"),
+        TEXT("{participant} complimented you: \"{message}\". Accept the compliment graciously and in character."));
+    IntentPromptTemplates.Add(TEXT("question"),
+        TEXT("{participant} asked you: \"{message}\". Answer the question itself as well as you can (key terms: {keywords}); ")
+        TEXT("if you do not know, say so honestly."));
+    IntentPromptTemplates.Add(TEXT("request"),
+        TEXT("{participant} asked you for help: \"{message}\". Respond to the request: say how you can help or what you need ")
+        TEXT("to know. Do not claim to have done anything you have not done."));
+    IntentPromptTemplates.Add(TEXT("statement"),
+        TEXT("{participant} wrote: \"{message}\". Respond to what they shared and keep the conversation going."));
+
+    ChatChannelPromptTemplate =
+        TEXT("This is a DeltaChat chat with {participant}: write a short, casual chat message of at most {max_chars} characters.");
+    EmailChannelPromptTemplate =
+        TEXT("This is an email reply to {participant} (subject: \"{subject}\"): write the email body in a professional, ")
+        TEXT("structured tone, and end it with a short sign-off followed by your name, {character}.");
+
+    InsightPromptTemplates.Add(TEXT("positive"),
+        TEXT("Your conversation with {participant} went well (their sentiment as you read it: {sentiment}; {message_count} messages). ")
+        TEXT("Reflect privately: what made it a positive interaction, and what do you want to remember about {participant}?\n{transcript}"));
+    InsightPromptTemplates.Add(TEXT("challenging"),
+        TEXT("Your conversation with {participant} was challenging (their sentiment as you read it: {sentiment}; {message_count} messages). ")
+        TEXT("Reflect privately: what was difficult, and how could you show more empathy next time?\n{transcript}"));
+    InsightPromptTemplates.Add(TEXT("neutral"),
+        TEXT("You exchanged {message_count} messages with {participant} (their sentiment as you read it: {sentiment}). ")
+        TEXT("Reflect privately: what pattern do you notice in how you communicate with {participant}?\n{transcript}"));
+}
+
+FString UAvatarCommunicationManager::DetectIntent(const FString& Text) const
+{
+    const FString LowerText = Text.ToLower();
+
+    if (LowerText.Contains(TEXT("?")) || LowerText.Contains(TEXT("how")) ||
+        LowerText.Contains(TEXT("what")) || LowerText.Contains(TEXT("why")) ||
+        LowerText.Contains(TEXT("when")) || LowerText.Contains(TEXT("where")))
+    {
+        return TEXT("question");
+    }
+    if (LowerText.Contains(TEXT("please")) || LowerText.Contains(TEXT("could you")) ||
+        LowerText.Contains(TEXT("can you")) || LowerText.Contains(TEXT("help")))
+    {
+        return TEXT("request");
+    }
+    if (LowerText.Contains(TEXT("hello")) || LowerText.StartsWith(TEXT("hi")) || LowerText.Contains(TEXT(" hi ")) ||
+        LowerText.Contains(TEXT("hey")) || LowerText.Contains(TEXT("good morning")))
+    {
+        return TEXT("greeting");
+    }
+    if (LowerText.Contains(TEXT("bye")) || LowerText.Contains(TEXT("goodbye")) ||
+        LowerText.Contains(TEXT("see you")) || LowerText.Contains(TEXT("take care")))
+    {
+        return TEXT("farewell");
+    }
+    if (LowerText.Contains(TEXT("love")) || LowerText.Contains(TEXT("amazing")) ||
+        LowerText.Contains(TEXT("beautiful")) || LowerText.Contains(TEXT("wonderful")))
+    {
+        return TEXT("compliment");
+    }
+    return TEXT("statement");
+}
+
+FString UAvatarCommunicationManager::BuildReplyPrompt(const FAvatarPendingReplyInfo& Info, const FString& IncomingText,
+                                                     const FString& Transcript)
+{
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("participant"), Info.ParticipantName.IsEmpty() ? Info.ParticipantId : Info.ParticipantName);
+    Slots.Add(TEXT("message"), IncomingText);
+    Slots.Add(TEXT("subject"), Info.Subject);
+    Slots.Add(TEXT("character"), CharacterName);
+    Slots.Add(TEXT("max_chars"), FString::FromInt(MaxChatReplyChars));
+    const TArray<FString> Keywords = ExtractKeywords(IncomingText);
+    Slots.Add(TEXT("keywords"), Keywords.Num() ? FString::Join(Keywords, TEXT(", ")) : FString(TEXT("(none)")));
+    const FConversationContext* Context = ActiveConversations.Find(Info.ParticipantId);
+    Slots.Add(TEXT("topic"), Context && !Context->Topic.IsEmpty() ? Context->Topic : FString(TEXT("(none)")));
+
+    const FString* IntentTemplate = IntentPromptTemplates.Find(Info.Intent);
+    if (!IntentTemplate)
+    {
+        IntentTemplate = IntentPromptTemplates.Find(TEXT("statement"));
+    }
+    const FString& ChannelTemplate = Info.Source == EMessageSource::Dovecot ? EmailChannelPromptTemplate : ChatChannelPromptTemplate;
+
+    FString Prompt = FString::Printf(TEXT("Recent conversation (oldest first):\n%s\n"), *Transcript);
+    if (IntentTemplate)
+    {
+        Prompt += UEchoModelClient::FillPrompt(*IntentTemplate, Slots) + TEXT("\n");
+    }
+    Prompt += UEchoModelClient::FillPrompt(ChannelTemplate, Slots);
+    return Prompt;
 }
 
 void UAvatarCommunicationManager::BeginPlay()
@@ -326,17 +432,6 @@ FString UAvatarCommunicationManager::BuildPersonaPrompt(const FAvatarPendingRepl
             E.Happiness, E.Excitement, E.Calmness, E.Anxiety, E.Affection, E.Focus);
     }
 
-    if (Info.Source == EMessageSource::Dovecot)
-    {
-        Prompt += FString::Printf(TEXT("\nYou are answering an email from %s with the subject \"%s\". Write the email body."),
-            *Info.ParticipantName, *Info.Subject);
-    }
-    else
-    {
-        Prompt += FString::Printf(TEXT("\nYou are chatting with %s over DeltaChat. Keep the reply under 500 characters."),
-            *Info.ParticipantName);
-    }
-
     Prompt += FString::Printf(
         TEXT("\nAnswer ONLY with a JSON object: {\"reply\": string, \"tone\": string, \"sentiment\": number, ")
         TEXT("\"expression\": string, \"gesture\": string, \"intensity\": number}.")
@@ -366,14 +461,16 @@ void UAvatarCommunicationManager::RequestModelReply(const FAvatarPendingReplyInf
         Transcript = FString::Printf(TEXT("%s: %s\n"), *Info.ParticipantName, *IncomingText);
     }
 
+    // The keyword router picks the intent prompt template; the model writes the reply.
+    FAvatarPendingReplyInfo Routed = Info;
+    Routed.Intent = DetectIntent(IncomingText);
+
     TArray<FEchoModelMessage> Messages;
-    Messages.Emplace(TEXT("system"), BuildPersonaPrompt(Info));
-    Messages.Emplace(TEXT("user"), FString::Printf(
-        TEXT("Recent conversation (oldest first):\n%s\nReply to the latest message from %s."),
-        *Transcript, *Info.ParticipantName));
+    Messages.Emplace(TEXT("system"), BuildPersonaPrompt(Routed));
+    Messages.Emplace(TEXT("user"), BuildReplyPrompt(Routed, IncomingText, Transcript));
 
     UEchoModelClient::Get()->Chat(Messages,
-        FOnEchoModelReply::CreateUObject(this, &UAvatarCommunicationManager::HandleModelReply, Info));
+        FOnEchoModelReply::CreateUObject(this, &UAvatarCommunicationManager::HandleModelReply, Routed));
 }
 
 void UAvatarCommunicationManager::HandleModelReply(bool bSuccess, const FString& TextOrError, FAvatarPendingReplyInfo Info)
@@ -411,6 +508,7 @@ void UAvatarCommunicationManager::HandleModelReply(bool bSuccess, const FString&
     FCommunicationReply Reply;
     Reply.ResponseId = FGuid::NewGuid().ToString();
     Reply.Content = ReplyText.TrimStartAndEnd();
+    Reply.Intent = Info.Intent;
     Json->TryGetStringField(TEXT("tone"), Reply.Tone);
 
     double Number = 0.0;
@@ -658,13 +756,27 @@ void UAvatarCommunicationManager::RequestConversationInsight(const FConversation
         Transcript += Context.MessageHistory[i] + TEXT("\n");
     }
 
+    // Sentiment band (the model's own readings) selects the insight prompt template.
+    const TCHAR* Band = Context.SentimentScore > 0.7f ? TEXT("positive")
+        : Context.SentimentScore < 0.3f ? TEXT("challenging") : TEXT("neutral");
+    const FString* Template = InsightPromptTemplates.Find(Band);
+    if (!Template)
+    {
+        UE_LOG(LogCommunication, Error, TEXT("No insight prompt template '%s'; no insight requested"), Band);
+        return;
+    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("participant"), Context.ParticipantName.IsEmpty() ? Context.ParticipantId : Context.ParticipantName);
+    Slots.Add(TEXT("sentiment"), FString::Printf(TEXT("%.2f on 0..1"), Context.SentimentScore));
+    Slots.Add(TEXT("message_count"), FString::FromInt(Context.MessageCount));
+    Slots.Add(TEXT("transcript"), Transcript);
+
     TArray<FEchoModelMessage> Messages;
     Messages.Emplace(TEXT("system"), FString::Printf(
-        TEXT("You are %s, an embodied AI avatar. %s\nReflect privately on a conversation you just had. ")
+        TEXT("You are %s, an embodied AI avatar. %s\n")
         TEXT("Answer ONLY with a JSON object: {\"insight\": string, \"confidence\": number between 0 and 1}."),
         *CharacterName, *PersonaDescription));
-    Messages.Emplace(TEXT("user"), FString::Printf(TEXT("Conversation with %s:\n%s"),
-        *Context.ParticipantName, *Transcript));
+    Messages.Emplace(TEXT("user"), UEchoModelClient::FillPrompt(*Template, Slots));
 
     UEchoModelClient::Get()->Chat(Messages,
         FOnEchoModelReply::CreateUObject(this, &UAvatarCommunicationManager::HandleInsightReply,

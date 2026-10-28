@@ -186,6 +186,10 @@ struct FCommunicationReply
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float IncomingSentiment;
 
+    /** Intent the keyword router detected, i.e. which intent prompt template was used (request metadata). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString Intent;
+
     /** Avatar's neurochemical valence at reply time (measured state, not generated). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float EmotionalValence;
@@ -262,6 +266,7 @@ struct FConversationContext
 struct FAvatarPendingReplyInfo
 {
     EMessageSource Source = EMessageSource::Internal;
+    FString Intent;          // routed intent (selects the intent prompt template)
     FString MessageId;
     FString ReplyTarget;     // chat id or email id
     FString ParticipantId;
@@ -288,8 +293,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnConversationStateChanged, const 
  * DeltaChat/Dovecot -> 9P Interface -> Avatar Communication Manager
  *     |
  *     v
- * Echo model (UEchoModelClient): persona built from personality/neurochemical state is the
- * model INPUT; the reply text, tone, sentiment reading, expression and gesture are the model's OUTPUT
+ * Intent router (DetectIntent keywords) picks an intent prompt template (greeting, farewell,
+ * compliment, question, request, statement); the channel prompt template (chat or email) adds the
+ * channel's form. Both are filled with the real message and sent to the echo model
+ * (UEchoModelClient: configured API or verified local model) with the persona built from
+ * personality/neurochemical state as INPUT; the reply text, tone, sentiment reading, expression
+ * and gesture are the model's OUTPUT
  *     |
  *     v
  * FEchoReactionBus (expression/gesture/caption consumers), narrative diary (what was said)
@@ -363,6 +372,21 @@ public:
     /** Same as RequestDeltaChatResponse, for an email. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
     bool RequestEmailResponse(const FDovecotEmail& Email);
+
+    /** Blueprint-compatible name: starts the model request (see RequestDeltaChatResponse). */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Response")
+    bool GenerateDeltaChatResponse(const FDeltaChatMessage& Message) { return RequestDeltaChatResponse(Message); }
+
+    /** Blueprint-compatible name: starts the model request (see RequestEmailResponse). */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Response")
+    bool GenerateEmailResponse(const FDovecotEmail& Email) { return RequestEmailResponse(Email); }
+
+    /**
+     * Keyword router: "greeting", "farewell", "compliment", "question", "request" or "statement".
+     * It only selects which intent prompt template the model receives; it never produces words.
+     */
+    UFUNCTION(BlueprintPure, Category = "Communication|Analysis")
+    FString DetectIntent(const FString& Text) const;
 
     /** Delivers a reply over DeltaChat. No transport is implemented: logs and returns false. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
@@ -444,6 +468,8 @@ public:
 
 protected:
     // ===== Internal Methods =====
+    void InitializePromptTemplates();
+    FString BuildReplyPrompt(const FAvatarPendingReplyInfo& Info, const FString& IncomingText, const FString& Transcript);
 
     void ProcessDeltaChatQueue();
     void ProcessEmailQueue();
@@ -540,6 +566,34 @@ private:
     /** How many recent conversation lines are sent to the model as context. */
     UPROPERTY(EditAnywhere, Category = "Communication|Persona")
     int32 MaxHistoryLinesForModel;
+
+    // ===== Prompt Templates (instructions to the model; never sent as the character's words) =====
+
+    /**
+     * Per-intent reply prompt templates, keyed by DetectIntent's result. Slots: {participant},
+     * {message}, {keywords}, {topic}, {character}.
+     */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    TMap<FString, FString> IntentPromptTemplates;
+
+    /** Channel form for DeltaChat replies. Slots: {participant}, {max_chars}, {character}. */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    FString ChatChannelPromptTemplate;
+
+    /** Channel form for email replies (includes the sign-off instruction). Slots: {participant}, {subject}, {character}. */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    FString EmailChannelPromptTemplate;
+
+    /** Maximum DeltaChat reply length asked of the model (characters). */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts")
+    int32 MaxChatReplyChars;
+
+    /**
+     * Conversation-insight prompt templates keyed "positive" (sentiment > 0.7), "challenging"
+     * (< 0.3) and "neutral". Slots: {participant}, {sentiment}, {message_count}, {transcript}.
+     */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    TMap<FString, FString> InsightPromptTemplates;
 
     UPROPERTY(EditAnywhere, Category = "Communication|Configuration")
     bool bVerboseLogging;
