@@ -994,9 +994,12 @@ void UEchobeatsGamingIntegration::RequestAttentionFocusRecommendation()
         Metrics += FString::Printf(TEXT("element %s: salience %.2f\n"), *Elements[i].Key, Elements[i].Value);
     }
 
-    EchoCoaching::Request(this, Topic,
-        TEXT("Tell the player where to focus their attention right now, given these salience measurements."),
-        Metrics, &OnCoachingReady, &OnCoachingFailed);
+    // Salience router; the model writes the recommendation.
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("focus"), Elements[0].Value > 0.7f
+        ? FString::Printf(TEXT("The most salient element is %s (salience %.2f): direct their focus there."), *Elements[0].Key, Elements[0].Value)
+        : FString(TEXT("No element stands out strongly: advise keeping broad awareness.")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 float UEchobeatsGamingIntegration::GetActionTimingRecommendation(const FString& ActionID) const

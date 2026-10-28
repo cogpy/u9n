@@ -251,16 +251,22 @@ void UUnrealGamingMasteryIntegration::RequestInputImprovementSuggestions()
     }
 
     FString Metrics = FString::Printf(TEXT("recent inputs analysed: %d\n"), InputHistory.Num());
+    TArray<FString> WeakInputs;
     for (const auto& Pair : InputQuality)
     {
         const int32 Count = InputCounts[Pair.Key];
+        const float AvgQuality = Pair.Value / Count;
         Metrics += FString::Printf(TEXT("input %s: %d presses, average timing quality %.0f%%\n"),
-                                   *Pair.Key, Count, 100.0f * Pair.Value / Count);
+                                   *Pair.Key, Count, 100.0f * AvgQuality);
+        if (AvgQuality < 0.6f)
+        {
+            WeakInputs.Add(FString::Printf(TEXT("%s (%.0f%%)"), *Pair.Key, 100.0f * AvgQuality));
+        }
     }
 
-    EchoCoaching::Request(this, Topic,
-        TEXT("Give the player concise suggestions to improve their input execution, focusing on the weakest inputs."),
-        Metrics, &OnCoachingReady, &OnCoachingFailed);
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("weak_inputs"), WeakInputs.Num() ? FString::Join(WeakInputs, TEXT(", ")) : FString(TEXT("none")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================
@@ -1048,9 +1054,15 @@ void UUnrealGamingMasteryIntegration::RequestTrainingGuidance()
         *UEnum::GetValueAsString(Skill.AcquisitionPhase), Skill.PracticeHours, Skill.DeliberatePracticeSessions,
         Skill.RecentSuccessRate, TrainingDifficulty, CombatAnalysis.Accuracy, MovementAnalysis.Efficiency);
 
-    EchoCoaching::Request(this, Topic,
-        TEXT("Guide the player on what to practise next for this skill and how."),
-        Metrics, &OnCoachingReady, &OnCoachingFailed);
+    // Proficiency router picks the stage; the model writes the guidance.
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("skill"), CurrentTrainingSkill);
+    Slots.Add(TEXT("focus"), Skill.ProficiencyLevel < 0.3f
+        ? FString(TEXT("beginner - careful, unhurried basic execution"))
+        : Skill.ProficiencyLevel < 0.6f
+            ? FString(TEXT("progressing - timing and consistency"))
+            : FString(TEXT("advanced - applying the skill in varied situations")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 void UUnrealGamingMasteryIntegration::SetTrainingDifficulty(float Difficulty)

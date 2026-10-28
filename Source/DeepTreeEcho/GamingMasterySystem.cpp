@@ -51,6 +51,71 @@ void EchoCoaching::Request(UObject* Owner, const FString& Topic, const FString& 
         }));
 }
 
+TMap<FString, FString>& EchoCoaching::PromptTemplates()
+{
+    // The structure the companion's coaching lines used to be chosen from (per topic, per
+    // measured condition) kept as prompt templates. Call sites route the condition into the
+    // {focus}-style slots; the model writes the advice.
+    static TMap<FString, FString> Templates = []()
+    {
+        TMap<FString, FString> T;
+        T.Add(TEXT("contextual_strategy"),
+            TEXT("The game is in its {game_phase} phase. Recommend a strategy in one or two sentences, centred on {focus}."));
+        T.Add(TEXT("opportunities"),
+            TEXT("Point out the opportunities this game state offers the player and how to exploit them. ")
+            TEXT("Signals detected in the state: {signals}.{recognition_note}"));
+        T.Add(TEXT("exploration"),
+            TEXT("Advise the player whether to explore new strategies or refine effective ones. The measurements suggest: {focus}."));
+        T.Add(TEXT("adaptive_response"),
+            TEXT("The opponent just did: \"{opponent_action}\" ({action_kind}). Recommend how the player should respond, ")
+            TEXT("leaning toward {focus}."));
+        T.Add(TEXT("team_coordination"),
+            TEXT("Recommend how the team should coordinate right now (average team state {team_average}), with emphasis on {focus}."));
+        T.Add(TEXT("external_resources"),
+            TEXT("Suggest which external resources would help this player most, choosing from replay analysis of recent games, ")
+            TEXT("community guides on current strategies, structured coaching and performance-tracking tools. Base the choice on ")
+            TEXT("the weakest measurements ({weakest_area})."));
+        T.Add(TEXT("load_reduction"),
+            TEXT("The heaviest cognitive load is {load_type} ({load_level}). Advise the player how to reduce it, for example by {focus}.{break_note}"));
+        T.Add(TEXT("holistic_improvement"),
+            TEXT("Give the player prioritized improvement advice across embodied, embedded, enacted and extended skills. ")
+            TEXT("Top priority: the {priority_area} area ({priority_score}) - {focus}.{urgent_note}"));
+        T.Add(TEXT("training_focus"),
+            TEXT("Tell the player what to train next: their weakest area is {weakest_area} ({weakest_score}); suggest improving it {focus}."));
+        T.Add(TEXT("improvement_recommendations"),
+            TEXT("Give the player a short list of concrete improvement recommendations from this replay analysis: for each skill to ")
+            TEXT("improve ({skills}) a focused way to practise it, and for each recommended drill ({drills}) why to do it."));
+        T.Add(TEXT("flow_optimization"),
+            TEXT("Give the player one to three tips to reach or stay in a flow state. Conditions detected: {conditions}."));
+        T.Add(TEXT("attention_focus"),
+            TEXT("Tell the player where to focus their attention right now. {focus}"));
+        T.Add(TEXT("input_improvement"),
+            TEXT("Give the player concise suggestions to improve their input execution. Inputs below 60% average timing quality: ")
+            TEXT("{weak_inputs}. If there are none, tell them their execution is good and suggest turning to strategic decision-making."));
+        T.Add(TEXT("training_guidance"),
+            TEXT("Guide the player on what to practise next for the skill {skill}. Their stage: {focus}."));
+        return T;
+    }();
+    return Templates;
+}
+
+void EchoCoaching::RequestFromTemplate(UObject* Owner, const FString& Topic, const TMap<FString, FString>& Slots,
+                                       const FString& Metrics, FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed)
+{
+    const FString* Template = PromptTemplates().Find(Topic);
+    if (!Template || Template->IsEmpty())
+    {
+        const FString Error = FString::Printf(TEXT("no coaching prompt template for topic '%s'"), *Topic);
+        UE_LOG(LogTemp, Warning, TEXT("Deep Tree Echo coaching '%s' not produced: %s"), *Topic, *Error);
+        if (Failed)
+        {
+            Failed->Broadcast(Topic, Error);
+        }
+        return;
+    }
+    Request(Owner, Topic, UEchoModelClient::FillPrompt(*Template, Slots), Metrics, Ready, Failed);
+}
+
 // ========================================
 // MCTS Node Structure
 // ========================================
@@ -617,9 +682,10 @@ void UGamingMasterySystem::RequestImprovementRecommendations(const FReplayAnalys
         Metrics += FString::Printf(TEXT("mechanics %s: %.2f\n"), *Pair.Key, Pair.Value);
     }
 
-    EchoCoaching::Request(this, Topic,
-        TEXT("Give the player a short list of concrete improvement recommendations from this replay analysis."),
-        Metrics, &OnCoachingReady, &OnCoachingFailed);
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("skills"), Analysis.SkillsToImprove.Num() ? FString::Join(Analysis.SkillsToImprove, TEXT(", ")) : FString(TEXT("none listed")));
+    Slots.Add(TEXT("drills"), Analysis.RecommendedDrills.Num() ? FString::Join(Analysis.RecommendedDrills, TEXT(", ")) : FString(TEXT("none listed")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 TMap<FString, float> UGamingMasterySystem::CompareToExpert(const FReplayAnalysisResult& Analysis) const
@@ -873,9 +939,31 @@ void UGamingMasterySystem::RequestFlowOptimizationTips()
         FlowMetrics.FocusLevel, FlowMetrics.IntrinsicMotivation, FlowMetrics.AnxietyLevel, FlowMetrics.BoredomLevel,
         FlowMetrics.TimeDistortion, FlowMetrics.TimeInFlow, GetDifficultyAdjustment());
 
-    EchoCoaching::Request(this, TEXT("flow_optimization"),
-        TEXT("Give the player one to three tips to reach or stay in a flow state, based on these metrics."),
-        Metrics, &OnCoachingReady, &OnCoachingFailed);
+    // Condition router (which kinds of tip are relevant); the model writes the tips.
+    TArray<FString> Conditions;
+    if (FlowMetrics.AnxietyLevel > 0.5f)
+    {
+        Conditions.Add(TEXT("anxiety is high - the challenge may be too high (fundamentals practice, short breaks to reduce stress)"));
+    }
+    if (FlowMetrics.BoredomLevel > 0.5f)
+    {
+        Conditions.Add(TEXT("boredom is high - the challenge may be too low (raise difficulty, set specific session goals)"));
+    }
+    if (FlowMetrics.FocusLevel < 0.5f)
+    {
+        Conditions.Add(TEXT("focus is low (remove distractions, warm up before practice)"));
+    }
+    if (FlowMetrics.IntrinsicMotivation < 0.5f)
+    {
+        Conditions.Add(TEXT("intrinsic motivation is low (reconnect with why they enjoy the game, vary the activity)"));
+    }
+    if (Conditions.Num() == 0)
+    {
+        Conditions.Add(TEXT("none of concern - the player is in a good state for learning; encourage them to keep it up"));
+    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("conditions"), FString::Join(Conditions, TEXT("; ")));
+    EchoCoaching::RequestFromTemplate(this, TEXT("flow_optimization"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================

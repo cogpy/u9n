@@ -28,6 +28,20 @@ namespace EchoCoaching
      */
     void Request(UObject* Owner, const FString& Topic, const FString& Instruction, const FString& Metrics,
                  FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed);
+
+    /**
+     * Coaching prompt templates, keyed by topic. Each is an instruction to the model with
+     * "{slot}" placeholders (the condition-routed focus of the advice, top elements, weakest
+     * area, ...); the model writes the coaching. Editable at runtime.
+     */
+    TMap<FString, FString>& PromptTemplates();
+
+    /**
+     * Fills Topic's prompt template with Slots and requests coaching (see Request). If no
+     * template is registered for Topic, Failed is broadcast and nothing is said.
+     */
+    void RequestFromTemplate(UObject* Owner, const FString& Topic, const TMap<FString, FString>& Slots,
+                             const FString& Metrics, FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed);
 }
 
 /**
