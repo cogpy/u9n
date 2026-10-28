@@ -142,11 +142,8 @@ void ADeepTreeEchoCharacter::BeginPlay()
 	// Initialize all components
 	InitializeComponents();
 
-	// Start with default emotional state
-	if (AvatarComponent)
-	{
-		AvatarComponent->SetEmotionalState(FEmotionalState(0.5f, 0.5f, 0.5f));
-	}
+	// No emotional state is pushed to the avatar here: the avatar, expression and audio
+	// components subscribe to FEchoReactionBus themselves and show only model-chosen reactions.
 }
 
 void ADeepTreeEchoCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -160,9 +157,6 @@ void ADeepTreeEchoCharacter::Tick(float DeltaTime)
 
 	// Update component synchronization
 	UpdateComponentSynchronization();
-
-	// Update emotional effects
-	UpdateEmotionalEffects();
 
 	// Update cognitive visualization
 	UpdateCognitiveVisualization();
@@ -398,42 +392,8 @@ void ADeepTreeEchoCharacter::UpdateComponentSynchronization()
 		AvatarComponent->SetCognitiveLoadVisualization(CogLoad);
 	}
 
-	// Synchronize personality with movement
-	if (PersonalitySystem && GetCharacterMovement())
-	{
-		UDeepTreeEchoMovementComponent* DTEMovement = Cast<UDeepTreeEchoMovementComponent>(GetCharacterMovement());
-		if (DTEMovement)
-		{
-			FEmotionalState EmotionalState = PersonalitySystem->GetCurrentEmotionalState();
-			DTEMovement->SetEmotionalState(EmotionalState);
-		}
-	}
-}
-
-void ADeepTreeEchoCharacter::UpdateEmotionalEffects()
-{
-	if (!AvatarComponent || !PersonalitySystem)
-	{
-		return;
-	}
-
-	// Get current emotional state
-	FEmotionalState EmotionalState = PersonalitySystem->GetCurrentEmotionalState();
-
-	// Update avatar visuals based on emotion
-	AvatarComponent->SetEmotionalState(EmotionalState);
-
-	// Update audio based on emotion
-	if (AudioManager)
-	{
-		AudioManager->SetEmotionalState(EmotionalState);
-	}
-
-	// Update cosmetics based on emotion
-	if (CosmeticsComponent)
-	{
-		CosmeticsComponent->ApplyEmotionalEffects(EmotionalState);
-	}
+	// The personality system's emotional state is internal persona data (model input); it is not
+	// pushed to movement, avatar, cosmetics or audio as the character's displayed reaction.
 }
 
 void ADeepTreeEchoCharacter::UpdateCognitiveVisualization()
@@ -537,41 +497,11 @@ void ADeepTreeEchoCharacter::InitializeAbilitySystem()
 
 void ADeepTreeEchoCharacter::OnPersonalityShift(const FPersonalityState& OldState, const FPersonalityState& NewState)
 {
-	// Update visuals based on personality shift
-	if (AvatarComponent)
-	{
-		AvatarComponent->OnPersonalityChanged(NewState);
-	}
-
-	// Update cosmetics
-	if (CosmeticsComponent)
-	{
-		CosmeticsComponent->ApplyPersonalityOutfit(NewState);
-	}
-
-	// Play audio feedback
-	if (AudioManager)
-	{
-		AudioManager->OnPersonalityShift(OldState, NewState);
-	}
+	// A persona-state change is model input only. It does not change the avatar's look, outfit
+	// or sounds on the character's behalf; visible reactions come only from FEchoReactionBus.
 
 	// Broadcast to blueprints
 	OnPersonalityShiftEvent.Broadcast(OldState, NewState);
-}
-
-void ADeepTreeEchoCharacter::OnEmotionalStateChanged(const FEmotionalState& NewState)
-{
-	// Update avatar visuals
-	if (AvatarComponent)
-	{
-		AvatarComponent->SetEmotionalState(NewState);
-	}
-
-	// Update audio
-	if (AudioManager)
-	{
-		AudioManager->SetEmotionalState(NewState);
-	}
 }
 
 void ADeepTreeEchoCharacter::OnCognitiveLoadChanged(float NewLoad)

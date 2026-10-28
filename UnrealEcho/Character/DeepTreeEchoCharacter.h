@@ -120,7 +120,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo")
 	UAudioManagerComponent* GetAudioManager() const { return AudioManager; }
 
-	// Emotional state accessors
+	// Emotional state accessors (internal persona state; never drives the displayed reaction)
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo|Emotion")
 	float GetEmotionalValence() const;
 
@@ -195,7 +195,6 @@ protected:
 	// Internal update functions
 	void UpdateReplicatedState();
 	void UpdateComponentSynchronization();
-	void UpdateEmotionalEffects();
 	void UpdateCognitiveVisualization();
 
 	// Network replication
@@ -208,9 +207,6 @@ protected:
 	// Event handlers
 	UFUNCTION()
 	void OnPersonalityShift(const FPersonalityState& OldState, const FPersonalityState& NewState);
-
-	UFUNCTION()
-	void OnEmotionalStateChanged(const FEmotionalState& NewState);
 
 	UFUNCTION()
 	void OnCognitiveLoadChanged(float NewLoad);
