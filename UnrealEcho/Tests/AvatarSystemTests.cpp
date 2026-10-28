@@ -3,6 +3,7 @@
 #include "Personality/PersonalityTraitSystem.h"
 #include "Neurochemical/NeurochemicalSimulationComponent.h"
 #include "Tests/AutomationCommon.h"
+#include "EchoCharacterReaction.h"
 
 // ===== Avatar3DComponentEnhanced Tests =====
 
@@ -95,6 +96,50 @@ bool FAvatar3DSuperHotGirlTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAvatar3DModelReactionTest, 
+    "UnrealEngineCog.Avatar.AppliesModelReaction", 
+    EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FAvatar3DModelReactionTest::RunTest(const FString& Parameters)
+{
+    UAvatar3DComponentEnhanced* AvatarComponent = NewObject<UAvatar3DComponentEnhanced>();
+    
+    TestNotNull(TEXT("Avatar component should be created"), AvatarComponent);
+    
+    if (AvatarComponent)
+    {
+        AvatarComponent->ReactionCharacterName = TEXT("Deep Tree Echo");
+
+        // A reaction as parsed from a model reply is applied as given
+        FEchoCharacterReaction Reaction;
+        Reaction.CharacterName = TEXT("Deep Tree Echo");
+        Reaction.Expression = TEXT("Surprised");
+        Reaction.Intensity = 0.6f;
+        AvatarComponent->ApplyCharacterReaction(Reaction);
+
+        FAvatarEmotionalState State = AvatarComponent->GetCurrentEmotionalState();
+        TestEqual(TEXT("Avatar shows the model-chosen expression"), State.CurrentEmotion, EAvatarEmotionalState::Surprised);
+        TestEqual(TEXT("Avatar uses the model-chosen intensity"), State.EmotionIntensity, 0.6f, 0.01f);
+
+        // A reaction for another character, or with no expression, changes nothing
+        FEchoCharacterReaction Other;
+        Other.CharacterName = TEXT("Someone Else");
+        Other.Expression = TEXT("Angry");
+        Other.Intensity = 1.0f;
+        AvatarComponent->ApplyCharacterReaction(Other);
+
+        FEchoCharacterReaction NoExpression;
+        NoExpression.CharacterName = TEXT("Deep Tree Echo");
+        NoExpression.Utterance = TEXT("(model utterance)");
+        AvatarComponent->ApplyCharacterReaction(NoExpression);
+
+        State = AvatarComponent->GetCurrentEmotionalState();
+        TestEqual(TEXT("Expression unchanged without a matching model reaction"), State.CurrentEmotion, EAvatarEmotionalState::Surprised);
+    }
+    
+    return true;
+}
+
 // ===== PersonalityTraitSystem Tests =====
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPersonalityTraitBasicTest, 
@@ -147,10 +192,17 @@ bool FPersonalitySuperHotGirlTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Confidence should be high"), Trait.Confidence > 0.7f);
         TestTrue(TEXT("Charm should be high"), Trait.Charm > 0.8f);
         
-        // Test behaviors
-        PersonalitySystem->TriggerFlirtyBehavior(0.8f);
-        PersonalitySystem->TriggerConfidentGesture();
-        PersonalitySystem->TriggerPlayfulExpression();
+        // Traits are persona data only: ticking with the trait active must not produce a reaction
+        int32 ReactionCount = 0;
+        const FDelegateHandle Handle = FEchoReactionBus::OnReaction().AddLambda(
+            [&ReactionCount](const FEchoCharacterReaction&) { ++ReactionCount; });
+        for (int32 Step = 0; Step < 10; ++Step)
+        {
+            PersonalitySystem->TickComponent(0.1f, LEVELTICK_All, nullptr);
+        }
+        FEchoReactionBus::OnReaction().Remove(Handle);
+
+        TestEqual(TEXT("Personality traits must not synthesise a character reaction"), ReactionCount, 0);
         
         UE_LOG(LogTemp, Log, TEXT("Super-hot-girl trait test passed"));
     }
@@ -178,10 +230,16 @@ bool FPersonalityHyperChaoticTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Unpredictability should be high"), Trait.UnpredictabilityFactor > 0.5f);
         TestTrue(TEXT("Emotional volatility should be high"), Trait.EmotionalVolatility > 0.5f);
         
-        // Test chaotic behaviors
-        PersonalitySystem->TriggerChaoticEvent();
-        PersonalitySystem->TriggerEmotionalSpike(0.8f);
-        PersonalitySystem->TriggerPatternBreak();
+        // A chaotic persona still produces no reaction of its own: reactions come only from the model
+        int32 ReactionCount = 0;
+        const FDelegateHandle Handle = FEchoReactionBus::OnReaction().AddLambda(
+            [&ReactionCount](const FEchoCharacterReaction&) { ++ReactionCount; });
+        for (int32 Step = 0; Step < 10; ++Step)
+        {
+            PersonalitySystem->TickComponent(0.1f, LEVELTICK_All, nullptr);
+        }
+        FEchoReactionBus::OnReaction().Remove(Handle);
+        TestEqual(TEXT("Hyper-chaotic trait must not synthesise a character reaction"), ReactionCount, 0);
         
         // Test predictability
         float Predictability = PersonalitySystem->GetBehavioralPredictability();
