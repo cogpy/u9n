@@ -390,13 +390,32 @@ public:
     FOnDNAFacialExpressionFailed OnFacialExpressionFailed;
 
     /**
-     * Sync emotional state to facial rig
-     * Maps emotional state to facial expression blend shapes
-     * @param Emotion - Current emotional state
-     * @param OutBlendShapeWeights - Output blend shape weights (0-1)
+     * Sync emotional state to facial rig. Asks the model to choose the facial expression for
+     * Emotion (RequestFacialExpressionFromEmotion) and outputs the blend shape weights rendered
+     * from the model's last chosen expression - empty until the model has answered.
+     * @param Emotion - Current emotional state (model input)
+     * @param OutBlendShapeWeights - Weights rendered from the model's expression (0-1), or empty
      */
     UFUNCTION(BlueprintCallable, Category = "DNA|Integration")
     void SyncEmotionalStateToFacialRig(const FEmotionalState& Emotion, TMap<FString, float>& OutBlendShapeWeights);
+
+    /**
+     * Ask the model to choose the facial expression (a key of ExpressionRenderMap) and its
+     * intensity [0,1] given the emotional state (EmotionFacialExpressionPromptTemplate). Same
+     * reply handling as RequestFacialExpressionFromNeurochemicals: a valid reply is rendered
+     * through ExpressionRenderMap and OnFacialExpressionChosen fires; failures: Error log,
+     * GetLastFacialExpressionError, OnFacialExpressionFailed, no change.
+     * Returns false when nothing was requested.
+     */
+    UFUNCTION(BlueprintCallable, Category = "DNA|Integration")
+    bool RequestFacialExpressionFromEmotion(const FEmotionalState& Emotion);
+
+    /**
+     * Instructions to the model for choosing the facial expression from the emotional state.
+     * Slots: {emotion}, {current}, {expressions}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DNA|Model", meta = (MultiLine = true))
+    FString EmotionFacialExpressionPromptTemplate;
 
     /**
      * Get blend shape weight for specific blend shape
@@ -510,9 +529,7 @@ protected:
 
     void HandleFacialExpressionReply(int32 Serial, bool bSuccess, const FString& TextOrError);
     void FailFacialExpressionRequest(const FString& Error);
-
-    // Emotional state (dimensional values) to blend shape rendering
-    void MapEmotionalStateToBlendShapes(const FEmotionalState& Emotion, TMap<FString, float>& OutWeights);
+    bool SendFacialExpressionRequest(const FString& PromptTemplate, const TCHAR* TemplateName, TMap<FString, FString> Slots);
 
     // Blend shape name mappings for different DNA versions
     TMap<FString, FString> GetDHIBlendShapeNames() const;
