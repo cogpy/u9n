@@ -303,6 +303,12 @@ struct FVisualFeedbackConfig
  * - Key moment extraction
  * - Performance comparison
  */
+/** The character's model recommended Combo (moves from ComboMoveVocabulary) for CurrentState. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnComboRecommended, const FString&, CurrentState, const TArray<FString>&, Combo);
+
+/** A combo request failed; Error is a system message, nothing was recommended. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnComboRecommendationFailed, const FString&, CurrentState, const FString&, Error);
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class DEEPTREEECHO_API UUnrealGamingMasteryIntegration : public UActorComponent
 {
@@ -452,9 +458,44 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Integration|Combat")
     float GetOptimalAttackTiming(AActor* Target) const;
 
-    /** Get combo recommendation */
+    /**
+     * Asks the character's model to write a combo for CurrentState (e.g. "neutral", "advantage"),
+     * given the measured combat analysis and recent inputs. Asynchronous: the combo, validated
+     * against ComboMoveVocabulary, arrives on OnComboRecommended and is kept as the last
+     * recommendation; on failure OnComboRecommendationFailed fires, the error is logged and kept in
+     * LastComboRecommendationError, and nothing is recommended.
+     */
     UFUNCTION(BlueprintCallable, Category = "Integration|Combat")
+    void RequestComboRecommendation(const FString& CurrentState);
+
+    /** The model's last combo for CurrentState, or empty if it has not written one for that state. */
+    UFUNCTION(BlueprintPure, Category = "Integration|Combat")
     TArray<FString> GetComboRecommendation(const FString& CurrentState) const;
+
+    /** Moves the model may compose combos from. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Integration|Combat")
+    TArray<FString> ComboMoveVocabulary;
+
+    /**
+     * Instruction sent to the model by RequestComboRecommendation. Slots: {state}, {moves},
+     * {max_length}, {metrics}, {recent_inputs}. The reply must be {"combo": ["<move>", ...]}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Integration|Combat", meta = (MultiLine = true))
+    FString ComboPromptTemplate;
+
+    /** Longest combo the model may write. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Integration|Combat", meta = (ClampMin = "1"))
+    int32 MaxComboLength = 6;
+
+    /** Last combo-request failure, or empty. */
+    UPROPERTY(BlueprintReadOnly, Category = "Integration|Combat")
+    FString LastComboRecommendationError;
+
+    UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
+    FOnComboRecommended OnComboRecommended;
+
+    UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
+    FOnComboRecommendationFailed OnComboRecommendationFailed;
 
     /** Predict enemy attack */
     UFUNCTION(BlueprintCallable, Category = "Integration|Combat")
@@ -684,6 +725,14 @@ private:
 
     /** Last game state features */
     TArray<float> LastGameStateFeatures;
+
+    /** Model-written combos by the state they were requested for */
+    TMap<FString, TArray<FString>> ComboRecommendations;
+
+    /** Incremented per RequestComboRecommendation; stale replies are discarded */
+    int32 ComboRequestSerial = 0;
+
+    void HandleComboReply(int32 RequestSerial, const FString& CurrentState, bool bSuccess, const FString& TextOrError);
 
     // ========================================
     // INTERNAL METHODS

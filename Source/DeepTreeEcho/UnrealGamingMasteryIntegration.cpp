@@ -11,11 +11,23 @@
 #include "Animation/AnimMontage.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 
 UUnrealGamingMasteryIntegration::UUnrealGamingMasteryIntegration()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickInterval = 0.0f; // Every frame
+
+    ComboMoveVocabulary = { TEXT("light_attack"), TEXT("heavy_attack"), TEXT("special_attack"),
+                            TEXT("block"), TEXT("dodge"), TEXT("counter"), TEXT("grab") };
+
+    ComboPromptTemplate = TEXT(
+        "You are Deep Tree Echo, fighting in a real-time game. You are in a {state} position. "
+        "Your measured combat performance:\n{metrics}\nYour most recent inputs: {recent_inputs}.\n"
+        "Choose the combo you will use next: a sequence of 1 to {max_length} moves, each exactly one of: {moves}. "
+        "Reply with only a JSON object: {\"combo\": [\"<move>\", ...]}");
 }
 
 void UUnrealGamingMasteryIntegration::BeginPlay()
@@ -558,29 +570,115 @@ float UUnrealGamingMasteryIntegration::GetOptimalAttackTiming(AActor* Target) co
     return 0.0f;
 }
 
+void UUnrealGamingMasteryIntegration::RequestComboRecommendation(const FString& CurrentState)
+{
+    if (ComboMoveVocabulary.Num() == 0)
+    {
+        LastComboRecommendationError = TEXT("ComboMoveVocabulary is empty");
+        UE_LOG(LogTemp, Error, TEXT("UnrealGamingMasteryIntegration: %s"), *LastComboRecommendationError);
+        OnComboRecommendationFailed.Broadcast(CurrentState, LastComboRecommendationError);
+        return;
+    }
+
+    const FString Metrics = FString::Printf(
+        TEXT("accuracy %.2f\ndamage efficiency %.2f\nreaction time %.2f s\ncombo execution rate %.2f\n")
+        TEXT("positioning %.2f\ntarget prioritization %.2f\ncooldown management %.2f"),
+        CombatAnalysis.Accuracy, CombatAnalysis.DamageEfficiency, CombatAnalysis.ReactionTime,
+        CombatAnalysis.ComboExecutionRate, CombatAnalysis.PositioningScore,
+        CombatAnalysis.TargetPrioritization, CombatAnalysis.CooldownManagement);
+
+    TArray<FString> Recent;
+    for (int32 Index = FMath::Max(0, InputHistory.Num() - 8); Index < InputHistory.Num(); ++Index)
+    {
+        Recent.Add(InputHistory[Index].Key);
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("state"), CurrentState);
+    Slots.Add(TEXT("moves"), FString::Join(ComboMoveVocabulary, TEXT(", ")));
+    Slots.Add(TEXT("max_length"), FString::FromInt(FMath::Max(1, MaxComboLength)));
+    Slots.Add(TEXT("metrics"), Metrics);
+    Slots.Add(TEXT("recent_inputs"), Recent.Num() ? FString::Join(Recent, TEXT(", ")) : FString(TEXT("none yet")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(ComboPromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++ComboRequestSerial;
+    TWeakObjectPtr<UUnrealGamingMasteryIntegration> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial, CurrentState](bool bSuccess, const FString& TextOrError)
+        {
+            if (UUnrealGamingMasteryIntegration* Self = WeakThis.Get())
+            {
+                Self->HandleComboReply(RequestSerial, CurrentState, bSuccess, TextOrError);
+            }
+        }), 0.7f);
+}
+
+void UUnrealGamingMasteryIntegration::HandleComboReply(int32 RequestSerial, const FString& CurrentState,
+                                                       bool bSuccess, const FString& TextOrError)
+{
+    if (RequestSerial != ComboRequestSerial)
+    {
+        return; // superseded by a newer request
+    }
+
+    auto Fail = [this, &CurrentState](const FString& Error)
+    {
+        LastComboRecommendationError = Error;
+        UE_LOG(LogTemp, Error, TEXT("UnrealGamingMasteryIntegration: no model combo for '%s': %s"), *CurrentState, *Error);
+        OnComboRecommendationFailed.Broadcast(CurrentState, Error);
+    };
+
+    if (!bSuccess)
+    {
+        Fail(TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    const TArray<TSharedPtr<FJsonValue>>* MoveValues = nullptr;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetArrayField(TEXT("combo"), MoveValues) ||
+        !MoveValues || MoveValues->Num() == 0)
+    {
+        Fail(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+    if (MoveValues->Num() > FMath::Max(1, MaxComboLength))
+    {
+        Fail(FString::Printf(TEXT("model combo has %d moves, more than %d"), MoveValues->Num(), MaxComboLength));
+        return;
+    }
+
+    TArray<FString> Combo;
+    for (const TSharedPtr<FJsonValue>& Value : *MoveValues)
+    {
+        FString Move;
+        if (!Value.IsValid() || !Value->TryGetString(Move))
+        {
+            Fail(TEXT("model combo contains a non-string move"));
+            return;
+        }
+        Move.TrimStartAndEndInline();
+        const FString* Known = ComboMoveVocabulary.FindByPredicate(
+            [&Move](const FString& Candidate) { return Candidate.Equals(Move, ESearchCase::IgnoreCase); });
+        if (!Known)
+        {
+            Fail(FString::Printf(TEXT("model chose a move outside the vocabulary: %s"), *Move));
+            return;
+        }
+        Combo.Add(*Known);
+    }
+
+    LastComboRecommendationError.Reset();
+    ComboRecommendations.Add(CurrentState, Combo);
+    OnComboRecommended.Broadcast(CurrentState, Combo);
+}
+
 TArray<FString> UUnrealGamingMasteryIntegration::GetComboRecommendation(const FString& CurrentState) const
 {
-    TArray<FString> Combo;
-
-    // Recommend combo based on current state
-    if (CurrentState == TEXT("neutral"))
-    {
-        Combo.Add(TEXT("light_attack"));
-        Combo.Add(TEXT("light_attack"));
-        Combo.Add(TEXT("heavy_attack"));
-    }
-    else if (CurrentState == TEXT("advantage"))
-    {
-        Combo.Add(TEXT("heavy_attack"));
-        Combo.Add(TEXT("special_attack"));
-    }
-    else if (CurrentState == TEXT("disadvantage"))
-    {
-        Combo.Add(TEXT("dodge"));
-        Combo.Add(TEXT("counter"));
-    }
-
-    return Combo;
+    const TArray<FString>* Combo = ComboRecommendations.Find(CurrentState);
+    return Combo ? *Combo : TArray<FString>();
 }
 
 FString UUnrealGamingMasteryIntegration::PredictEnemyAttack(AActor* Enemy) const
