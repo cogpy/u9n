@@ -1147,7 +1147,13 @@ void UGamingMasterySystem::UpdateESNTraining(const TArray<float>& InputFeatures,
                 ESNOutputWeights[i][j] += LearningRate * Error * ESNReservoirState[j];
             }
         }
+        ++ESNTrainingUpdates;
     }
+}
+
+bool UGamingMasterySystem::IsESNValueHeadTrained() const
+{
+    return ESNOutputWeights.Num() > 0 && ESNTrainingUpdates >= FMath::Max(1, MinESNTrainingUpdatesForValue);
 }
 
 FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 SimulationCount)
@@ -1160,6 +1166,12 @@ FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 Simu
     else if (!MCTSTransitionModel.IsBound())
     {
         LastMCTSError = TEXT("MCTS unavailable: no transition model bound (SetMCTSTransitionModel); without one every action leads to the same state");
+    }
+    else if (!IsESNValueHeadTrained())
+    {
+        LastMCTSError = FString::Printf(
+            TEXT("MCTS unavailable: the ESN value head is untrained (%d of %d training updates); an untrained value estimate cannot choose an action"),
+            ESNTrainingUpdates, FMath::Max(1, MinESNTrainingUpdatesForValue));
     }
     if (!LastMCTSError.IsEmpty())
     {
@@ -1242,15 +1254,21 @@ FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 Simu
 
 float UGamingMasterySystem::EstimateStateValue(const TArray<float>& GameState)
 {
-    // Use ESN to estimate state value
-    TArray<float> Output = RunESNInference(GameState);
-    
-    if (Output.Num() > 0)
+    // Only a trained ESN value head gives an estimate; there is no neutral default
+    if (!IsESNValueHeadTrained())
     {
-        return Output[0]; // First output is value estimate
+        UE_LOG(LogTemp, Error, TEXT("GamingMasterySystem: no state value - the ESN value head is untrained (%d of %d training updates)"),
+            ESNTrainingUpdates, FMath::Max(1, MinESNTrainingUpdatesForValue));
+        return 0.0f;
     }
-    
-    return 0.5f; // Neutral value
+
+    TArray<float> Output = RunESNInference(GameState);
+    if (Output.Num() == 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("GamingMasterySystem: no state value - the ESN produced no output"));
+        return 0.0f;
+    }
+    return Output[0]; // First output is the value estimate
 }
 
 // ========================================

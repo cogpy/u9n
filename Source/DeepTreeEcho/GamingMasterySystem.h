@@ -772,8 +772,9 @@ public:
 
     /**
      * Run Monte Carlo Tree Search over MCTSLegalActions using the bound transition model and the
-     * ESN value estimate. Returns the most valuable root action, or an empty string when MCTS cannot
-     * run (no legal actions, no transition model, or no action applicable) - see GetLastMCTSError.
+     * trained ESN value estimate. Returns the most valuable root action, or an empty string when MCTS
+     * cannot run (no legal actions, no transition model, untrained ESN value head, or no action
+     * applicable) - see GetLastMCTSError.
      */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     FString RunMCTS(const TArray<float>& GameState, int32 SimulationCount = 1000);
@@ -782,9 +783,20 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gaming|ML")
     FString GetLastMCTSError() const { return LastMCTSError; }
 
-    /** Get value estimate for game state */
+    /**
+     * ESN value estimate for a game state. Meaningful only when IsESNValueHeadTrained();
+     * otherwise logs an error and returns 0 (there is no default value).
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     float EstimateStateValue(const TArray<float>& GameState);
+
+    /** True once UpdateESNTraining has applied MinESNTrainingUpdatesForValue updates to the output weights */
+    UFUNCTION(BlueprintPure, Category = "Gaming|ML")
+    bool IsESNValueHeadTrained() const;
+
+    /** Training updates the ESN value head needs before MCTS may use it */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaming|ML", meta = (ClampMin = "1"))
+    int32 MinESNTrainingUpdatesForValue = 200;
 
     // ========================================
     // EVENTS
@@ -840,6 +852,9 @@ private:
 
     /** ESN leaking rate */
     float ESNLeakingRate = 0.3f;
+
+    /** Output-weight training updates applied by UpdateESNTraining */
+    int32 ESNTrainingUpdates = 0;
 
     /** Flow state entry threshold */
     float FlowEntryThreshold = 0.7f;
