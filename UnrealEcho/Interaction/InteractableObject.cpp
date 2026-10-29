@@ -4,6 +4,7 @@
 #include "InteractableObject.h"
 #include "Components/StaticMeshComponent.h"
 #include "Personality/PersonalityTraitSystem.h"
+#include "Cognitive/EmotionalState.h"
 #include "EchoModelClient.h"
 #include "Dom/JsonObject.h"
 
@@ -193,7 +194,9 @@ void AInteractableObject::OnInteractionCompleted(AActor* Interactor, EInteractio
 
 void AInteractableObject::UpdateInteraction(float DeltaTime)
 {
-	// Update progress for timed interactions
+	// Update progress for timed interactions. Finished ones are ended after the loop:
+	// EndInteraction removes from ActiveInteractions, which must not change while iterating.
+	TArray<AActor*> Finished;
 	for (auto& Pair : ActiveInteractions)
 	{
 		AActor* Interactor = Pair.Key.Get();
@@ -211,9 +214,13 @@ void AInteractableObject::UpdateInteraction(float DeltaTime)
 
 			if (InteractionProgress >= 1.0f)
 			{
-				EndInteraction(Interactor, true);
+				Finished.Add(Interactor);
 			}
 		}
+	}
+	for (AActor* Interactor : Finished)
+	{
+		EndInteraction(Interactor, true);
 	}
 }
 
