@@ -459,9 +459,30 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
     void RequestExplorationRecommendation();
 
-    /** Adjust risk tolerance based on game state */
+    /**
+     * Asks the model to choose the strategic stance (from StanceVocabulary) and risk tolerance
+     * [0,1], given the measured game progress, advantage and cognitive state (StancePromptTemplate).
+     * Asynchronous: on a valid reply the enacted stance and risk tolerance are set and
+     * OnStrategicAdaptation fires if the stance changed. On failure: Error log,
+     * GetLastStanceError, OnStanceRequestFailed; the stance is unchanged and nothing is broadcast.
+     */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
     void AdjustRiskTolerance(float GameProgress, float CurrentAdvantage);
+
+    /** Why the last stance request failed, or empty */
+    UFUNCTION(BlueprintPure, Category = "Bridge|Enacted")
+    FString GetLastStanceError() const { return LastStanceError; }
+
+    /** Stances the model may choose */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Model")
+    TArray<FString> StanceVocabulary;
+
+    /**
+     * Instructions to the model for choosing a stance. Slots: {progress}, {advantage},
+     * {stance}, {risk}, {state}, {stances}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Model", meta = (MultiLine = true))
+    FString StancePromptTemplate;
 
     /** Ask the companion (model) how to respond to an opponent action. Result arrives on OnCoachingReady / OnCoachingFailed (topic "adaptive_response"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
@@ -582,6 +603,11 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Bridge|Events")
     FOnStrategicAdaptation OnStrategicAdaptation;
 
+    /** A stance request failed; the stance is unchanged */
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnStanceRequestFailed, const FString&, Error);
+    UPROPERTY(BlueprintAssignable, Category = "Bridge|Events")
+    FOnStanceRequestFailed OnStanceRequestFailed;
+
     /** Model-written coaching for the player (see EchoCoaching) */
     UPROPERTY(BlueprintAssignable, Category = "Bridge|Events")
     FOnCompanionCoaching OnCoachingReady;
@@ -615,6 +641,12 @@ private:
 
     /** Previous overload state */
     bool bWasOverloaded = false;
+
+    FString LastStanceError;
+    int32 StanceRequestSerial = 0;
+
+    void HandleStanceReply(int32 Serial, TArray<FString> Offered, bool bSuccess, const FString& TextOrError);
+    void FailStanceRequest(const FString& Error);
 
     // ========================================
     // INTERNAL METHODS

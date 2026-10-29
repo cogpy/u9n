@@ -3,11 +3,23 @@
 // Copyright (c) 2025 Deep Tree Echo Project
 
 #include "StrategicCognitionBridge.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 UStrategicCognitionBridge::UStrategicCognitionBridge()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickInterval = 0.05f; // 20Hz for responsive cognitive tracking
+
+    StanceVocabulary = { TEXT("Conservative"), TEXT("Aggressive"), TEXT("Desperate"), TEXT("Balanced") };
+
+    StancePromptTemplate = TEXT(
+        "You are Deep Tree Echo, playing a competitive game. Decide your strategic stance and how much risk to take.\n"
+        "Game progress: {progress} (0 = start, 1 = end). Your advantage: {advantage} (-1 = losing badly, +1 = winning comfortably).\n"
+        "Current stance: {stance}; current risk tolerance: {risk}.\n"
+        "Your cognitive state:\n{state}\n"
+        "Choose the stance as exactly one of: {stances}; and a risk tolerance between 0 and 1.\n"
+        "Reply with only a JSON object: {\"stance\": \"<stance>\", \"risk_tolerance\": <number>}");
 }
 
 void UStrategicCognitionBridge::BeginPlay()
@@ -338,43 +350,109 @@ void UStrategicCognitionBridge::RequestExplorationRecommendation()
 
 void UStrategicCognitionBridge::AdjustRiskTolerance(float GameProgress, float CurrentAdvantage)
 {
-    FString OldStance = EnactedStrategy.StrategicStance;
-
-    // Adjust risk tolerance based on game state
-    if (CurrentAdvantage > 0.3f)
+    TArray<FString> Offered;
+    for (const FString& Stance : StanceVocabulary)
     {
-        // Winning - can afford more risk or play safe
-        if (GameProgress > 0.7f)
+        if (!Stance.IsEmpty()) { Offered.AddUnique(Stance); }
+    }
+    if (Offered.Num() == 0)
+    {
+        FailStanceRequest(TEXT("StanceVocabulary is empty"));
+        return;
+    }
+    if (StancePromptTemplate.IsEmpty())
+    {
+        FailStanceRequest(TEXT("StancePromptTemplate is empty"));
+        return;
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("progress"), FString::Printf(TEXT("%.2f"), GameProgress));
+    Slots.Add(TEXT("advantage"), FString::Printf(TEXT("%+.2f"), CurrentAdvantage));
+    Slots.Add(TEXT("stance"), EnactedStrategy.StrategicStance.IsEmpty() ? FString(TEXT("(none yet)")) : EnactedStrategy.StrategicStance);
+    Slots.Add(TEXT("risk"), FString::Printf(TEXT("%.2f"), EnactedStrategy.RiskTolerance));
+    Slots.Add(TEXT("state"), DescribeCognitiveStateForModel());
+    Slots.Add(TEXT("stances"), FString::Join(Offered, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(StancePromptTemplate, Slots)));
+
+    const int32 Serial = ++StanceRequestSerial;
+    TWeakObjectPtr<UStrategicCognitionBridge> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, Serial, Offered](bool bSuccess, const FString& TextOrError)
         {
-            // Late game with advantage - play safe
-            EnactedStrategy.RiskTolerance = FMath::Max(0.2f, EnactedStrategy.RiskTolerance - 0.1f);
-            EnactedStrategy.StrategicStance = TEXT("Conservative");
+            if (UStrategicCognitionBridge* Self = WeakThis.Get())
+            {
+                Self->HandleStanceReply(Serial, Offered, bSuccess, TextOrError);
+            }
+        }), 0.5f);
+}
+
+void UStrategicCognitionBridge::HandleStanceReply(int32 Serial, TArray<FString> Offered, bool bSuccess, const FString& TextOrError)
+{
+    if (Serial != StanceRequestSerial)
+    {
+        return; // superseded by a newer request
+    }
+    if (!bSuccess)
+    {
+        FailStanceRequest(TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Stance;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("stance"), Stance))
+    {
+        FailStanceRequest(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+    Stance.TrimStartAndEndInline();
+    const FString* Known = Offered.FindByPredicate(
+        [&Stance](const FString& Candidate) { return Candidate.Equals(Stance, ESearchCase::IgnoreCase); });
+    if (!Known)
+    {
+        FailStanceRequest(FString::Printf(TEXT("model chose a stance outside the vocabulary: %s"), *Stance));
+        return;
+    }
+
+    // Smaller models sometimes quote numbers; accept a numeric string as the same value
+    double Risk = 0.0;
+    FString RiskText;
+    if (!Json->TryGetNumberField(TEXT("risk_tolerance"), Risk))
+    {
+        if (Json->TryGetStringField(TEXT("risk_tolerance"), RiskText) && RiskText.TrimStartAndEnd().IsNumeric())
+        {
+            Risk = FCString::Atod(*RiskText.TrimStartAndEnd());
         }
         else
         {
-            // Early/mid with advantage - press it
-            EnactedStrategy.RiskTolerance = FMath::Min(0.8f, EnactedStrategy.RiskTolerance + 0.05f);
-            EnactedStrategy.StrategicStance = TEXT("Aggressive");
+            FailStanceRequest(TEXT("model reply has no numeric risk_tolerance"));
+            return;
         }
     }
-    else if (CurrentAdvantage < -0.3f)
+    if (Risk < 0.0 || Risk > 1.0)
     {
-        // Losing - may need to take risks
-        EnactedStrategy.RiskTolerance = FMath::Min(0.9f, EnactedStrategy.RiskTolerance + 0.15f);
-        EnactedStrategy.StrategicStance = TEXT("Desperate");
-    }
-    else
-    {
-        // Even game - balanced approach
-        EnactedStrategy.RiskTolerance = 0.5f;
-        EnactedStrategy.StrategicStance = TEXT("Balanced");
+        FailStanceRequest(FString::Printf(TEXT("model risk_tolerance %.3f is outside [0,1]"), Risk));
+        return;
     }
 
-    // Broadcast if stance changed
+    LastStanceError.Reset();
+    const FString OldStance = EnactedStrategy.StrategicStance;
+    EnactedStrategy.StrategicStance = *Known;
+    EnactedStrategy.RiskTolerance = static_cast<float>(Risk);
     if (OldStance != EnactedStrategy.StrategicStance)
     {
         OnStrategicAdaptation.Broadcast(OldStance, EnactedStrategy.StrategicStance);
     }
+}
+
+void UStrategicCognitionBridge::FailStanceRequest(const FString& Error)
+{
+    LastStanceError = Error;
+    UE_LOG(LogTemp, Error, TEXT("StrategicCognitionBridge: no model stance (stance unchanged): %s"), *Error);
+    OnStanceRequestFailed.Broadcast(Error);
 }
 
 void UStrategicCognitionBridge::RequestAdaptiveResponse(const FString& OpponentAction, const TArray<float>& GameState)
