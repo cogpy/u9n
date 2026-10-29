@@ -13,6 +13,8 @@
 #include "Personality/PersonalityTraitSystem.h"
 #include "Neurochemical/NeurochemicalSimulationComponent.h"
 #include "Narrative/DiaryInsightBlogLoop.h"
+#include "Interaction/DeepTreeEchoInteractionComponent.h"
+#include "Interaction/InteractableObject.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
 
@@ -486,5 +488,68 @@ bool FPerformanceIntegrationTest::RunTest(const FString& Parameters)
     // Cleanup
     World->DestroyActor(TestActor);
     
+    return true;
+}
+
+//=============================================================================
+// Interaction: success only from the target's interaction interface; the model
+// chooses what to interact with
+//=============================================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInteractionHonestOutcomeTest,
+    "UnrealEngineCog.Integration.InteractionReportsOnlyRealOutcomes",
+    EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FInteractionHonestOutcomeTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = GetTestWorld();
+    if (!World)
+    {
+        AddError(TEXT("Failed to get test world"));
+        return false;
+    }
+
+    AActor* Owner = World->SpawnActor<AActor>();
+    AActor* PlainTarget = World->SpawnActor<AActor>();
+    AInteractableObject* EmptyObject = World->SpawnActor<AInteractableObject>();
+    if (!Owner || !PlainTarget || !EmptyObject)
+    {
+        AddError(TEXT("Failed to spawn test actors"));
+        return false;
+    }
+    PlainTarget->Tags.Add(TEXT("Interactable"));
+
+    UDeepTreeEchoInteractionComponent* Interaction = NewObject<UDeepTreeEchoInteractionComponent>(Owner);
+    Owner->AddInstanceComponent(Interaction);
+    Interaction->RegisterComponent();
+
+    // A tagged actor with no interaction interface: nothing is done and nothing succeeds
+    const FInteractionResult NoInterface = Interaction->InteractWith(PlainTarget);
+    TestFalse(TEXT("No success without an interaction interface"), NoInterface.bSuccess);
+    TestFalse(TEXT("Nothing is in progress"), NoInterface.bInProgress);
+    TestFalse(TEXT("The component is not left interacting"), Interaction->IsInteracting());
+    TestEqual(TEXT("The failed attempt is remembered"), Interaction->GetInteractionHistory().Num(), 1);
+    if (Interaction->GetInteractionHistory().Num() == 1)
+    {
+        TestFalse(TEXT("It is remembered as a failure"), Interaction->GetInteractionHistory()[0].bWasSuccessful);
+    }
+
+    // An interactable that offers no interaction to this character: an honest failure
+    const FInteractionResult NoneOffered = Interaction->InteractWith(EmptyObject);
+    TestFalse(TEXT("No success when the target offers nothing"), NoneOffered.bSuccess);
+    TestFalse(TEXT("Nothing is in progress either"), NoneOffered.bInProgress);
+
+    // No candidates: the model is not asked and nothing is chosen
+    AddExpectedError(TEXT("No model interaction choice"), EAutomationExpectedErrorFlags::Contains, 2);
+    TestFalse(TEXT("No interaction choice without candidates"), Interaction->InteractWithBest());
+    TestFalse(TEXT("The refusal is recorded"), Interaction->GetLastInteractionChoiceError().IsEmpty());
+    TestFalse(TEXT("No best interactable before the model chooses"), Interaction->GetBestInteractable().Actor.IsValid());
+
+    Interaction->InteractionChoicePromptTemplate.Empty();
+    TestFalse(TEXT("No interaction choice with an empty prompt"), Interaction->InteractWithBest());
+
+    World->DestroyActor(EmptyObject);
+    World->DestroyActor(PlainTarget);
+    World->DestroyActor(Owner);
     return true;
 }

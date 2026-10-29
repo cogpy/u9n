@@ -36,6 +36,8 @@
 #include "Avatar/Sys6AvatarIntegration.h"
 #include "ActiveInference/ActiveInferenceEngine.h"
 #include "ActiveInference/AXIOMActiveInference.h"
+#include "ActiveInference/NicheConstructionSystem.h"
+#include "Emotion/EmotionalSystem.h"
 #include "EchoCharacterReaction.h"
 #include "DTEAutonomousAgentTestReceiver.h"
 
@@ -1106,15 +1108,25 @@ bool FActiveInference_UntrainedGateTest::RunTest(const FString& Parameters)
 
     TestFalse(TEXT("A fresh generative model is untrained"), Engine->IsGenerativeModelTrained());
 
-    AddExpectedError(TEXT("SelectPolicy: generative model untrained"));
+    // Each refusal is logged twice: once here, once below with a zero threshold
+    AddExpectedError(TEXT("SelectPolicy: generative model untrained"), EAutomationExpectedErrorFlags::Contains, 2);
+    AddExpectedError(TEXT("RunActiveInference: generative model untrained"), EAutomationExpectedErrorFlags::Contains, 2);
     const FPolicy Policy = Engine->SelectPolicy();
     TestTrue(TEXT("Untrained model selects no policy"), Policy.PolicyID.IsEmpty());
     TestEqual(TEXT("Untrained model's policy has no actions"), Policy.ActionSequence.Num(), 0);
 
-    AddExpectedError(TEXT("RunActiveInference: generative model untrained"));
     TestEqual(TEXT("Untrained model chooses no action"), Engine->RunActiveInference(), (int32)INDEX_NONE);
     TestEqual(TEXT("Nothing was executed"), Engine->GetActionHistory().Num(), 0);
     TestFalse(TEXT("The refusal is recorded"), Engine->GetLastError().IsEmpty());
+
+    // A threshold of 0 (or below) does not bypass the gate: at least one real update is needed
+    Engine->MinLearningUpdatesForTrainedModel = 0;
+    TestFalse(TEXT("A zero threshold does not make a fresh model trained"), Engine->IsGenerativeModelTrained());
+    TestTrue(TEXT("A zero threshold still selects no policy"), Engine->SelectPolicy().PolicyID.IsEmpty());
+    TestEqual(TEXT("A zero threshold still chooses no action"), Engine->RunActiveInference(), (int32)INDEX_NONE);
+    Engine->MinLearningUpdatesForTrainedModel = -5;
+    TestFalse(TEXT("A negative threshold does not make a fresh model trained"), Engine->IsGenerativeModelTrained());
+    TestEqual(TEXT("Nothing was executed with a bypassed threshold"), Engine->GetActionHistory().Num(), 0);
 
     // Only real executed outcomes count as learning
     Engine->MinLearningUpdatesForTrainedModel = 2;
@@ -1153,10 +1165,20 @@ bool FAXIOM_UntrainedGateTest::RunTest(const FString& Parameters)
     AXIOM->EvaluatePolicies();
 
     TestFalse(TEXT("A fresh world model is untrained"), AXIOM->IsWorldModelTrained());
-    AddExpectedError(TEXT("world model untrained"));
+    // Logged three times: fresh model, zero threshold, negative threshold
+    AddExpectedError(TEXT("world model untrained"), EAutomationExpectedErrorFlags::Contains, 3);
     TestEqual(TEXT("Untrained world model selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
     TestEqual(TEXT("No action broadcast"), Receiver->AXIOMActionsSelected, 0);
     TestFalse(TEXT("The refusal is recorded"), AXIOM->GetLastError().IsEmpty());
+
+    // A threshold of 0 (or below) does not bypass the gate: at least one reward observation is needed
+    AXIOM->MinRewardObservationsForTrainedModel = 0;
+    TestFalse(TEXT("A zero threshold does not make a fresh world model trained"), AXIOM->IsWorldModelTrained());
+    TestEqual(TEXT("A zero threshold still selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
+    AXIOM->MinRewardObservationsForTrainedModel = -3;
+    TestEqual(TEXT("A negative threshold still selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
+    TestEqual(TEXT("No action broadcast with a bypassed threshold"), Receiver->AXIOMActionsSelected, 0);
+    AXIOM->MinRewardObservationsForTrainedModel = 10;
 
     // Policies are enumerated candidates, identical on every generation (no random sequences)
     const TArray<FAXIOMPolicy> First = AXIOM->Policies;
@@ -1167,5 +1189,85 @@ bool FAXIOM_UntrainedGateTest::RunTest(const FString& Parameters)
         bSame = First[i].ActionSequence == AXIOM->Policies[i].ActionSequence;
     }
     TestTrue(TEXT("Candidate policies are deterministic"), bSame);
+    return true;
+}
+
+// ============================================================
+// Emotional system — mood inertia is deterministic (no random gate on OnMoodChanged)
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEmotionalSystem_DeterministicMoodTest,
+    "DTE.Emotion.MoodChangeIsDeterministic",
+    DTE_TEST_FLAGS)
+
+bool FEmotionalSystem_DeterministicMoodTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = GetDTETestWorld();
+    if (!World)
+    {
+        AddError(TEXT("No test world"));
+        return false;
+    }
+    AActor* Actor = World->SpawnActor<AActor>();
+    if (!Actor)
+    {
+        AddError(TEXT("Failed to spawn test actor"));
+        return false;
+    }
+
+    UEmotionalSystem* Emotion = NewObject<UEmotionalSystem>(Actor);
+    Actor->AddInstanceComponent(Emotion);
+    Emotion->RegisterComponent();
+    Emotion->ResetToBaseline();
+    Emotion->MoodInertia = 0.9f;
+    Emotion->MoodSwitchDwellSeconds = 2.0f; // required persistence: 0.9 * 1.0 * 2.0 = 1.8 s
+
+    Emotion->SetDimensionalEmotion(0.9f, 0.9f, 0.5f); // computes to Elated
+    Emotion->TickComponent(1.0f, LEVELTICK_All, nullptr);
+    TestTrue(TEXT("The mood holds before the dwell time"), Emotion->GetCurrentMood() == EMoodState::Calm);
+    Emotion->TickComponent(0.5f, LEVELTICK_All, nullptr);
+    TestTrue(TEXT("Still held at 1.5 s"), Emotion->GetCurrentMood() == EMoodState::Calm);
+    Emotion->TickComponent(0.5f, LEVELTICK_All, nullptr);
+    TestTrue(TEXT("The mood changes once the new mood has persisted"), Emotion->GetCurrentMood() == EMoodState::Elated);
+
+    World->DestroyActor(Actor);
+    return true;
+}
+
+// ============================================================
+// Niche construction — only measured affordances are detected
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNicheConstruction_MeasuredAffordancesTest,
+    "DTE.NicheConstruction.OnlyMeasuredAffordancesAreDetected",
+    DTE_TEST_FLAGS)
+
+bool FNicheConstruction_MeasuredAffordancesTest::RunTest(const FString& Parameters)
+{
+    UNicheConstructionSystem* Niche = NewObject<UNicheConstructionSystem>();
+    TestNotNull(TEXT("Niche system should be created"), Niche);
+    if (!Niche) { return false; }
+
+    // Nothing measured: nothing detected, however often we look
+    for (int32 i = 0; i < 20; ++i)
+    {
+        TestEqual(TEXT("No affordance without a measurement"), Niche->DetectAffordances().Num(), 0);
+    }
+    TestEqual(TEXT("Most salient list is empty"), Niche->GetMostSalientAffordances(5).Num(), 0);
+
+    // A measured affordance is detected once, with its measured salience
+    FEcologicalAffordance Door;
+    Door.AffordanceID = TEXT("door_east");
+    Door.Type = EAffordanceType::Physical;
+    Door.ActionPossibilities = { TEXT("Open") };
+    Door.Salience = 0.42f;
+    Niche->ObserveAffordance(Door);
+    const TArray<FEcologicalAffordance> Detected = Niche->DetectAffordances();
+    TestEqual(TEXT("The measured affordance is detected"), Detected.Num(), 1);
+    if (Detected.Num() == 1)
+    {
+        TestEqual(TEXT("Its salience is the measured value"), Detected[0].Salience, 0.42f);
+    }
+    TestEqual(TEXT("It is not detected again"), Niche->DetectAffordances().Num(), 0);
     return true;
 }

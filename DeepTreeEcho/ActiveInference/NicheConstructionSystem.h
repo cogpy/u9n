@@ -60,36 +60,36 @@ struct FEcologicalAffordance
 {
     GENERATED_BODY()
 
-    /** Affordance ID */
-    UPROPERTY(BlueprintReadOnly)
+    /** Affordance ID (reported by whoever measured it) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     FString AffordanceID;
 
     /** Affordance type */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     EAffordanceType Type = EAffordanceType::Physical;
 
     /** Action possibilities */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     TArray<FString> ActionPossibilities;
 
     /** Salience (0-1) */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     float Salience = 0.5f;
 
     /** Relevance to current goals (0-1) */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     float GoalRelevance = 0.5f;
 
     /** Modification potential (0-1) */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     float ModificationPotential = 0.5f;
 
     /** Persistence (how long affordance lasts) */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     float Persistence = 1.0f;
 
     /** Discovery timestamp */
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affordance")
     float DiscoveryTime = 0.0f;
 };
 
@@ -499,7 +499,17 @@ public:
     // PUBLIC API - AFFORDANCES
     // ========================================
 
-    /** Detect affordances in current state */
+    /**
+     * Report an affordance measured in the environment (by perception or the game), with its
+     * measured salience. It is detected on the next DetectAffordances.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Affordances")
+    void ObserveAffordance(const FEcologicalAffordance& Measured);
+
+    /**
+     * Detect affordances: the newly observed (measured) ones are added and broadcast on
+     * OnAffordanceDiscovered. Nothing is generated; with no observations nothing is detected.
+     */
     UFUNCTION(BlueprintCallable, Category = "Affordances")
     TArray<FEcologicalAffordance> DetectAffordances();
 
@@ -703,7 +713,8 @@ protected:
     void UpdateAffordanceDecay(float DeltaTime);
     void UpdateScaffoldIntegration(float DeltaTime);
     float ComputeFitnessAtState(const TArray<float>& State) const;
-    FEcologicalAffordance GenerateAffordance(EAffordanceType Type);
+    /** Affordances measured in the environment, not yet detected */
+    TArray<FEcologicalAffordance> PendingObservedAffordances;
     float ComputeModificationCost(const FNicheModification& Modification) const;
     void ApplyModificationToNiche(const FNicheModification& Modification);
     void BroadcastConstructionEvent(const FNicheConstructionEvent& Event);

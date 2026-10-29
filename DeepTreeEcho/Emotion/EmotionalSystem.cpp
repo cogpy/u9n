@@ -494,6 +494,8 @@ void UEmotionalSystem::ResetToBaseline()
     EmotionalState.Categorical.SecondaryIntensity = 0.0f;
 
     EmotionalState.CurrentMood = EMoodState::Calm;
+    PendingMood = EMoodState::Calm;
+    PendingMoodSeconds = 0.0f;
 }
 
 // ========================================
@@ -542,16 +544,28 @@ void UEmotionalSystem::UpdateMood(float DeltaTime)
 {
     EMoodState NewMood = ComputeMoodFromDimensional();
 
-    if (NewMood != EmotionalState.CurrentMood)
+    if (NewMood == EmotionalState.CurrentMood)
     {
-        // Apply mood inertia
-        float InertiaFactor = MoodInertia * EmotionalState.MoodStability;
-        if (FMath::FRand() > InertiaFactor)
-        {
-            EMoodState OldMood = EmotionalState.CurrentMood;
-            EmotionalState.CurrentMood = NewMood;
-            OnMoodChanged.Broadcast(OldMood, NewMood);
-        }
+        PendingMoodSeconds = 0.0f;
+        return;
+    }
+
+    // Mood inertia (deterministic): the newly computed mood must persist for
+    // MoodInertia * MoodStability * MoodSwitchDwellSeconds before the mood changes
+    if (NewMood != PendingMood)
+    {
+        PendingMood = NewMood;
+        PendingMoodSeconds = 0.0f;
+    }
+    PendingMoodSeconds += FMath::Max(0.0f, DeltaTime);
+
+    const float RequiredSeconds = FMath::Max(0.0f, MoodInertia * EmotionalState.MoodStability * MoodSwitchDwellSeconds);
+    if (PendingMoodSeconds >= RequiredSeconds)
+    {
+        const EMoodState OldMood = EmotionalState.CurrentMood;
+        EmotionalState.CurrentMood = NewMood;
+        PendingMoodSeconds = 0.0f;
+        OnMoodChanged.Broadcast(OldMood, NewMood);
     }
 }
 

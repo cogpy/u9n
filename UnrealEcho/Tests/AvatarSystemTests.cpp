@@ -512,6 +512,39 @@ bool FMetaHumanDNANoNeurochemicalFaceWithoutModelTest::RunTest(const FString& Pa
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMetaHumanDNANoEmotionFaceWithoutModelTest,
+    "UnrealEngineCog.MetaHumanDNA.NoEmotionFaceWithoutModel",
+    EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FMetaHumanDNANoEmotionFaceWithoutModelTest::RunTest(const FString& Parameters)
+{
+    UMetaHumanDNABridge* Bridge = NewObject<UMetaHumanDNABridge>();
+    TestNotNull(TEXT("DNA bridge should be created"), Bridge);
+    if (!Bridge) { return false; }
+
+    TestFalse(TEXT("The emotion prompt template has a default"), Bridge->EmotionFacialExpressionPromptTemplate.IsEmpty());
+
+    // Positive valence and high arousal used to be rendered as Smile/EyeOpen/BrowRaise by a fixed
+    // rule; now nothing is rendered until the model chooses an expression. An empty prompt fails
+    // without a model call.
+    FEmotionalState Emotion;
+    Emotion.Valence = 0.9f;
+    Emotion.Arousal = 0.8f;
+    Emotion.Intensity = 1.0f;
+    Emotion.Happiness = 0.9f;
+    Bridge->EmotionFacialExpressionPromptTemplate.Empty();
+    AddExpectedError(TEXT("No model facial expression"));
+    TMap<FString, float> Weights;
+    Weights.Add(TEXT("Smile_L"), 1.0f); // replaced by the (empty) model render
+    Bridge->SyncEmotionalStateToFacialRig(Emotion, Weights);
+
+    TestEqual(TEXT("No blend shape weights before the model chooses an expression"), Weights.Num(), 0);
+    TestTrue(TEXT("No model expression"), Bridge->GetModelFacialExpression().IsEmpty());
+    TestTrue(TEXT("The failure names the empty template"),
+        Bridge->GetLastFacialExpressionError().Contains(TEXT("EmotionFacialExpressionPromptTemplate")));
+    return true;
+}
+
 // ===== DNACalib wrapper: no simulated DNA data =====
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPythonDNACalibNoSimulationTest,

@@ -42,7 +42,8 @@ void UEchobeatsGamingIntegration::InitializeActionPlanning()
     StrategyPromptTemplate = TEXT(
         "You are Deep Tree Echo, playing a game in real time. Decide your strategy for the next few seconds.\n"
         "Goal pressures (0-1, derived from the situation): {goals}.\n"
-        "Measured situation: {situation}.\n"
+        "Raw game state features (measured): {game_state}.\n"
+        "Situation assessment: {situation}.\n"
         "Detected affordances: {affordances}.\n"
         "Choose exactly one strategy from: {strategies}.\n"
         "Reply with only a JSON object: {\"strategy\": \"<strategy>\"}");
@@ -80,7 +81,8 @@ void UEchobeatsGamingIntegration::BeginPlay()
         CognitionBridge = GetOwner()->FindComponentByClass<UStrategicCognitionBridge>();
     }
 
-    // Initialize feature weights (simple random initialization)
+    // Initialize feature weights (random initialization: untrained until AreFeatureWeightsTrained;
+    // until then nothing derived from them is reported or used as a measurement)
     FeatureWeights.SetNum(32);
     for (int32 i = 0; i < 32; i++)
     {
@@ -344,9 +346,20 @@ TArray<float> UEchobeatsGamingIntegration::ExtractFeatures(const TArray<float>& 
     return Features;
 }
 
+bool UEchobeatsGamingIntegration::AreFeatureWeightsTrained() const
+{
+    return LearningUpdateCount >= FMath::Max(1, MinLearningUpdatesForTrainedFeatures);
+}
+
 TArray<FString> UEchobeatsGamingIntegration::MatchPatterns(const TArray<float>& Features)
 {
     TArray<FString> MatchedPatterns;
+
+    // Features from untrained (random) weights match nothing and announce nothing
+    if (!AreFeatureWeightsTrained())
+    {
+        return MatchedPatterns;
+    }
 
     for (const auto& Pair : PatternTemplates)
     {
@@ -365,31 +378,25 @@ TMap<FString, float> UEchobeatsGamingIntegration::AssessSituation(const TArray<F
 {
     TMap<FString, float> Assessment;
 
-    // Default situation factors
-    Assessment.Add(TEXT("threat_level"), 0.0f);
-    Assessment.Add(TEXT("opportunity_level"), 0.0f);
-    Assessment.Add(TEXT("resource_status"), 0.5f);
-    Assessment.Add(TEXT("position_advantage"), 0.5f);
-    Assessment.Add(TEXT("time_pressure"), 0.0f);
-
-    // Adjust based on matched patterns
+    // Only factors with evidence from matched patterns are assessed; the rest are unknown and
+    // omitted (no invented defaults). Nothing is matched while the feature weights are untrained.
     for (const FString& Pattern : MatchedPatterns)
     {
         if (Pattern.Contains(TEXT("threat")) || Pattern.Contains(TEXT("danger")))
         {
-            Assessment[TEXT("threat_level")] += 0.2f;
+            Assessment.FindOrAdd(TEXT("threat_level")) += 0.2f;
         }
         if (Pattern.Contains(TEXT("opportunity")) || Pattern.Contains(TEXT("opening")))
         {
-            Assessment[TEXT("opportunity_level")] += 0.2f;
+            Assessment.FindOrAdd(TEXT("opportunity_level")) += 0.2f;
         }
         if (Pattern.Contains(TEXT("advantage")))
         {
-            Assessment[TEXT("position_advantage")] += 0.1f;
+            Assessment.FindOrAdd(TEXT("position_advantage")) += 0.1f;
         }
         if (Pattern.Contains(TEXT("pressure")) || Pattern.Contains(TEXT("rush")))
         {
-            Assessment[TEXT("time_pressure")] += 0.2f;
+            Assessment.FindOrAdd(TEXT("time_pressure")) += 0.2f;
         }
     }
 
@@ -523,13 +530,7 @@ bool UEchobeatsGamingIntegration::SelectStrategy(const TMap<FString, float>& Goa
         GoalsText += FString::Printf(TEXT("%s%s=%.2f"), GoalsText.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value);
     }
 
-    FString SituationText;
-    const TMap<FString, float> Situation = AssessSituation(MatchPatterns(PerceptionStream.OutputData));
-    for (const auto& Pair : Situation)
-    {
-        SituationText += FString::Printf(TEXT("%s%s=%.2f"), SituationText.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value);
-    }
-    if (SituationText.IsEmpty()) { SituationText = TEXT("(none)"); }
+    const FString SituationText = DescribeSituationForModel();
 
     FString AffordanceText;
     for (const FAffordanceDetection& A : DetectedAffordances)
@@ -542,6 +543,7 @@ bool UEchobeatsGamingIntegration::SelectStrategy(const TMap<FString, float>& Goa
 
     TMap<FString, FString> Slots;
     Slots.Add(TEXT("goals"), GoalsText);
+    Slots.Add(TEXT("game_state"), DescribeGameStateForModel());
     Slots.Add(TEXT("situation"), SituationText);
     Slots.Add(TEXT("affordances"), AffordanceText);
     Slots.Add(TEXT("strategies"), FString::Join(Offered, TEXT(", ")));
@@ -600,6 +602,43 @@ void UEchobeatsGamingIntegration::FailStrategyRequest(const FString& Error)
     OnStrategyRequestFailed.Broadcast(Error);
 }
 
+FString UEchobeatsGamingIntegration::DescribeGameStateForModel() const
+{
+    FString GameStateText;
+    for (int32 i = 0; i < LastGameState.Num() && i < 32; ++i)
+    {
+        GameStateText += FString::Printf(TEXT("%s[%d]=%.3f"), i > 0 ? TEXT(", ") : TEXT(""), i, LastGameState[i]);
+    }
+    return GameStateText.IsEmpty() ? FString(TEXT("(no game state received yet)")) : GameStateText;
+}
+
+FString UEchobeatsGamingIntegration::DescribeSituationForModel()
+{
+    // Assessed factors only; factors without measured evidence are named as unknown
+    const TMap<FString, float> Situation = AssessSituation(MatchPatterns(PerceptionStream.OutputData));
+    static const TCHAR* Factors[] = { TEXT("threat_level"), TEXT("opportunity_level"), TEXT("resource_status"),
+                                      TEXT("position_advantage"), TEXT("time_pressure") };
+    FString Known;
+    FString Unknown;
+    for (const TCHAR* Factor : Factors)
+    {
+        if (const float* Value = Situation.Find(Factor))
+        {
+            Known += FString::Printf(TEXT("%s%s=%.2f"), Known.IsEmpty() ? TEXT("") : TEXT(", "), Factor, *Value);
+        }
+        else
+        {
+            Unknown += FString::Printf(TEXT("%s%s"), Unknown.IsEmpty() ? TEXT("") : TEXT(", "), Factor);
+        }
+    }
+    if (Unknown.IsEmpty())
+    {
+        return Known;
+    }
+    const FString UnknownText = FString::Printf(TEXT("unknown (not measured): %s"), *Unknown);
+    return Known.IsEmpty() ? UnknownText : Known + TEXT("; ") + UnknownText;
+}
+
 bool UEchobeatsGamingIntegration::PlanActions(const FString& SelectedStrategy)
 {
     const FString* Template = ActionPlanPromptTemplates.Find(SelectedStrategy);
@@ -630,26 +669,8 @@ bool UEchobeatsGamingIntegration::PlanActions(const FString& SelectedStrategy)
     }
 
     // Real state for the template slots
-    FString GameStateText;
-    for (int32 i = 0; i < LastGameState.Num() && i < 32; ++i)
-    {
-        GameStateText += FString::Printf(TEXT("%s[%d]=%.3f"), i > 0 ? TEXT(", ") : TEXT(""), i, LastGameState[i]);
-    }
-    if (GameStateText.IsEmpty())
-    {
-        GameStateText = TEXT("(no game state received yet)");
-    }
-
-    FString SituationText;
-    const TMap<FString, float> Situation = AssessSituation(MatchPatterns(PerceptionStream.OutputData));
-    for (const auto& Pair : Situation)
-    {
-        SituationText += FString::Printf(TEXT("%s%s=%.2f"), SituationText.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value);
-    }
-    if (SituationText.IsEmpty())
-    {
-        SituationText = TEXT("(none)");
-    }
+    const FString GameStateText = DescribeGameStateForModel();
+    const FString SituationText = DescribeSituationForModel();
 
     FString AffordanceText;
     for (const FAffordanceDetection& A : DetectedAffordances)
@@ -1088,7 +1109,7 @@ TMap<FString, float> UEchobeatsGamingIntegration::PredictOpponentBehavior(const 
 FString UEchobeatsGamingIntegration::GetIntegratedDecision()
 {
     // Untrained (randomly initialised) weights carry no decision
-    if (LearningUpdateCount == 0) { return FString(); }
+    if (!AreFeatureWeightsTrained()) { return FString(); }
 
     // Combine outputs from all three streams
 

@@ -259,8 +259,16 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     float EmotionDecayRate = 0.05f;
 
+    /** Mood inertia (0-1): scales how long a new mood must persist before the mood changes */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     float MoodInertia = 0.9f;
+
+    /**
+     * Seconds a newly computed mood must persist, at full inertia and stability, before the mood
+     * changes (and OnMoodChanged fires). The required time is MoodInertia * MoodStability * this.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (ClampMin = "0"))
+    float MoodSwitchDwellSeconds = 2.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     float BaselineArousal = 0.3f;
@@ -430,6 +438,10 @@ protected:
 
     int32 MarkerIDCounter = 0;
     int32 EventIDCounter = 0;
+
+    // Mood the dimensional state currently computes to, and how long it has persisted
+    EMoodState PendingMood = EMoodState::Calm;
+    float PendingMoodSeconds = 0.0f;
 
     // Internal methods
     void FindComponentReferences();

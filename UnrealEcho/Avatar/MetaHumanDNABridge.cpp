@@ -47,6 +47,12 @@ UMetaHumanDNABridge::UMetaHumanDNABridge()
         "Choose the facial expression you show now as exactly one of: {expressions}; and its intensity between 0 and 1.\n"
         "Reply with only a JSON object: {\"expression\": \"<expression>\", \"intensity\": <number>}");
 
+    EmotionFacialExpressionPromptTemplate = TEXT(
+        "You are Deep Tree Echo. Your current emotional state is: {emotion}.\n"
+        "Your face currently shows: {current}.\n"
+        "Choose the facial expression you show now as exactly one of: {expressions}; and its intensity between 0 and 1.\n"
+        "Reply with only a JSON object: {\"expression\": \"<expression>\", \"intensity\": <number>}");
+
     UE_LOG(LogMetaHumanDNA, Log, TEXT("MetaHumanDNABridge initialized"));
 }
 
@@ -419,6 +425,27 @@ void UMetaHumanDNABridge::SyncNeurochemicalStateToBlendShapes(const FNeurochemic
 
 bool UMetaHumanDNABridge::RequestFacialExpressionFromNeurochemicals(const FNeurochemicalState& State)
 {
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("neurochemicals"), FString::Printf(
+        TEXT("dopamine %.2f, serotonin %.2f, norepinephrine %.2f, oxytocin %.2f, cortisol %.2f, endorphins %.2f, GABA %.2f, glutamate %.2f, acetylcholine %.2f"),
+        State.DopamineLevel, State.SerotoninLevel, State.NorepinephrineLevel, State.OxytocinLevel, State.CortisolLevel,
+        State.EndorphinsLevel, State.GABALevel, State.GlutamateLevel, State.AcetylcholineLevel));
+    return SendFacialExpressionRequest(FacialExpressionPromptTemplate, TEXT("FacialExpressionPromptTemplate"), MoveTemp(Slots));
+}
+
+bool UMetaHumanDNABridge::RequestFacialExpressionFromEmotion(const FEmotionalState& Emotion)
+{
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("emotion"), FString::Printf(
+        TEXT("valence %.2f (-1 negative .. 1 positive), arousal %.2f (0 calm .. 1 excited), dominance %.2f (0 submissive .. 1 dominant), overall intensity %.2f; ")
+        TEXT("happiness %.2f, surprise %.2f, sadness %.2f, anger %.2f, fear %.2f, disgust %.2f, excitement %.2f (each 0 .. 1)"),
+        Emotion.Valence, Emotion.Arousal, Emotion.Dominance, Emotion.Intensity,
+        Emotion.Happiness, Emotion.Surprise, Emotion.Sadness, Emotion.Anger, Emotion.Fear, Emotion.Disgust, Emotion.Excitement));
+    return SendFacialExpressionRequest(EmotionFacialExpressionPromptTemplate, TEXT("EmotionFacialExpressionPromptTemplate"), MoveTemp(Slots));
+}
+
+bool UMetaHumanDNABridge::SendFacialExpressionRequest(const FString& PromptTemplate, const TCHAR* TemplateName, TMap<FString, FString> Slots)
+{
     TArray<FString> Offered;
     for (const auto& Pair : ExpressionRenderMap)
     {
@@ -429,24 +456,19 @@ bool UMetaHumanDNABridge::RequestFacialExpressionFromNeurochemicals(const FNeuro
         FailFacialExpressionRequest(TEXT("ExpressionRenderMap is empty; no expressions to offer"));
         return false;
     }
-    if (FacialExpressionPromptTemplate.IsEmpty())
+    if (PromptTemplate.IsEmpty())
     {
-        FailFacialExpressionRequest(TEXT("FacialExpressionPromptTemplate is empty"));
+        FailFacialExpressionRequest(FString::Printf(TEXT("%s is empty"), TemplateName));
         return false;
     }
 
-    TMap<FString, FString> Slots;
-    Slots.Add(TEXT("neurochemicals"), FString::Printf(
-        TEXT("dopamine %.2f, serotonin %.2f, norepinephrine %.2f, oxytocin %.2f, cortisol %.2f, endorphins %.2f, GABA %.2f, glutamate %.2f, acetylcholine %.2f"),
-        State.DopamineLevel, State.SerotoninLevel, State.NorepinephrineLevel, State.OxytocinLevel, State.CortisolLevel,
-        State.EndorphinsLevel, State.GABALevel, State.GlutamateLevel, State.AcetylcholineLevel));
     Slots.Add(TEXT("current"), ModelFacialExpression.IsEmpty()
         ? FString(TEXT("no expression yet"))
         : FString::Printf(TEXT("%s at intensity %.2f"), *ModelFacialExpression, ModelFacialExpressionIntensity));
     Slots.Add(TEXT("expressions"), FString::Join(Offered, TEXT(", ")));
 
     TArray<FEchoModelMessage> Messages;
-    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(FacialExpressionPromptTemplate, Slots)));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(PromptTemplate, Slots)));
 
     const int32 Serial = ++FacialExpressionRequestSerial;
     TWeakObjectPtr<UMetaHumanDNABridge> WeakThis(this);
@@ -540,7 +562,10 @@ void UMetaHumanDNABridge::FailFacialExpressionRequest(const FString& Error)
 
 void UMetaHumanDNABridge::SyncEmotionalStateToFacialRig(const FEmotionalState& Emotion, TMap<FString, float>& OutBlendShapeWeights)
 {
-    MapEmotionalStateToBlendShapes(Emotion, OutBlendShapeWeights);
+    // The emotional state is model input; the model chooses the expression and the face is the
+    // render of that label. Until the model has answered there is nothing to render.
+    RequestFacialExpressionFromEmotion(Emotion);
+    OutBlendShapeWeights = ModelExpressionWeights;
 }
 
 float UMetaHumanDNABridge::GetBlendShapeWeight(const FString& BlendShapeName) const
@@ -759,34 +784,6 @@ void UMetaHumanDNABridge::InitializeBlendShapeWeights()
     {
         CurrentBlendShapeWeights.Add(BlendShapeInfo.BlendShapeName, 0.0f);
     }
-}
-
-void UMetaHumanDNABridge::MapEmotionalStateToBlendShapes(const FEmotionalState& Emotion, TMap<FString, float>& OutWeights)
-{
-    // Example mapping: Emotional state to facial expressions
-    // This is a simplified example; real mapping would be more complex
-    
-    OutWeights.Empty();
-
-    // Map valence to smile/frown
-    if (Emotion.Valence > 0.0f)
-    {
-        OutWeights.Add(TEXT("Smile_L"), Emotion.Valence * Emotion.Intensity);
-        OutWeights.Add(TEXT("Smile_R"), Emotion.Valence * Emotion.Intensity);
-    }
-    else
-    {
-        OutWeights.Add(TEXT("Frown_L"), -Emotion.Valence * Emotion.Intensity);
-        OutWeights.Add(TEXT("Frown_R"), -Emotion.Valence * Emotion.Intensity);
-    }
-
-    // Map arousal to eye openness and brow raise
-    OutWeights.Add(TEXT("EyeOpen_L"), Emotion.Arousal * 0.5f);
-    OutWeights.Add(TEXT("EyeOpen_R"), Emotion.Arousal * 0.5f);
-    OutWeights.Add(TEXT("BrowRaise_L"), Emotion.Arousal * 0.3f);
-    OutWeights.Add(TEXT("BrowRaise_R"), Emotion.Arousal * 0.3f);
-
-    // TODO: Add more sophisticated mappings based on DNA version and emotional categories
 }
 
 TMap<FString, FString> UMetaHumanDNABridge::GetDHIBlendShapeNames() const

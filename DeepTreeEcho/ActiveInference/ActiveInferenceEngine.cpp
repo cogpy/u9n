@@ -554,7 +554,7 @@ TArray<FPolicy> UActiveInferenceEngine::EvaluatePolicies()
 bool UActiveInferenceEngine::RefuseUntrained(const TCHAR* What)
 {
     LastError = FString::Printf(TEXT("%s: generative model untrained (%d of %d learning updates from executed outcomes); no policy selected"),
-        What, ModelLearningUpdates, MinLearningUpdatesForTrainedModel);
+        What, ModelLearningUpdates, FMath::Max(1, MinLearningUpdatesForTrainedModel));
     UE_LOG(LogTemp, Error, TEXT("ActiveInferenceEngine: %s"), *LastError);
     return false;
 }

@@ -9,6 +9,18 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogDTEInteraction, Log, All);
+
+namespace
+{
+	FString InteractionTypeName(EInteractionType Type)
+	{
+		return StaticEnum<EInteractionType>()->GetNameStringByValue(static_cast<int64>(Type));
+	}
+}
 
 UDeepTreeEchoInteractionComponent::UDeepTreeEchoInteractionComponent()
 	: ScanRadius(500.0f)
@@ -25,6 +37,13 @@ UDeepTreeEchoInteractionComponent::UDeepTreeEchoInteractionComponent()
 	// Default interactable object types
 	InteractableObjectTypes.Add(UEngineTypes::ConvertToObjectType(ECC_WorldDynamic));
 	InteractableObjectTypes.Add(UEngineTypes::ConvertToObjectType(ECC_PhysicsBody));
+
+	InteractionChoicePromptTemplate = TEXT(
+		"You are Deep Tree Echo, an embodied character. Decide whether to interact with something near you now, and how.\n"
+		"Your state: {state}.\n"
+		"Things you can interact with (measured):\n{candidates}\n"
+		"Choose the target id from: {targets}. Then choose one interaction listed for that target (leave it empty if the target is \"none\").\n"
+		"Reply with only a JSON object: {\"target\": \"<target id or none>\", \"interaction\": \"<interaction>\"}");
 }
 
 void UDeepTreeEchoInteractionComponent::BeginPlay()
@@ -116,15 +135,22 @@ TArray<FInteractableInfo> UDeepTreeEchoInteractionComponent::GetNearbyInteractab
 
 FInteractableInfo UDeepTreeEchoInteractionComponent::GetBestInteractable() const
 {
-	if (CachedInteractables.Num() > 0)
+	// The model's last choice, if it is still nearby; the priority order chooses nothing
+	if (ModelChosenTarget.IsValid())
 	{
-		return CachedInteractables[0]; // Already sorted by priority
+		for (const FInteractableInfo& Info : CachedInteractables)
+		{
+			if (Info.Actor.Get() == ModelChosenTarget.Get())
+			{
+				return Info;
+			}
+		}
 	}
 
 	return FInteractableInfo();
 }
 
-FInteractionResult UDeepTreeEchoInteractionComponent::InteractWith(AActor* Target)
+FInteractionResult UDeepTreeEchoInteractionComponent::InteractWith(AActor* Target, EInteractionType Type)
 {
 	FInteractionResult Result;
 
@@ -157,41 +183,196 @@ FInteractionResult UDeepTreeEchoInteractionComponent::InteractWith(AActor* Targe
 		return Result;
 	}
 
-	// Start interaction
+	// Perform the interaction through the target's interface
 	bIsInteracting = true;
 	CurrentInteractionTarget = Target;
+	Result = ExecuteInteraction(Target, Type);
 
-	// Broadcast start event
-	OnInteractionStarted.Broadcast(Target, NAME_None);
-
-	// Execute the interaction
-	Result = ExecuteInteraction(Target);
-
-	// Record in memory
-	RecordInteraction(Target, NAME_None, Result);
-
-	// End interaction
-	bIsInteracting = false;
-	CurrentInteractionTarget = nullptr;
-
-	// Broadcast completion event
-	OnInteractionCompleted.Broadcast(Target, Result);
+	if (!Result.bInProgress)
+	{
+		// The target exposes no interface or refused: an honest failure, remembered as such
+		FinishInteraction(Target, NAME_None, Result);
+	}
 
 	return Result;
 }
 
-FInteractionResult UDeepTreeEchoInteractionComponent::InteractWithBest()
+bool UDeepTreeEchoInteractionComponent::InteractWithBest()
 {
-	FInteractableInfo Best = GetBestInteractable();
-	if (Best.Actor.IsValid())
+	if (bIsInteracting)
 	{
-		return InteractWith(Best.Actor.Get());
+		FailInteractionChoice(TEXT("already interacting"));
+		return false;
+	}
+	if (bInteractionChoiceInFlight)
+	{
+		FailInteractionChoice(TEXT("an interaction choice request is already in flight"));
+		return false;
+	}
+	if (InteractionChoicePromptTemplate.IsEmpty())
+	{
+		FailInteractionChoice(TEXT("InteractionChoicePromptTemplate is empty"));
+		return false;
 	}
 
-	FInteractionResult Result;
-	Result.bSuccess = false;
-	Result.ResultMessage = FText::FromString(TEXT("No interactable objects nearby"));
-	return Result;
+	// Measured candidates: nearby targets that expose interactions this character can perform now
+	AActor* Self = GetOwner();
+	TArray<FInteractionChoiceCandidate> Candidates;
+	FString CandidateText;
+	TArray<FString> TargetIds;
+	// Presented nearest first (measured distance), not in the hand-tuned priority order
+	TArray<FInteractableInfo> ByDistance = CachedInteractables;
+	ByDistance.Sort([](const FInteractableInfo& A, const FInteractableInfo& B) { return A.Distance < B.Distance; });
+	for (const FInteractableInfo& Info : ByDistance)
+	{
+		AInteractableObject* Object = Cast<AInteractableObject>(Info.Actor.Get());
+		if (!Object || !Self)
+		{
+			continue;
+		}
+		FInteractionChoiceCandidate Candidate;
+		Candidate.Id = Object->GetName();
+		Candidate.Actor = Object;
+		FString InteractionText;
+		for (const FInteractionData& Data : Object->GetAvailableInteractions(Self))
+		{
+			if (Data.Type == EInteractionType::None || Candidate.Types.Contains(Data.Type))
+			{
+				continue;
+			}
+			Candidate.Types.Add(Data.Type);
+			InteractionText += FString::Printf(TEXT("%s%s (duration %.1fs, cognitive load %.2f, emotional impact %+.2f)"),
+				InteractionText.IsEmpty() ? TEXT("") : TEXT(", "), *InteractionTypeName(Data.Type),
+				Data.Duration, Data.CognitiveLoad, Data.EmotionalImpact);
+		}
+		if (Candidate.Types.Num() == 0)
+		{
+			continue;
+		}
+		const int32 Count = GetInteractionCount(Object);
+		CandidateText += FString::Printf(TEXT("- id \"%s\" (%s): distance %.0f cm, %s, %s; past interactions %d%s; interactions: %s\n"),
+			*Candidate.Id, *Info.DisplayName.ToString(), Info.Distance,
+			Info.bIsCurrentlyVisible ? TEXT("visible") : TEXT("not visible"),
+			CurrentGazeTarget.Get() == Object ? TEXT("you are looking at it") : TEXT("not looked at"),
+			Count, Count > 0 ? *FString::Printf(TEXT(", remembered valence %.2f (0 bad .. 1 good)"), GetEmotionalAssociation(Object)) : TEXT(""),
+			*InteractionText);
+		TargetIds.Add(Candidate.Id);
+		Candidates.Add(MoveTemp(Candidate));
+	}
+	if (Candidates.Num() == 0)
+	{
+		FailInteractionChoice(TEXT("no nearby target offers an interaction this character can perform"));
+		return false;
+	}
+
+	FString StateText;
+	if (CognitiveState)
+	{
+		StateText += FString::Printf(TEXT("cognitive load %.2f, attention %.2f"),
+			CognitiveState->GetCurrentCognitiveLoad(), CognitiveState->GetAttentionLevel());
+	}
+	if (PersonalitySystem)
+	{
+		StateText += FString::Printf(TEXT("%ssocial engagement %.2f, intellectual %.2f, assertive %.2f, empathetic %.2f"),
+			StateText.IsEmpty() ? TEXT("") : TEXT("; "), PersonalitySystem->GetSocialEngagementLevel(),
+			PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Intellectual),
+			PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Assertive),
+			PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Empathetic));
+	}
+	if (StateText.IsEmpty())
+	{
+		StateText = TEXT("(not measured)");
+	}
+
+	TMap<FString, FString> Slots;
+	Slots.Add(TEXT("candidates"), CandidateText.TrimEnd());
+	Slots.Add(TEXT("state"), StateText);
+	Slots.Add(TEXT("targets"), FString::Join(TargetIds, TEXT(", ")) + TEXT(", none"));
+
+	TArray<FEchoModelMessage> Messages;
+	Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(InteractionChoicePromptTemplate, Slots)));
+
+	bInteractionChoiceInFlight = true;
+	TWeakObjectPtr<UDeepTreeEchoInteractionComponent> WeakThis(this);
+	UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+		[WeakThis, Candidates](bool bSuccess, const FString& TextOrError)
+		{
+			if (UDeepTreeEchoInteractionComponent* Component = WeakThis.Get())
+			{
+				Component->HandleInteractionChoiceReply(Candidates, bSuccess, TextOrError);
+			}
+		}), 0.5f);
+	return true;
+}
+
+void UDeepTreeEchoInteractionComponent::HandleInteractionChoiceReply(const TArray<FInteractionChoiceCandidate>& Candidates, bool bSuccess, const FString& TextOrError)
+{
+	bInteractionChoiceInFlight = false;
+	if (!bSuccess)
+	{
+		FailInteractionChoice(TextOrError);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Json;
+	FString TargetId;
+	if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("target"), TargetId))
+	{
+		FailInteractionChoice(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+		return;
+	}
+	TargetId.TrimStartAndEndInline();
+	if (TargetId.Equals(TEXT("none"), ESearchCase::IgnoreCase))
+	{
+		LastInteractionChoiceError.Reset();
+		ModelChosenTarget.Reset();
+		UE_LOG(LogDTEInteraction, Log, TEXT("The model chose not to interact"));
+		OnInteractionChosen.Broadcast(nullptr, NAME_None);
+		return;
+	}
+
+	const FInteractionChoiceCandidate* Chosen = Candidates.FindByPredicate(
+		[&TargetId](const FInteractionChoiceCandidate& C) { return C.Id.Equals(TargetId, ESearchCase::IgnoreCase); });
+	if (!Chosen)
+	{
+		FailInteractionChoice(FString::Printf(TEXT("model chose a target outside the candidates: %s"), *TargetId));
+		return;
+	}
+
+	FString InteractionName;
+	if (!Json->TryGetStringField(TEXT("interaction"), InteractionName))
+	{
+		FailInteractionChoice(TEXT("model reply has no interaction"));
+		return;
+	}
+	InteractionName.TrimStartAndEndInline();
+	const EInteractionType* Type = Chosen->Types.FindByPredicate(
+		[&InteractionName](EInteractionType T) { return InteractionTypeName(T).Equals(InteractionName, ESearchCase::IgnoreCase); });
+	if (!Type)
+	{
+		FailInteractionChoice(FString::Printf(TEXT("model chose an interaction '%s' that %s does not offer"), *InteractionName, *Chosen->Id));
+		return;
+	}
+
+	AActor* Target = Chosen->Actor.Get();
+	if (!Target)
+	{
+		FailInteractionChoice(FString::Printf(TEXT("chosen target %s no longer exists"), *Chosen->Id));
+		return;
+	}
+
+	LastInteractionChoiceError.Reset();
+	ModelChosenTarget = Target;
+	const EInteractionType ChosenType = *Type;
+	OnInteractionChosen.Broadcast(Target, FName(*InteractionTypeName(ChosenType)));
+	InteractWith(Target, ChosenType);
+}
+
+void UDeepTreeEchoInteractionComponent::FailInteractionChoice(const FString& Error)
+{
+	LastInteractionChoiceError = Error;
+	UE_LOG(LogDTEInteraction, Error, TEXT("No model interaction choice (nothing done): %s"), *Error);
+	OnInteractionChoiceFailed.Broadcast(Error);
 }
 
 bool UDeepTreeEchoInteractionComponent::IsInteractable(AActor* Actor) const
@@ -227,17 +408,30 @@ bool UDeepTreeEchoInteractionComponent::IsInteractable(AActor* Actor) const
 
 void UDeepTreeEchoInteractionComponent::CancelInteraction()
 {
-	if (bIsInteracting && CurrentInteractionTarget.IsValid())
+	if (!bIsInteracting)
 	{
+		return;
+	}
+
+	// A running interaction is cancelled on the target; its end event reports the failure
+	if (AInteractableObject* Object = PendingInteractable.Get())
+	{
+		Object->CancelInteraction(GetOwner());
+	}
+
+	if (bIsInteracting)
+	{
+		if (AInteractableObject* Object = PendingInteractable.Get())
+		{
+			Object->OnInteractionEnd.RemoveDynamic(this, &UDeepTreeEchoInteractionComponent::HandleTargetInteractionEnd);
+		}
+		PendingInteractable.Reset();
+		PendingInteractionType = EInteractionType::None;
+
 		FInteractionResult CancelResult;
 		CancelResult.bSuccess = false;
 		CancelResult.ResultMessage = FText::FromString(TEXT("Interaction cancelled"));
-		CancelResult.EmotionalImpact = -0.1f; // Slight negative impact
-
-		OnInteractionCompleted.Broadcast(CurrentInteractionTarget.Get(), CancelResult);
-
-		bIsInteracting = false;
-		CurrentInteractionTarget = nullptr;
+		FinishInteraction(CurrentInteractionTarget.Get(), NAME_None, CancelResult);
 	}
 }
 
@@ -416,7 +610,8 @@ void UDeepTreeEchoInteractionComponent::RecordInteraction(AActor* Target, FName 
 	FInteractionMemory Memory;
 	Memory.InteractedActor = Target;
 	Memory.InteractionType = InteractionType;
-	Memory.Timestamp = GetWorld()->GetTimeSeconds();
+	const UWorld* World = GetWorld();
+	Memory.Timestamp = World ? World->GetTimeSeconds() : 0.0f;
 	Memory.EmotionalValence = 0.5f + (Result.EmotionalImpact * 0.5f); // Convert -1,1 to 0,1
 	Memory.CognitiveLoad = Result.CognitiveImpact;
 	Memory.bWasSuccessful = Result.bSuccess;
@@ -437,40 +632,94 @@ void UDeepTreeEchoInteractionComponent::CleanupOldMemories()
 	}
 }
 
-FInteractionResult UDeepTreeEchoInteractionComponent::ExecuteInteraction(AActor* Target)
+FInteractionResult UDeepTreeEchoInteractionComponent::ExecuteInteraction(AActor* Target, EInteractionType Type)
 {
 	FInteractionResult Result;
-	Result.bSuccess = true;
-	Result.ResultMessage = FText::FromString(FString::Printf(TEXT("Interacted with %s"), *Target->GetName()));
+	Result.bSuccess = false;
 
-	// Emotional impact from the remembered association with this target (measured history only)
-	const float EmotionalAssociation = GetEmotionalAssociation(Target);
-	Result.EmotionalImpact = (EmotionalAssociation - 0.5f) * 0.4f;
-
-	// Cognitive impact based on novelty
-	int32 PastInteractions = GetInteractionCount(Target);
-	if (PastInteractions == 0)
+	AInteractableObject* Object = Cast<AInteractableObject>(Target);
+	if (!Object)
 	{
-		// First interaction - higher cognitive load (novelty)
-		Result.CognitiveImpact = 0.3f;
-	}
-	else
-	{
-		// Familiar interaction - lower cognitive load
-		Result.CognitiveImpact = 0.1f / FMath::Min(PastInteractions, 10);
+		Result.ResultMessage = FText::FromString(FString::Printf(
+			TEXT("%s exposes no interaction interface (not an AInteractableObject); nothing was done"), *Target->GetName()));
+		return Result;
 	}
 
-	// Apply cognitive impact to cognitive state
-	if (CognitiveState)
+	AActor* Self = GetOwner();
+	if (Type == EInteractionType::None)
 	{
-		CognitiveState->SetCognitiveLoad(CognitiveState->GetCurrentCognitiveLoad() + Result.CognitiveImpact);
+		// Only an unambiguous request is performed; a choice between interactions is the model's
+		// (InteractWithBest) or the caller's
+		const TArray<FInteractionData> Available = Object->GetAvailableInteractions(Self);
+		if (Available.Num() != 1)
+		{
+			Result.ResultMessage = FText::FromString(FString::Printf(
+				TEXT("%s offers %d interactions to this character; specify which one"), *Target->GetName(), Available.Num()));
+			return Result;
+		}
+		Type = Available[0].Type;
 	}
 
-	// UPersonalityTraitSystem has no settable emotional state (no Get/SetEmotionalState). The impact
-	// is reported in Result and remembered by RecordInteraction; no emotion is written for the
-	// character here.
+	if (!Object->BeginInteraction(Self, Type))
+	{
+		Result.ResultMessage = FText::FromString(FString::Printf(
+			TEXT("%s refused interaction %s"), *Target->GetName(), *InteractionTypeName(Type)));
+		return Result;
+	}
 
+	// The target accepted: its own end event reports the outcome
+	PendingInteractable = Object;
+	PendingInteractionType = Type;
+	Object->OnInteractionEnd.AddDynamic(this, &UDeepTreeEchoInteractionComponent::HandleTargetInteractionEnd);
+
+	Result.bInProgress = true;
+	Result.ResultMessage = FText::FromString(FString::Printf(
+		TEXT("%s started on %s"), *InteractionTypeName(Type), *Target->GetName()));
+	OnInteractionStarted.Broadcast(Target, FName(*InteractionTypeName(Type)));
 	return Result;
+}
+
+void UDeepTreeEchoInteractionComponent::HandleTargetInteractionEnd(AActor* Interactor, EInteractionType Type, bool bSuccess)
+{
+	AInteractableObject* Object = PendingInteractable.Get();
+	if (Interactor != GetOwner() || !Object)
+	{
+		return;
+	}
+	Object->OnInteractionEnd.RemoveDynamic(this, &UDeepTreeEchoInteractionComponent::HandleTargetInteractionEnd);
+	PendingInteractable.Reset();
+	PendingInteractionType = EInteractionType::None;
+
+	// The outcome is the target's; the impacts are the target's authored data for this interaction
+	const FInteractionData Data = Object->GetInteractionData(Type);
+	FInteractionResult Result;
+	Result.bSuccess = bSuccess;
+	Result.ResultMessage = FText::FromString(FString::Printf(TEXT("%s on %s %s"),
+		*InteractionTypeName(Type), *Object->GetName(), bSuccess ? TEXT("completed") : TEXT("ended without success")));
+	if (bSuccess)
+	{
+		Result.EmotionalImpact = FMath::Clamp(Data.EmotionalImpact, -1.0f, 1.0f);
+		Result.CognitiveImpact = FMath::Clamp(Data.CognitiveLoad, 0.0f, 1.0f);
+		if (CognitiveState)
+		{
+			CognitiveState->SetCognitiveLoad(CognitiveState->GetCurrentCognitiveLoad() + Result.CognitiveImpact);
+		}
+	}
+
+	FinishInteraction(Object, FName(*InteractionTypeName(Type)), Result);
+}
+
+void UDeepTreeEchoInteractionComponent::FinishInteraction(AActor* Target, FName InteractionType, const FInteractionResult& Result)
+{
+	if (Target)
+	{
+		RecordInteraction(Target, InteractionType, Result);
+	}
+
+	bIsInteracting = false;
+	CurrentInteractionTarget = nullptr;
+
+	OnInteractionCompleted.Broadcast(Target, Result);
 }
 
 void UDeepTreeEchoInteractionComponent::NotifyInteractableChanges(const TArray<FInteractableInfo>& OldInteractables)

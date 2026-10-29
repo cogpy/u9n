@@ -601,7 +601,7 @@ int32 UAXIOMActiveInference::SelectAction()
     if (!IsWorldModelTrained())
     {
         LastError = FString::Printf(TEXT("world model untrained (%d of %d reward observations); no action selected"),
-            RewardObservationCount, MinRewardObservationsForTrainedModel);
+            RewardObservationCount, FMath::Max(1, MinRewardObservationsForTrainedModel));
         UE_LOG(LogTemp, Error, TEXT("AXIOMActiveInference: %s"), *LastError);
         return INDEX_NONE;
     }
