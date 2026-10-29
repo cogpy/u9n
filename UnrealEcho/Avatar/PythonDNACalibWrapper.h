@@ -8,21 +8,21 @@
 
 /**
  * FPythonDNACalibWrapper
- * 
- * Wrapper class for MetaHuman DNA Calibration Python API.
- * Embeds Python interpreter and provides C++ interface to DNACalib functions.
- * 
- * Key Features:
- * - Embed Python interpreter in Unreal Engine
- * - Load DNACalib Python modules
- * - Provide C++ interface to Python DNACalib functions
- * - Handle Python-C++ data marshalling
- * 
- * Dependencies:
- * - Python 3.7 or 3.9 (matching Maya versions)
- * - MetaHuman-DNA-Calibration Python modules
- * - DNACalib library (PyDNA, PyDNACalib)
- * 
+ *
+ * C++ interface to the MetaHuman DNA Calibration Python bindings (dna / dnacalib, built from
+ * MetaHuman-DNA-Calibration/dnacalib: PyDNA, PyDNACalib). Each operation runs the real bindings in
+ * a Python process (a bridge script this wrapper writes to the project's Intermediate folder) and
+ * reads its JSON result. Nothing is simulated: if Python or the bindings are unavailable,
+ * Initialize fails, every operation fails, and GetLastError says why.
+ *
+ * Edits (rename/remove/clear/LOD) are applied to a working copy of the loaded DNA; SaveDNA writes
+ * the working copy through the bindings' BinaryStreamWriter.
+ *
+ * Configuration (environment):
+ * - DNACALIB_PYTHON: Python executable (default python3, or python on Windows)
+ * - DNACALIB_PYTHON_PATH: directories (';'-separated) holding dna.py/_py3dna and dnacalib.py/_py3dnacalib;
+ *   otherwise <DNACalibPath>, <DNACalibPath>/lib and <DNACalibPath>/lib/Maya20xx/<platform> are tried.
+ *
  * Usage:
  * ```cpp
  * TSharedPtr<FPythonDNACalibWrapper> Wrapper = MakeShared<FPythonDNACalibWrapper>();
@@ -201,40 +201,40 @@ public:
 private:
     // Initialization state
     bool bInitialized;
+    bool bProbing;
     FString DNACalibRootPath;
     FString LastError;
 
-    // Python interpreter state
-    void* PythonInterpreter;
-    void* PythonMainModule;
-    void* PythonMainDict;
+    /** Python executable and the bindings directory that imported successfully */
+    FString PythonExecutable;
+    FString BindingsPath;
 
-    // DNACalib modules
-    void* DNAModule;
-    void* DNACalibModule;
+    /** The bridge script (written by Initialize) */
+    FString BridgeScriptPath;
 
-    // DNA reader/writer objects
-    void* DNAReaderObject;
-    void* DNAWriterObject;
-    void* DNAStreamReaderObject;
-    void* DNAStreamWriterObject;
+    /** The loaded DNA's source file and the working copy edits are applied to */
+    FString LoadedDNAPath;
+    FString WorkingDNAPath;
 
-    // Helper functions
-    bool InitializePythonInterpreter();
-    bool SetupPythonPath();
-    bool LoadDNACalibModules();
-    bool CreateDNAReader();
-    void CleanupPythonObjects();
+    /** Rig structure read from the working copy by the bindings (valid when bInfoValid) */
+    bool bInfoValid;
+    FString CachedDBName;
+    TArray<FString> CachedJointNames;
+    TArray<FString> CachedBlendShapeNames;
+    TArray<FString> CachedMeshNames;
 
-    // Python object helpers
-    void* GetPythonObject(const FString& Name);
-    bool SetPythonObject(const FString& Name, void* Object);
-    void* CallPythonMethod(void* Object, const FString& MethodName, void* Args = nullptr);
-    FString PythonObjectToString(void* Object);
-    TArray<FString> PythonListToStringArray(void* List);
-    int32 PythonObjectToInt(void* Object);
+    /** Runs the bridge script with Op and Args; on success OutJson holds its reply */
+    bool RunBridge(const FString& Op, const TArray<FString>& Args, TSharedPtr<class FJsonObject>& OutJson);
+
+    /** Runs a Python file with the bindings on sys.path; returns stdout */
+    bool RunPythonFile(const FString& ScriptPath, const TArray<FString>& Args, FString& OutStdOut);
+
+    /** Reads joint/blend shape/mesh names and the DB name from the working copy */
+    bool RefreshInfo();
+
+    /** Applies an edit operation to the working copy */
+    bool RunEdit(const FString& Op, const TArray<FString>& Args, const FString& Description);
 
     // Error handling
     void SetLastError(const FString& Error);
-    void LogPythonError();
 };

@@ -84,18 +84,18 @@ bool UMetaHumanDNABridge::LoadDNAFile(const FString& DNAPath)
     // Load DNA using Python wrapper
     if (!PythonWrapper->LoadDNA(DNAPath))
     {
-        UE_LOG(LogMetaHumanDNA, Error, TEXT("Failed to load DNA file: %s"), *DNAPath);
+        UE_LOG(LogMetaHumanDNA, Error, TEXT("Failed to load DNA file: %s (%s)"), *DNAPath, *PythonWrapper->GetLastError());
         return false;
     }
 
     LoadedDNAPath = DNAPath;
     bDNALoaded = true;
 
-    // Parse DNA version
+    // Parse DNA version (as the DNA reports it; never assumed)
     if (!ParseDNAVersion())
     {
-        UE_LOG(LogMetaHumanDNA, Warning, TEXT("Could not determine DNA version, assuming DHI"));
-        DNAVersion = EDNAVersion::DHI;
+        UE_LOG(LogMetaHumanDNA, Warning, TEXT("DNA reports an unrecognised rig definition '%s'; version Unknown"),
+            *PythonWrapper->GetDNADatabaseName());
     }
 
     // Load DNA data into cache
@@ -681,8 +681,13 @@ bool UMetaHumanDNABridge::LoadDNAData()
 
     ClearCache();
 
-    // Load joint data
+    // Load joint data (read from the DNA by the DNACalib bindings)
     TArray<FString> JointNames = PythonWrapper->GetJointNames();
+    if (JointNames.Num() == 0)
+    {
+        UE_LOG(LogMetaHumanDNA, Error, TEXT("DNACalib returned no joints: %s"), *PythonWrapper->GetLastError());
+        return false;
+    }
     for (int32 i = 0; i < JointNames.Num(); ++i)
     {
         FDNAJointInfo JointInfo;
@@ -709,7 +714,15 @@ bool UMetaHumanDNABridge::LoadDNAData()
         BlendShapeInfoCache.Add(BlendShapeInfo);
     }
 
-    // TODO: Load mesh data from Python wrapper
+    // Load mesh data
+    TArray<FString> MeshNames = PythonWrapper->GetMeshNames();
+    for (int32 i = 0; i < MeshNames.Num(); ++i)
+    {
+        FDNAMeshInfo MeshInfo;
+        MeshInfo.MeshName = MeshNames[i];
+        MeshInfo.MeshIndex = i;
+        MeshInfoCache.Add(MeshInfo);
+    }
 
     return true;
 }
@@ -721,10 +734,20 @@ bool UMetaHumanDNABridge::ParseDNAVersion()
         return false;
     }
 
-    // TODO: Get DNA version from Python wrapper
-    // For now, assume DHI
-    DNAVersion = EDNAVersion::DHI;
-    return true;
+    // The rig definition the DNA itself reports (reader.getDBName())
+    const FString DBName = PythonWrapper->GetDNADatabaseName();
+    if (DBName.Equals(TEXT("MH.4"), ESearchCase::IgnoreCase))
+    {
+        DNAVersion = EDNAVersion::MH4;
+        return true;
+    }
+    if (DBName.Equals(TEXT("DHI"), ESearchCase::IgnoreCase))
+    {
+        DNAVersion = EDNAVersion::DHI;
+        return true;
+    }
+    DNAVersion = EDNAVersion::Unknown;
+    return false;
 }
 
 void UMetaHumanDNABridge::InitializeBlendShapeWeights()
