@@ -149,7 +149,7 @@ struct FInsightEntry
  * Avatar Expression State - Current avatar emotional/cognitive expression
  */
 USTRUCT(BlueprintType)
-struct FAvatarExpressionState
+struct FUnrealIntegrationExpressionState
 {
     GENERATED_BODY()
 
@@ -369,7 +369,7 @@ public:
 
     /** Current avatar expression state */
     UPROPERTY(BlueprintReadOnly, Category = "Avatar")
-    FAvatarExpressionState CurrentExpressionState;
+    FUnrealIntegrationExpressionState CurrentExpressionState;
 
     /** Update avatar expression from cognitive state */
     UFUNCTION(BlueprintCallable, Category = "Avatar")
@@ -381,7 +381,7 @@ public:
 
     /** Blend to target expression over time */
     UFUNCTION(BlueprintCallable, Category = "Avatar")
-    void BlendToExpression(const FAvatarExpressionState& TargetState, float BlendTime);
+    void BlendToExpression(const FUnrealIntegrationExpressionState& TargetState, float BlendTime);
 
     /** Get eye gaze direction based on attention */
     UFUNCTION(BlueprintCallable, Category = "Avatar")

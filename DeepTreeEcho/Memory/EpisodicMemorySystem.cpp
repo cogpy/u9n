@@ -128,7 +128,7 @@ void UEpisodicMemorySystem::Reset()
 // ENCODING
 // ========================================
 
-int64 UEpisodicMemorySystem::EncodeTrace(const TArray<float>& Content, EEncodingStrength Strength, float EmotionalValence)
+int64 UEpisodicMemorySystem::EncodeTrace(const TArray<float>& Content, EEpisodicEncodingStrength Strength, float EmotionalValence)
 {
     FMemoryTrace NewTrace;
     NewTrace.TraceID = NextTraceID++;
@@ -144,17 +144,17 @@ int64 UEpisodicMemorySystem::EncodeTrace(const TArray<float>& Content, EEncoding
     // Set initial strength based on encoding strength
     switch (Strength)
     {
-    case EEncodingStrength::Weak:
+    case EEpisodicEncodingStrength::Weak:
         NewTrace.Strength = 0.3f;
         break;
-    case EEncodingStrength::Moderate:
+    case EEpisodicEncodingStrength::Moderate:
         NewTrace.Strength = 0.5f;
         break;
-    case EEncodingStrength::Strong:
+    case EEpisodicEncodingStrength::Strong:
         NewTrace.Strength = 0.7f;
         NewTrace.EmotionalArousal = 0.5f;
         break;
-    case EEncodingStrength::Flashbulb:
+    case EEpisodicEncodingStrength::Flashbulb:
         NewTrace.Strength = 1.0f;
         NewTrace.EmotionalArousal = 1.0f;
         break;
@@ -453,15 +453,15 @@ TArray<FMemoryTrace> UEpisodicMemorySystem::Retrieve(const FRetrievalRequest& Re
 {
     switch (Request.CueType)
     {
-    case ERetrievalCueType::Content:
+    case EEpisodicRetrievalCueType::Content:
         return RetrieveByContent(Request.CueContent, Request.MaxResults);
-    case ERetrievalCueType::Temporal:
+    case EEpisodicRetrievalCueType::Temporal:
         return RetrieveByTime(Request.TemporalRange.X, Request.TemporalRange.Y, Request.MaxResults);
-    case ERetrievalCueType::Spatial:
+    case EEpisodicRetrievalCueType::Spatial:
         return RetrieveBySpatial(Request.SpatialLocation, Request.SpatialRadius, Request.MaxResults);
-    case ERetrievalCueType::Emotional:
+    case EEpisodicRetrievalCueType::Emotional:
         return RetrieveByEmotion(Request.TargetValence, 0.3f, Request.MaxResults);
-    case ERetrievalCueType::GoalRelevant:
+    case EEpisodicRetrievalCueType::GoalRelevant:
         return RetrieveForGoal(Request.GoalID, Request.MaxResults);
     default:
         return TArray<FMemoryTrace>();
@@ -477,16 +477,16 @@ FEpisode UEpisodicMemorySystem::GetEpisode(int32 EpisodeID) const
     return FEpisode();
 }
 
-FSemanticConcept UEpisodicMemorySystem::GetConcept(FName ConceptName) const
+FEpisodicSemanticConcept UEpisodicMemorySystem::GetConcept(FName ConceptName) const
 {
     if (const int32* ConceptID = ConceptNameToID.Find(ConceptName))
     {
-        if (const FSemanticConcept* Concept = Concepts.Find(*ConceptID))
+        if (const FEpisodicSemanticConcept* Concept = Concepts.Find(*ConceptID))
         {
             return *Concept;
         }
     }
-    return FSemanticConcept();
+    return FEpisodicSemanticConcept();
 }
 
 FProceduralSkill UEpisodicMemorySystem::GetSkill(FName SkillName) const
@@ -777,7 +777,7 @@ int32 UEpisodicMemorySystem::AbstractToConcept(int32 EpisodeID, FName ConceptNam
     if (int32* ExistingID = ConceptNameToID.Find(ConceptName))
     {
         // Update existing concept
-        if (FSemanticConcept* Concept = Concepts.Find(*ExistingID))
+        if (FEpisodicSemanticConcept* Concept = Concepts.Find(*ExistingID))
         {
             float Alpha = 1.0f / (Concept->InstanceCount + 1);
             for (int32 i = 0; i < FMath::Min(Concept->Prototype.Num(), Prototype.Num()); ++i)
@@ -794,7 +794,7 @@ int32 UEpisodicMemorySystem::AbstractToConcept(int32 EpisodeID, FName ConceptNam
     }
     
     // Create new concept
-    FSemanticConcept NewConcept;
+    FEpisodicSemanticConcept NewConcept;
     NewConcept.ConceptID = NextConceptID++;
     NewConcept.ConceptName = ConceptName;
     NewConcept.Prototype = Prototype;

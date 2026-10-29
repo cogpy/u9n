@@ -179,7 +179,7 @@ struct FSemanticAttractor
  * Memory consolidation event
  */
 USTRUCT(BlueprintType)
-struct FConsolidationEvent
+struct FReservoirConsolidationEvent
 {
     GENERATED_BODY()
 
@@ -233,11 +233,11 @@ struct FMemoryReplayConfig
 // DELEGATE DECLARATIONS
 // ========================================
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnWorkingMemoryUpdated, int32, SlotIndex, int64, NodeID);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnReservoirWorkingMemoryUpdated, int32, SlotIndex, int64, NodeID);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnProceduralLearned, FString, TraceID, float, Proficiency);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEpisodicEncoded, int64, EpisodeNodeID, int32, CycleStep);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSemanticAttractorFormed, int64, ConceptNodeID, float, Stability);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnConsolidationComplete, FConsolidationEvent, Event);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnReservoirConsolidationComplete, FReservoirConsolidationEvent, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMemoryReplayStarted, int64, NodeID, FString, MemoryType);
 
 /**
@@ -303,7 +303,7 @@ public:
     // ========================================
 
     UPROPERTY(BlueprintAssignable, Category = "Memory|Events")
-    FOnWorkingMemoryUpdated OnWorkingMemoryUpdated;
+    FOnReservoirWorkingMemoryUpdated OnWorkingMemoryUpdated;
 
     UPROPERTY(BlueprintAssignable, Category = "Memory|Events")
     FOnProceduralLearned OnProceduralLearned;
@@ -315,7 +315,7 @@ public:
     FOnSemanticAttractorFormed OnSemanticAttractorFormed;
 
     UPROPERTY(BlueprintAssignable, Category = "Memory|Events")
-    FOnConsolidationComplete OnConsolidationComplete;
+    FOnReservoirConsolidationComplete OnConsolidationComplete;
 
     UPROPERTY(BlueprintAssignable, Category = "Memory|Events")
     FOnMemoryReplayStarted OnMemoryReplayStarted;
@@ -459,7 +459,7 @@ public:
 
     /** Get recent consolidation events */
     UFUNCTION(BlueprintPure, Category = "Memory|Consolidation")
-    TArray<FConsolidationEvent> GetRecentConsolidations(int32 Count = 10) const;
+    TArray<FReservoirConsolidationEvent> GetRecentConsolidations(int32 Count = 10) const;
 
     /** Trigger sleep-like consolidation (intensive replay) */
     UFUNCTION(BlueprintCallable, Category = "Memory|Consolidation")
@@ -526,7 +526,7 @@ protected:
     TMap<int64, FSemanticAttractor> SemanticAttractors;
 
     // Consolidation history
-    TArray<FConsolidationEvent> ConsolidationHistory;
+    TArray<FReservoirConsolidationEvent> ConsolidationHistory;
 
     // Replay state
     bool bReplayActive = false;

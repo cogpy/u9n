@@ -30,23 +30,8 @@
 #include "DeepCognitiveBridge.h"
 #include "TetradicReservoirIntegration.h"
 #include "Embodied4ECognition.h"
+#include "../Echobeats/EchobeatStreamTypes.h"
 #include "EchobeatsReservoirDynamics.generated.h"
-
-/**
- * Echobeat Step Type
- */
-UENUM(BlueprintType)
-enum class EEchobeatStepType : uint8
-{
-    /** Pivotal relevance realization */
-    Pivotal UMETA(DisplayName = "Pivotal"),
-    
-    /** Affordance interaction */
-    Affordance UMETA(DisplayName = "Affordance"),
-    
-    /** Salience simulation */
-    Salience UMETA(DisplayName = "Salience")
-};
 
 /**
  * Echobeat Mode
@@ -100,7 +85,7 @@ struct FNestedShellTerm
  * Defines the configuration for each step in the 12-step cycle
  */
 USTRUCT(BlueprintType)
-struct FEchobeatStepConfig
+struct FReservoirEchobeatStepConfig
 {
     GENERATED_BODY()
 
@@ -236,7 +221,7 @@ public:
 
     /** Step configurations */
     UPROPERTY(BlueprintReadOnly, Category = "Echobeats|State")
-    TArray<FEchobeatStepConfig> StepConfigs;
+    TArray<FReservoirEchobeatStepConfig> StepConfigs;
 
     /** Stream reservoirs (3 streams) */
     UPROPERTY(BlueprintReadOnly, Category = "Echobeats|State")
@@ -284,7 +269,7 @@ public:
 
     /** Get current step configuration */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Steps")
-    FEchobeatStepConfig GetCurrentStepConfig() const;
+    FReservoirEchobeatStepConfig GetCurrentStepConfig() const;
 
     /** Get step type for step number */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Steps")
@@ -407,7 +392,7 @@ public:
     // ========================================
 
     /** Called when step advances */
-    DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchobeatStepAdvanced, int32, NewStep, FEchobeatStepConfig, Config);
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchobeatStepAdvanced, int32, NewStep, FReservoirEchobeatStepConfig, Config);
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
     FOnEchobeatStepAdvanced OnStepAdvanced;
 

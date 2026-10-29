@@ -60,7 +60,7 @@ enum class EUnrealIntegrationMode : uint8
  * (received on FEchoReactionBus); gaze and blink rate are procedural.
  */
 USTRUCT(BlueprintType)
-struct FAvatarExpressionState
+struct FUnrealBridgeExpressionState
 {
     GENERATED_BODY()
 
@@ -290,7 +290,7 @@ public:
 
     /** Expression last chosen by the character model (via FEchoReactionBus); neutral until one arrives */
     UPROPERTY(BlueprintReadOnly, Category = "DeepTreeEcho|State")
-    FAvatarExpressionState CurrentExpression;
+    FUnrealBridgeExpressionState CurrentExpression;
 
     // ========================================
     // PUBLIC API - INITIALIZATION

@@ -83,7 +83,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 1: Pivotal, Expressive, T4E (Sensory Input)
     StepConfigs[0].StepNumber = 1;
     StepConfigs[0].StepType = EEchobeatStepType::Pivotal;
-    StepConfigs[0].Mode = ECognitiveMode::Expressive;
+    StepConfigs[0].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[0].PrimaryStream = ECognitiveStreamType::Pivotal;
     StepConfigs[0].Term = ESystem4Term::T4_SensoryInput;
     StepConfigs[0].TriadicGroup = 0;
@@ -92,7 +92,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 2: Affordance, Expressive, T1R (Perception)
     StepConfigs[1].StepNumber = 2;
     StepConfigs[1].StepType = EEchobeatStepType::Affordance;
-    StepConfigs[1].Mode = ECognitiveMode::Expressive;
+    StepConfigs[1].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[1].PrimaryStream = ECognitiveStreamType::Affordance;
     StepConfigs[1].Term = ESystem4Term::T1_Perception;
     StepConfigs[1].TriadicGroup = 1;
@@ -101,7 +101,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 3: Affordance, Expressive, T2E (Idea Formation)
     StepConfigs[2].StepNumber = 3;
     StepConfigs[2].StepType = EEchobeatStepType::Affordance;
-    StepConfigs[2].Mode = ECognitiveMode::Expressive;
+    StepConfigs[2].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[2].PrimaryStream = ECognitiveStreamType::Salience;
     StepConfigs[2].Term = ESystem4Term::T2_IdeaFormation;
     StepConfigs[2].TriadicGroup = 2;
@@ -110,7 +110,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 4: Affordance, Expressive, T7R (Memory Encoding) - Triadic Sync
     StepConfigs[3].StepNumber = 4;
     StepConfigs[3].StepType = EEchobeatStepType::Affordance;
-    StepConfigs[3].Mode = ECognitiveMode::Expressive;
+    StepConfigs[3].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[3].PrimaryStream = ECognitiveStreamType::Pivotal;
     StepConfigs[3].Term = ESystem4Term::T7_MemoryEncoding;
     StepConfigs[3].TriadicGroup = 3;
@@ -119,7 +119,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 5: Affordance, Expressive, T4E (Sensory Input)
     StepConfigs[4].StepNumber = 5;
     StepConfigs[4].StepType = EEchobeatStepType::Affordance;
-    StepConfigs[4].Mode = ECognitiveMode::Expressive;
+    StepConfigs[4].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[4].PrimaryStream = ECognitiveStreamType::Pivotal;
     StepConfigs[4].Term = ESystem4Term::T4_SensoryInput;
     StepConfigs[4].TriadicGroup = 0;
@@ -128,7 +128,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 6: Affordance, Reflective, T1R (Perception)
     StepConfigs[5].StepNumber = 6;
     StepConfigs[5].StepType = EEchobeatStepType::Affordance;
-    StepConfigs[5].Mode = ECognitiveMode::Reflective;
+    StepConfigs[5].Mode = EEchobeatsCognitiveMode::Reflective;
     StepConfigs[5].PrimaryStream = ECognitiveStreamType::Affordance;
     StepConfigs[5].Term = ESystem4Term::T1_Perception;
     StepConfigs[5].TriadicGroup = 1;
@@ -137,7 +137,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 7: Pivotal, Reflective, T2E (Idea Formation)
     StepConfigs[6].StepNumber = 7;
     StepConfigs[6].StepType = EEchobeatStepType::Pivotal;
-    StepConfigs[6].Mode = ECognitiveMode::Reflective;
+    StepConfigs[6].Mode = EEchobeatsCognitiveMode::Reflective;
     StepConfigs[6].PrimaryStream = ECognitiveStreamType::Salience;
     StepConfigs[6].Term = ESystem4Term::T2_IdeaFormation;
     StepConfigs[6].TriadicGroup = 2;
@@ -146,7 +146,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 8: Salience, Expressive, T5E (Action Sequence) - Triadic Sync
     StepConfigs[7].StepNumber = 8;
     StepConfigs[7].StepType = EEchobeatStepType::Salience;
-    StepConfigs[7].Mode = ECognitiveMode::Expressive;
+    StepConfigs[7].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[7].PrimaryStream = ECognitiveStreamType::Pivotal;
     StepConfigs[7].Term = ESystem4Term::T5_ActionSequence;
     StepConfigs[7].TriadicGroup = 3;
@@ -155,7 +155,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 9: Salience, Expressive, T8E (Balanced Response)
     StepConfigs[8].StepNumber = 9;
     StepConfigs[8].StepType = EEchobeatStepType::Salience;
-    StepConfigs[8].Mode = ECognitiveMode::Expressive;
+    StepConfigs[8].Mode = EEchobeatsCognitiveMode::Expressive;
     StepConfigs[8].PrimaryStream = ECognitiveStreamType::Pivotal;
     StepConfigs[8].Term = ESystem4Term::T8_BalancedResponse;
     StepConfigs[8].TriadicGroup = 0;
@@ -164,7 +164,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 10: Salience, Reflective, T7R (Memory Encoding)
     StepConfigs[9].StepNumber = 10;
     StepConfigs[9].StepType = EEchobeatStepType::Salience;
-    StepConfigs[9].Mode = ECognitiveMode::Reflective;
+    StepConfigs[9].Mode = EEchobeatsCognitiveMode::Reflective;
     StepConfigs[9].PrimaryStream = ECognitiveStreamType::Affordance;
     StepConfigs[9].Term = ESystem4Term::T7_MemoryEncoding;
     StepConfigs[9].TriadicGroup = 1;
@@ -173,7 +173,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 11: Salience, Reflective, T5E (Action Sequence)
     StepConfigs[10].StepNumber = 11;
     StepConfigs[10].StepType = EEchobeatStepType::Salience;
-    StepConfigs[10].Mode = ECognitiveMode::Reflective;
+    StepConfigs[10].Mode = EEchobeatsCognitiveMode::Reflective;
     StepConfigs[10].PrimaryStream = ECognitiveStreamType::Salience;
     StepConfigs[10].Term = ESystem4Term::T5_ActionSequence;
     StepConfigs[10].TriadicGroup = 2;
@@ -182,7 +182,7 @@ void UEchobeatsStreamEngine::InitializeStepConfigs()
     // Step 12: Salience, Reflective, T8E (Balanced Response) - Triadic Sync
     StepConfigs[11].StepNumber = 12;
     StepConfigs[11].StepType = EEchobeatStepType::Salience;
-    StepConfigs[11].Mode = ECognitiveMode::Reflective;
+    StepConfigs[11].Mode = EEchobeatsCognitiveMode::Reflective;
     StepConfigs[11].PrimaryStream = ECognitiveStreamType::Pivotal;
     StepConfigs[11].Term = ESystem4Term::T8_BalancedResponse;
     StepConfigs[11].TriadicGroup = 3;
@@ -240,9 +240,9 @@ void UEchobeatsStreamEngine::InitializeTensionalCouplings()
     FTensionalCoupling PerceptionMemory;
     PerceptionMemory.CouplingName = TEXT("Perception-Memory");
     PerceptionMemory.TermA = ESystem4Term::T4_SensoryInput;
-    PerceptionMemory.ModeA = ECognitiveMode::Expressive;
+    PerceptionMemory.ModeA = EEchobeatsCognitiveMode::Expressive;
     PerceptionMemory.TermB = ESystem4Term::T7_MemoryEncoding;
-    PerceptionMemory.ModeB = ECognitiveMode::Reflective;
+    PerceptionMemory.ModeB = EEchobeatsCognitiveMode::Reflective;
     PerceptionMemory.CouplingStrength = 0.8f;
     PerceptionMemory.bIsActive = false;
     TensionalCouplings.Add(PerceptionMemory);
@@ -251,9 +251,9 @@ void UEchobeatsStreamEngine::InitializeTensionalCouplings()
     FTensionalCoupling AssessmentPlanning;
     AssessmentPlanning.CouplingName = TEXT("Assessment-Planning");
     AssessmentPlanning.TermA = ESystem4Term::T1_Perception;
-    AssessmentPlanning.ModeA = ECognitiveMode::Reflective;
+    AssessmentPlanning.ModeA = EEchobeatsCognitiveMode::Reflective;
     AssessmentPlanning.TermB = ESystem4Term::T2_IdeaFormation;
-    AssessmentPlanning.ModeB = ECognitiveMode::Expressive;
+    AssessmentPlanning.ModeB = EEchobeatsCognitiveMode::Expressive;
     AssessmentPlanning.CouplingStrength = 0.7f;
     AssessmentPlanning.bIsActive = false;
     TensionalCouplings.Add(AssessmentPlanning);
@@ -262,9 +262,9 @@ void UEchobeatsStreamEngine::InitializeTensionalCouplings()
     FTensionalCoupling ActionIntegration;
     ActionIntegration.CouplingName = TEXT("Action-Integration");
     ActionIntegration.TermA = ESystem4Term::T5_ActionSequence;
-    ActionIntegration.ModeA = ECognitiveMode::Expressive;
+    ActionIntegration.ModeA = EEchobeatsCognitiveMode::Expressive;
     ActionIntegration.TermB = ESystem4Term::T8_BalancedResponse;
-    ActionIntegration.ModeB = ECognitiveMode::Expressive;
+    ActionIntegration.ModeB = EEchobeatsCognitiveMode::Expressive;
     ActionIntegration.CouplingStrength = 0.9f;
     ActionIntegration.bIsActive = false;
     TensionalCouplings.Add(ActionIntegration);
@@ -350,7 +350,7 @@ void UEchobeatsStreamEngine::DetectActiveCouplings()
 
     // Get current term and mode
     ESystem4Term CurrentTerm = State.CurrentConfig.Term;
-    ECognitiveMode CurrentMode = State.CurrentConfig.Mode;
+    EEchobeatsCognitiveMode CurrentMode = State.CurrentConfig.Mode;
 
     // Check each coupling
     for (FTensionalCoupling& Coupling : TensionalCouplings)

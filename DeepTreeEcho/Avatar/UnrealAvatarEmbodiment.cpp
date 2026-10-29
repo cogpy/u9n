@@ -410,10 +410,10 @@ void UUnrealAvatarEmbodiment::UpdateExtendedState(float DeltaTime)
 void UUnrealAvatarEmbodiment::ProcessSensorimotorLoop(float DeltaTime)
 {
     // Gather sensory input
-    FSensoryInput CurrentInput = GatherSensoryInput();
+    FAvatarSensoryInput CurrentInput = GatherSensoryInput();
     
     // Predict next sensory state based on current action
-    FSensoryInput PredictedInput = PredictSensoryOutcome(EnactedState.CurrentAction);
+    FAvatarSensoryInput PredictedInput = PredictSensoryOutcome(EnactedState.CurrentAction);
     
     // Compute prediction error
     float PredictionError = ComputePredictionError(CurrentInput, PredictedInput);
@@ -429,9 +429,9 @@ void UUnrealAvatarEmbodiment::ProcessSensorimotorLoop(float DeltaTime)
     LastPredictionError = PredictionError;
 }
 
-FSensoryInput UUnrealAvatarEmbodiment::GatherSensoryInput()
+FAvatarSensoryInput UUnrealAvatarEmbodiment::GatherSensoryInput()
 {
-    FSensoryInput Input;
+    FAvatarSensoryInput Input;
     
     AActor* Owner = GetOwner();
     if (Owner)
@@ -447,9 +447,9 @@ FSensoryInput UUnrealAvatarEmbodiment::GatherSensoryInput()
     return Input;
 }
 
-FSensoryInput UUnrealAvatarEmbodiment::PredictSensoryOutcome(const FString& Action)
+FAvatarSensoryInput UUnrealAvatarEmbodiment::PredictSensoryOutcome(const FString& Action)
 {
-    FSensoryInput Predicted = LastSensoryInput;
+    FAvatarSensoryInput Predicted = LastSensoryInput;
     
     // Simple prediction based on action type
     if (Action == TEXT("walk"))
@@ -464,8 +464,8 @@ FSensoryInput UUnrealAvatarEmbodiment::PredictSensoryOutcome(const FString& Acti
     return Predicted;
 }
 
-float UUnrealAvatarEmbodiment::ComputePredictionError(const FSensoryInput& Actual,
-                                                       const FSensoryInput& Predicted)
+float UUnrealAvatarEmbodiment::ComputePredictionError(const FAvatarSensoryInput& Actual,
+                                                       const FAvatarSensoryInput& Predicted)
 {
     float PositionError = (Actual.Position - Predicted.Position).Size();
     float RotationError = FMath::Abs(Actual.Rotation.Yaw - Predicted.Rotation.Yaw);
@@ -473,12 +473,12 @@ float UUnrealAvatarEmbodiment::ComputePredictionError(const FSensoryInput& Actua
     return (PositionError / 100.0f + RotationError / 180.0f) * 0.5f;
 }
 
-void UUnrealAvatarEmbodiment::UpdateInternalModels(const FSensoryInput& Actual,
-                                                    const FSensoryInput& Predicted,
+void UUnrealAvatarEmbodiment::UpdateInternalModels(const FAvatarSensoryInput& Actual,
+                                                    const FAvatarSensoryInput& Predicted,
                                                     float Error)
 {
     // Store contingency for learning
-    FSensorimotorContingency Contingency;
+    FAvatarSensorimotorContingency Contingency;
     Contingency.Action = EnactedState.CurrentAction;
     Contingency.InitialState = Predicted;
     Contingency.ResultState = Actual;

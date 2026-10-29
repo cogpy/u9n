@@ -1,18 +1,18 @@
 #include "CognitiveCycleManager.h"
 
-UCognitiveCycleManager::UCognitiveCycleManager()
+UCognitiveStreamCycleManager::UCognitiveStreamCycleManager()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickInterval = 0.0f;
 }
 
-void UCognitiveCycleManager::BeginPlay()
+void UCognitiveStreamCycleManager::BeginPlay()
 {
     Super::BeginPlay();
     InitializeCycle();
 }
 
-void UCognitiveCycleManager::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+void UCognitiveStreamCycleManager::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
@@ -31,13 +31,13 @@ void UCognitiveCycleManager::TickComponent(float DeltaTime, ELevelTick TickType,
 // INITIALIZATION
 // ========================================
 
-void UCognitiveCycleManager::InitializeCycle()
+void UCognitiveStreamCycleManager::InitializeCycle()
 {
     // Initialize cycle state
     CycleState.GlobalStep = 1;
     CycleState.CyclesCompleted = 0;
-    CycleState.CurrentMode = ECognitiveMode::Expressive;
-    CycleState.CurrentStepType = ECognitiveStepType::RelevanceRealization;
+    CycleState.CurrentMode = ECognitiveStreamMode::Expressive;
+    CycleState.CurrentStepType = ECognitiveStreamStepType::RelevanceRealization;
     CycleState.CurrentTriad = ETriadGroup::Triad1;
     CycleState.ExpressiveStepsRemaining = 7;
     CycleState.ReflectiveStepsRemaining = 5;
@@ -47,22 +47,22 @@ void UCognitiveCycleManager::InitializeCycle()
     InitializeTriads();
 }
 
-void UCognitiveCycleManager::ResetCycle()
+void UCognitiveStreamCycleManager::ResetCycle()
 {
     InitializeCycle();
 }
 
-void UCognitiveCycleManager::InitializeStreams()
+void UCognitiveStreamCycleManager::InitializeStreams()
 {
     StreamStates.Empty();
 
     // Stream 1: Perception (phase offset 0)
-    FStreamState PerceptionStream;
+    FConsciousnessStreamState PerceptionStream;
     PerceptionStream.StreamType = EConsciousnessStream::Perception;
     PerceptionStream.CurrentStep = 1;
     PerceptionStream.PhaseOffset = 0;
-    PerceptionStream.Mode = ECognitiveMode::Expressive;
-    PerceptionStream.StepType = ECognitiveStepType::RelevanceRealization;
+    PerceptionStream.Mode = ECognitiveStreamMode::Expressive;
+    PerceptionStream.StepType = ECognitiveStreamStepType::RelevanceRealization;
     PerceptionStream.ActivationLevel = 1.0f;
     PerceptionStream.InterStreamCoherence = 1.0f;
     PerceptionStream.SalienceValue = 0.5f;
@@ -70,12 +70,12 @@ void UCognitiveCycleManager::InitializeStreams()
     StreamStates.Add(PerceptionStream);
 
     // Stream 2: Action (phase offset 4 = 120°)
-    FStreamState ActionStream;
+    FConsciousnessStreamState ActionStream;
     ActionStream.StreamType = EConsciousnessStream::Action;
     ActionStream.CurrentStep = 5; // 4 steps ahead
     ActionStream.PhaseOffset = 4;
-    ActionStream.Mode = ECognitiveMode::Expressive;
-    ActionStream.StepType = ECognitiveStepType::AffordanceInteraction;
+    ActionStream.Mode = ECognitiveStreamMode::Expressive;
+    ActionStream.StepType = ECognitiveStreamStepType::AffordanceInteraction;
     ActionStream.ActivationLevel = 1.0f;
     ActionStream.InterStreamCoherence = 1.0f;
     ActionStream.SalienceValue = 0.5f;
@@ -83,12 +83,12 @@ void UCognitiveCycleManager::InitializeStreams()
     StreamStates.Add(ActionStream);
 
     // Stream 3: Simulation (phase offset 8 = 240°)
-    FStreamState SimulationStream;
+    FConsciousnessStreamState SimulationStream;
     SimulationStream.StreamType = EConsciousnessStream::Simulation;
     SimulationStream.CurrentStep = 9; // 8 steps ahead
     SimulationStream.PhaseOffset = 8;
-    SimulationStream.Mode = ECognitiveMode::Reflective;
-    SimulationStream.StepType = ECognitiveStepType::SalienceSimulation;
+    SimulationStream.Mode = ECognitiveStreamMode::Reflective;
+    SimulationStream.StepType = ECognitiveStreamStepType::SalienceSimulation;
     SimulationStream.ActivationLevel = 1.0f;
     SimulationStream.InterStreamCoherence = 1.0f;
     SimulationStream.SalienceValue = 0.5f;
@@ -96,7 +96,7 @@ void UCognitiveCycleManager::InitializeStreams()
     StreamStates.Add(SimulationStream);
 }
 
-void UCognitiveCycleManager::InitializeNestedShells()
+void UCognitiveStreamCycleManager::InitializeNestedShells()
 {
     NestedShells.Empty();
 
@@ -111,7 +111,7 @@ void UCognitiveCycleManager::InitializeNestedShells()
 
     for (int32 i = 0; i < 4; ++i)
     {
-        FNestedShellState Shell;
+        FCognitiveStreamShellState Shell;
         Shell.NestingLevel = i + 1;
         Shell.TermCount = TermCounts[i];
         Shell.StepsApart = StepsApart[i];
@@ -128,7 +128,7 @@ void UCognitiveCycleManager::InitializeNestedShells()
     }
 }
 
-void UCognitiveCycleManager::InitializeTriads()
+void UCognitiveStreamCycleManager::InitializeTriads()
 {
     TriadStates.Empty();
 
@@ -169,7 +169,7 @@ void UCognitiveCycleManager::InitializeTriads()
 // CYCLE CONTROL
 // ========================================
 
-void UCognitiveCycleManager::AdvanceStep()
+void UCognitiveStreamCycleManager::AdvanceStep()
 {
     // Process current step
     ProcessCurrentStep();
@@ -190,7 +190,7 @@ void UCognitiveCycleManager::AdvanceStep()
     CycleState.CurrentTriad = CalculateTriadGroup(CycleState.GlobalStep);
 
     // Update mode counters
-    if (CycleState.CurrentMode == ECognitiveMode::Expressive)
+    if (CycleState.CurrentMode == ECognitiveStreamMode::Expressive)
     {
         CycleState.ExpressiveStepsRemaining--;
     }
@@ -200,7 +200,7 @@ void UCognitiveCycleManager::AdvanceStep()
     }
 
     // Update all streams
-    for (FStreamState& Stream : StreamStates)
+    for (FConsciousnessStreamState& Stream : StreamStates)
     {
         UpdateStream(Stream);
     }
@@ -218,7 +218,7 @@ void UCognitiveCycleManager::AdvanceStep()
     }
 }
 
-void UCognitiveCycleManager::AdvanceSteps(int32 Steps)
+void UCognitiveStreamCycleManager::AdvanceSteps(int32 Steps)
 {
     for (int32 i = 0; i < Steps; ++i)
     {
@@ -226,14 +226,14 @@ void UCognitiveCycleManager::AdvanceSteps(int32 Steps)
     }
 }
 
-void UCognitiveCycleManager::ProcessCurrentStep()
+void UCognitiveStreamCycleManager::ProcessCurrentStep()
 {
     // Process based on current step type
     switch (CycleState.CurrentStepType)
     {
-        case ECognitiveStepType::RelevanceRealization:
+        case ECognitiveStreamStepType::RelevanceRealization:
             // Pivotal step: orient present commitment
-            for (FStreamState& Stream : StreamStates)
+            for (FConsciousnessStreamState& Stream : StreamStates)
             {
                 // Relevance realization affects all streams equally
                 Stream.SalienceValue = FMath::Lerp(Stream.SalienceValue, 0.5f, 0.3f);
@@ -241,9 +241,9 @@ void UCognitiveCycleManager::ProcessCurrentStep()
             }
             break;
 
-        case ECognitiveStepType::AffordanceInteraction:
+        case ECognitiveStreamStepType::AffordanceInteraction:
             // Actual affordance: condition past performance
-            for (FStreamState& Stream : StreamStates)
+            for (FConsciousnessStreamState& Stream : StreamStates)
             {
                 if (Stream.StreamType == EConsciousnessStream::Action)
                 {
@@ -253,9 +253,9 @@ void UCognitiveCycleManager::ProcessCurrentStep()
             }
             break;
 
-        case ECognitiveStepType::SalienceSimulation:
+        case ECognitiveStreamStepType::SalienceSimulation:
             // Virtual salience: anticipate future potential
-            for (FStreamState& Stream : StreamStates)
+            for (FConsciousnessStreamState& Stream : StreamStates)
             {
                 if (Stream.StreamType == EConsciousnessStream::Simulation)
                 {
@@ -271,21 +271,21 @@ void UCognitiveCycleManager::ProcessCurrentStep()
 // STREAM ACCESS
 // ========================================
 
-FStreamState UCognitiveCycleManager::GetStreamState(EConsciousnessStream StreamType) const
+FConsciousnessStreamState UCognitiveStreamCycleManager::GetStreamState(EConsciousnessStream StreamType) const
 {
-    for (const FStreamState& Stream : StreamStates)
+    for (const FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == StreamType)
         {
             return Stream;
         }
     }
-    return FStreamState();
+    return FConsciousnessStreamState();
 }
 
-int32 UCognitiveCycleManager::GetStreamStep(EConsciousnessStream StreamType) const
+int32 UCognitiveStreamCycleManager::GetStreamStep(EConsciousnessStream StreamType) const
 {
-    for (const FStreamState& Stream : StreamStates)
+    for (const FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == StreamType)
         {
@@ -295,9 +295,9 @@ int32 UCognitiveCycleManager::GetStreamStep(EConsciousnessStream StreamType) con
     return 1;
 }
 
-float UCognitiveCycleManager::GetStreamActivation(EConsciousnessStream StreamType) const
+float UCognitiveStreamCycleManager::GetStreamActivation(EConsciousnessStream StreamType) const
 {
-    for (const FStreamState& Stream : StreamStates)
+    for (const FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == StreamType)
         {
@@ -307,9 +307,9 @@ float UCognitiveCycleManager::GetStreamActivation(EConsciousnessStream StreamTyp
     return 0.0f;
 }
 
-void UCognitiveCycleManager::SetStreamSalience(EConsciousnessStream StreamType, float Salience)
+void UCognitiveStreamCycleManager::SetStreamSalience(EConsciousnessStream StreamType, float Salience)
 {
-    for (FStreamState& Stream : StreamStates)
+    for (FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == StreamType)
         {
@@ -319,9 +319,9 @@ void UCognitiveCycleManager::SetStreamSalience(EConsciousnessStream StreamType, 
     }
 }
 
-void UCognitiveCycleManager::SetStreamAffordance(EConsciousnessStream StreamType, float Affordance)
+void UCognitiveStreamCycleManager::SetStreamAffordance(EConsciousnessStream StreamType, float Affordance)
 {
-    for (FStreamState& Stream : StreamStates)
+    for (FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == StreamType)
         {
@@ -335,12 +335,12 @@ void UCognitiveCycleManager::SetStreamAffordance(EConsciousnessStream StreamType
 // TRIAD ACCESS
 // ========================================
 
-ETriadGroup UCognitiveCycleManager::GetCurrentTriad() const
+ETriadGroup UCognitiveStreamCycleManager::GetCurrentTriad() const
 {
     return CycleState.CurrentTriad;
 }
 
-FTriadState UCognitiveCycleManager::GetTriadState(ETriadGroup Group) const
+FTriadState UCognitiveStreamCycleManager::GetTriadState(ETriadGroup Group) const
 {
     int32 Index = static_cast<int32>(Group);
     if (TriadStates.IsValidIndex(Index))
@@ -350,7 +350,7 @@ FTriadState UCognitiveCycleManager::GetTriadState(ETriadGroup Group) const
     return FTriadState();
 }
 
-bool UCognitiveCycleManager::IsStepInTriad(int32 Step, ETriadGroup Group) const
+bool UCognitiveStreamCycleManager::IsStepInTriad(int32 Step, ETriadGroup Group) const
 {
     int32 Index = static_cast<int32>(Group);
     if (TriadStates.IsValidIndex(Index))
@@ -364,21 +364,21 @@ bool UCognitiveCycleManager::IsStepInTriad(int32 Step, ETriadGroup Group) const
 // NESTED SHELLS
 // ========================================
 
-FNestedShellState UCognitiveCycleManager::GetNestedShellState(int32 Level) const
+FCognitiveStreamShellState UCognitiveStreamCycleManager::GetNestedShellState(int32 Level) const
 {
     int32 Index = Level - 1;
     if (NestedShells.IsValidIndex(Index))
     {
         return NestedShells[Index];
     }
-    return FNestedShellState();
+    return FCognitiveStreamShellState();
 }
 
-int32 UCognitiveCycleManager::GetTotalNestedTerms() const
+int32 UCognitiveStreamCycleManager::GetTotalNestedTerms() const
 {
     // OEIS A000081: 1 + 2 + 4 + 9 = 16 total terms
     int32 Total = 0;
-    for (const FNestedShellState& Shell : NestedShells)
+    for (const FCognitiveStreamShellState& Shell : NestedShells)
     {
         Total += Shell.TermCount;
     }
@@ -389,13 +389,13 @@ int32 UCognitiveCycleManager::GetTotalNestedTerms() const
 // INTER-STREAM AWARENESS
 // ========================================
 
-float UCognitiveCycleManager::GetPerceptionOfAction() const
+float UCognitiveStreamCycleManager::GetPerceptionOfAction() const
 {
     // Stream 1 (Perception) perceives Stream 2's (Action) state
     float PerceptionActivation = 0.0f;
     float ActionAffordance = 0.0f;
 
-    for (const FStreamState& Stream : StreamStates)
+    for (const FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == EConsciousnessStream::Perception)
         {
@@ -410,13 +410,13 @@ float UCognitiveCycleManager::GetPerceptionOfAction() const
     return PerceptionActivation * ActionAffordance;
 }
 
-float UCognitiveCycleManager::GetSimulationOfAction() const
+float UCognitiveStreamCycleManager::GetSimulationOfAction() const
 {
     // Stream 3 (Simulation) reflects on Stream 2's (Action) state
     float SimulationActivation = 0.0f;
     float ActionAffordance = 0.0f;
 
-    for (const FStreamState& Stream : StreamStates)
+    for (const FConsciousnessStreamState& Stream : StreamStates)
     {
         if (Stream.StreamType == EConsciousnessStream::Simulation)
         {
@@ -431,7 +431,7 @@ float UCognitiveCycleManager::GetSimulationOfAction() const
     return SimulationActivation * ActionAffordance;
 }
 
-float UCognitiveCycleManager::CalculateInterStreamCoherence() const
+float UCognitiveStreamCycleManager::CalculateInterStreamCoherence() const
 {
     if (StreamStates.Num() < 3)
     {
@@ -440,7 +440,7 @@ float UCognitiveCycleManager::CalculateInterStreamCoherence() const
 
     // Calculate coherence based on how well streams are synchronized
     float TotalCoherence = 0.0f;
-    for (const FStreamState& Stream : StreamStates)
+    for (const FConsciousnessStreamState& Stream : StreamStates)
     {
         TotalCoherence += Stream.InterStreamCoherence;
     }
@@ -452,17 +452,17 @@ float UCognitiveCycleManager::CalculateInterStreamCoherence() const
 // STEP TYPE QUERIES
 // ========================================
 
-ECognitiveStepType UCognitiveCycleManager::GetStepType(int32 Step) const
+ECognitiveStreamStepType UCognitiveStreamCycleManager::GetStepType(int32 Step) const
 {
     return CalculateStepType(Step);
 }
 
-ECognitiveMode UCognitiveCycleManager::GetStepMode(int32 Step) const
+ECognitiveStreamMode UCognitiveStreamCycleManager::GetStepMode(int32 Step) const
 {
     return CalculateStepMode(Step);
 }
 
-bool UCognitiveCycleManager::IsRelevanceRealizationStep(int32 Step) const
+bool UCognitiveStreamCycleManager::IsRelevanceRealizationStep(int32 Step) const
 {
     // Steps 1 and 7 are pivotal relevance realization steps
     return (Step == 1 || Step == 7);
@@ -472,7 +472,7 @@ bool UCognitiveCycleManager::IsRelevanceRealizationStep(int32 Step) const
 // INTERNAL METHODS
 // ========================================
 
-void UCognitiveCycleManager::UpdateStream(FStreamState& Stream)
+void UCognitiveStreamCycleManager::UpdateStream(FConsciousnessStreamState& Stream)
 {
     // Calculate stream's current step based on global step and phase offset
     int32 StreamStep = ((CycleState.GlobalStep - 1 + Stream.PhaseOffset) % 12) + 1;
@@ -486,9 +486,9 @@ void UCognitiveCycleManager::UpdateStream(FStreamState& Stream)
     Stream.ActivationLevel = FMath::Max(0.5f, Stream.ActivationLevel - 0.02f);
 }
 
-void UCognitiveCycleManager::UpdateNestedShells()
+void UCognitiveStreamCycleManager::UpdateNestedShells()
 {
-    for (FNestedShellState& Shell : NestedShells)
+    for (FCognitiveStreamShellState& Shell : NestedShells)
     {
         // Update terms based on current step
         int32 ActiveTermIndex = (CycleState.GlobalStep - 1) % Shell.TermCount;
@@ -517,7 +517,7 @@ void UCognitiveCycleManager::UpdateNestedShells()
     }
 }
 
-void UCognitiveCycleManager::UpdateTriadActivations()
+void UCognitiveStreamCycleManager::UpdateTriadActivations()
 {
     for (FTriadState& Triad : TriadStates)
     {
@@ -535,7 +535,7 @@ void UCognitiveCycleManager::UpdateTriadActivations()
     }
 }
 
-ECognitiveStepType UCognitiveCycleManager::CalculateStepType(int32 Step) const
+ECognitiveStreamStepType UCognitiveStreamCycleManager::CalculateStepType(int32 Step) const
 {
     // Step composition:
     // 1: Pivotal relevance realization (orienting present commitment)
@@ -545,34 +545,34 @@ ECognitiveStepType UCognitiveCycleManager::CalculateStepType(int32 Step) const
 
     if (Step == 1 || Step == 7)
     {
-        return ECognitiveStepType::RelevanceRealization;
+        return ECognitiveStreamStepType::RelevanceRealization;
     }
     else if (Step >= 2 && Step <= 6)
     {
-        return ECognitiveStepType::AffordanceInteraction;
+        return ECognitiveStreamStepType::AffordanceInteraction;
     }
     else // Steps 8-12
     {
-        return ECognitiveStepType::SalienceSimulation;
+        return ECognitiveStreamStepType::SalienceSimulation;
     }
 }
 
-ECognitiveMode UCognitiveCycleManager::CalculateStepMode(int32 Step) const
+ECognitiveStreamMode UCognitiveStreamCycleManager::CalculateStepMode(int32 Step) const
 {
     // 7 expressive steps: 1, 2, 3, 4, 5, 6, 7
     // 5 reflective steps: 8, 9, 10, 11, 12
 
     if (Step <= 7)
     {
-        return ECognitiveMode::Expressive;
+        return ECognitiveStreamMode::Expressive;
     }
     else
     {
-        return ECognitiveMode::Reflective;
+        return ECognitiveStreamMode::Reflective;
     }
 }
 
-ETriadGroup UCognitiveCycleManager::CalculateTriadGroup(int32 Step) const
+ETriadGroup UCognitiveStreamCycleManager::CalculateTriadGroup(int32 Step) const
 {
     // Triads: {1,5,9}, {2,6,10}, {3,7,11}, {4,8,12}
     // Pattern: (Step - 1) % 4
@@ -581,7 +581,7 @@ ETriadGroup UCognitiveCycleManager::CalculateTriadGroup(int32 Step) const
     return static_cast<ETriadGroup>(TriadIndex);
 }
 
-void UCognitiveCycleManager::ApplyInterStreamFeedback()
+void UCognitiveStreamCycleManager::ApplyInterStreamFeedback()
 {
     // Inter-stream awareness: each stream is aware of others' states
     // Stream 1 perceives Stream 2's action
@@ -590,7 +590,7 @@ void UCognitiveCycleManager::ApplyInterStreamFeedback()
     float PerceptionOfAction = GetPerceptionOfAction();
     float SimulationOfAction = GetSimulationOfAction();
 
-    for (FStreamState& Stream : StreamStates)
+    for (FConsciousnessStreamState& Stream : StreamStates)
     {
         switch (Stream.StreamType)
         {

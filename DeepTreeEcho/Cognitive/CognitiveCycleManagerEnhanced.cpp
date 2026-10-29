@@ -80,16 +80,16 @@ namespace CognitiveConstants
 }
 
 // ============================================================================
-// UCognitiveCycleManager Implementation
+// UCognitiveStreamCycleManager Implementation
 // ============================================================================
 
-UCognitiveCycleManager::UCognitiveCycleManager()
+UCognitiveStreamCycleManager::UCognitiveStreamCycleManager()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
 }
 
-void UCognitiveCycleManager::BeginPlay()
+void UCognitiveStreamCycleManager::BeginPlay()
 {
     Super::BeginPlay();
     
@@ -103,7 +103,7 @@ void UCognitiveCycleManager::BeginPlay()
     bIsInitialized = true;
 }
 
-void UCognitiveCycleManager::TickComponent(float DeltaTime, ELevelTick TickType,
+void UCognitiveStreamCycleManager::TickComponent(float DeltaTime, ELevelTick TickType,
                                             FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -140,7 +140,7 @@ void UCognitiveCycleManager::TickComponent(float DeltaTime, ELevelTick TickType,
     }
 }
 
-void UCognitiveCycleManager::InitializeStepConfigurations()
+void UCognitiveStreamCycleManager::InitializeStepConfigurations()
 {
     StepConfigs.SetNum(12);
     
@@ -208,7 +208,7 @@ void UCognitiveCycleManager::InitializeStepConfigurations()
     }
 }
 
-void UCognitiveCycleManager::InitializeNestedShells()
+void UCognitiveStreamCycleManager::InitializeNestedShells()
 {
     NestedShellTerms.Empty();
     
@@ -264,7 +264,7 @@ void UCognitiveCycleManager::InitializeNestedShells()
     }
 }
 
-void UCognitiveCycleManager::InitializeStreamReservoirs()
+void UCognitiveStreamCycleManager::InitializeStreamReservoirs()
 {
     // Initialize 3 concurrent stream reservoirs
     StreamStates.SetNum(3);
@@ -311,7 +311,7 @@ void UCognitiveCycleManager::InitializeStreamReservoirs()
     }
 }
 
-void UCognitiveCycleManager::FindComponentReferences()
+void UCognitiveStreamCycleManager::FindComponentReferences()
 {
     AActor* Owner = GetOwner();
     if (Owner)
@@ -324,12 +324,12 @@ void UCognitiveCycleManager::FindComponentReferences()
         if (Embodied4ECognition)
         {
             Embodied4ECognition->OnDimensionActivated.AddDynamic(
-                this, &UCognitiveCycleManager::Handle4EDimensionActivated);
+                this, &UCognitiveStreamCycleManager::Handle4EDimensionActivated);
         }
     }
 }
 
-void UCognitiveCycleManager::AdvanceStep()
+void UCognitiveStreamCycleManager::AdvanceStep()
 {
     int32 PreviousStep = CurrentStep;
     CurrentStep = (CurrentStep % 12) + 1;
@@ -362,7 +362,7 @@ void UCognitiveCycleManager::AdvanceStep()
     }
 }
 
-void UCognitiveCycleManager::ProcessCurrentStep(float DeltaTime)
+void UCognitiveStreamCycleManager::ProcessCurrentStep(float DeltaTime)
 {
     const FEchobeatStepConfig& Config = StepConfigs[CurrentStep - 1];
     
@@ -390,7 +390,7 @@ void UCognitiveCycleManager::ProcessCurrentStep(float DeltaTime)
     }
 }
 
-void UCognitiveCycleManager::UpdateStreamReservoir(FCognitiveStreamState& Stream,
+void UCognitiveStreamCycleManager::UpdateStreamReservoir(FCognitiveStreamState& Stream,
                                                     const TArray<float>& Input,
                                                     float DeltaTime)
 {
@@ -415,7 +415,7 @@ void UCognitiveCycleManager::UpdateStreamReservoir(FCognitiveStreamState& Stream
     Stream.Coherence = FMath::Lerp(Stream.Coherence, Stream.ActivationLevel, 0.1f);
 }
 
-void UCognitiveCycleManager::ProcessShellLevel(int32 Level, const TArray<float>& Input, float DeltaTime)
+void UCognitiveStreamCycleManager::ProcessShellLevel(int32 Level, const TArray<float>& Input, float DeltaTime)
 {
     // Find terms at this shell level
     for (FNestedShellTerm& Term : NestedShellTerms)
@@ -437,7 +437,7 @@ void UCognitiveCycleManager::ProcessShellLevel(int32 Level, const TArray<float>&
     }
 }
 
-void UCognitiveCycleManager::UpdateStreamSynchronization()
+void UCognitiveStreamCycleManager::UpdateStreamSynchronization()
 {
     // Compute inter-stream coherence
     for (int32 i = 0; i < 3; ++i)
@@ -466,7 +466,7 @@ void UCognitiveCycleManager::UpdateStreamSynchronization()
     SyncState.SyncQuality = TotalCoherence / 9.0f;
 }
 
-void UCognitiveCycleManager::PropagateNestedShells()
+void UCognitiveStreamCycleManager::PropagateNestedShells()
 {
     // Outer-to-inner propagation: parent states influence children
     for (FNestedShellTerm& Term : NestedShellTerms)
@@ -502,7 +502,7 @@ void UCognitiveCycleManager::PropagateNestedShells()
     }
 }
 
-void UCognitiveCycleManager::PerformTriadicSynchronization()
+void UCognitiveStreamCycleManager::PerformTriadicSynchronization()
 {
     // Synchronize all three streams at triadic points
     float MeanActivation = 0.0f;
@@ -526,7 +526,7 @@ void UCognitiveCycleManager::PerformTriadicSynchronization()
     OnTriadicSync.Broadcast(SyncState.SyncPhase, SyncState.SyncQuality);
 }
 
-float UCognitiveCycleManager::ComputeRelevanceRealization()
+float UCognitiveStreamCycleManager::ComputeRelevanceRealization()
 {
     // Compute relevance based on stream coherence and activation patterns
     float Relevance = 0.0f;
@@ -553,7 +553,7 @@ float UCognitiveCycleManager::ComputeRelevanceRealization()
     return FMath::Clamp(Relevance, 0.0f, 1.0f);
 }
 
-void UCognitiveCycleManager::Integrate4ECognition()
+void UCognitiveStreamCycleManager::Integrate4ECognition()
 {
     if (!Embodied4ECognition)
     {
@@ -585,7 +585,7 @@ void UCognitiveCycleManager::Integrate4ECognition()
         0.1f);
 }
 
-void UCognitiveCycleManager::ProcessExpressiveMode(float DeltaTime)
+void UCognitiveStreamCycleManager::ProcessExpressiveMode(float DeltaTime)
 {
     // Expressive mode: reactive, action-oriented processing
     // Emphasize motor output and immediate response
@@ -598,7 +598,7 @@ void UCognitiveCycleManager::ProcessExpressiveMode(float DeltaTime)
     }
 }
 
-void UCognitiveCycleManager::ProcessReflectiveMode(float DeltaTime)
+void UCognitiveStreamCycleManager::ProcessReflectiveMode(float DeltaTime)
 {
     // Reflective mode: anticipatory, simulation-oriented processing
     // Emphasize internal modeling and prediction
@@ -610,7 +610,7 @@ void UCognitiveCycleManager::ProcessReflectiveMode(float DeltaTime)
     }
 }
 
-TArray<float> UCognitiveCycleManager::GatherSensoryInput()
+TArray<float> UCognitiveStreamCycleManager::GatherSensoryInput()
 {
     TArray<float> Input;
     Input.SetNum(10);
@@ -625,7 +625,7 @@ TArray<float> UCognitiveCycleManager::GatherSensoryInput()
     return Input;
 }
 
-void UCognitiveCycleManager::Handle4EDimensionActivated(E4EDimension Dimension, float Activation)
+void UCognitiveStreamCycleManager::Handle4EDimensionActivated(E4EDimension Dimension, float Activation)
 {
     // Respond to 4E dimension activation changes
     switch (Dimension)
@@ -649,12 +649,12 @@ void UCognitiveCycleManager::Handle4EDimensionActivated(E4EDimension Dimension, 
 // Blueprint Callable Functions
 // ============================================================================
 
-int32 UCognitiveCycleManager::GetCurrentStep() const
+int32 UCognitiveStreamCycleManager::GetCurrentStep() const
 {
     return CurrentStep;
 }
 
-FEchobeatStepConfig UCognitiveCycleManager::GetStepConfig(int32 Step) const
+FEchobeatStepConfig UCognitiveStreamCycleManager::GetStepConfig(int32 Step) const
 {
     if (Step >= 1 && Step <= 12)
     {
@@ -663,7 +663,7 @@ FEchobeatStepConfig UCognitiveCycleManager::GetStepConfig(int32 Step) const
     return FEchobeatStepConfig();
 }
 
-float UCognitiveCycleManager::GetStreamActivation(ECognitiveStreamType StreamType) const
+float UCognitiveStreamCycleManager::GetStreamActivation(ECognitiveStreamType StreamType) const
 {
     int32 Index = static_cast<int32>(StreamType);
     if (Index < StreamStates.Num())
@@ -673,12 +673,12 @@ float UCognitiveCycleManager::GetStreamActivation(ECognitiveStreamType StreamTyp
     return 0.0f;
 }
 
-float UCognitiveCycleManager::GetSyncQuality() const
+float UCognitiveStreamCycleManager::GetSyncQuality() const
 {
     return SyncState.SyncQuality;
 }
 
-TArray<float> UCognitiveCycleManager::GetNestedShellActivations() const
+TArray<float> UCognitiveStreamCycleManager::GetNestedShellActivations() const
 {
     TArray<float> Activations;
     for (const FNestedShellTerm& Term : NestedShellTerms)

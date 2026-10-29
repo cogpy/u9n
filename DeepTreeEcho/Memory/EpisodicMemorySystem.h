@@ -23,7 +23,7 @@
 // FORWARD DECLARATIONS
 // ========================================
 
-class USensorimotorIntegration;
+class USensorimotorLoopIntegration;
 class UAXIOMActiveInference;
 
 // ========================================
@@ -56,7 +56,7 @@ enum class EMemoryStore : uint8
  * Memory Encoding Strength
  */
 UENUM(BlueprintType)
-enum class EEncodingStrength : uint8
+enum class EEpisodicEncodingStrength : uint8
 {
     /** Weak encoding (may decay quickly) */
     Weak UMETA(DisplayName = "Weak"),
@@ -97,7 +97,7 @@ enum class EConsolidationPhase : uint8
  * Retrieval Cue Type
  */
 UENUM(BlueprintType)
-enum class ERetrievalCueType : uint8
+enum class EEpisodicRetrievalCueType : uint8
 {
     /** Content-based similarity */
     Content UMETA(DisplayName = "Content"),
@@ -141,7 +141,7 @@ struct FMemoryTrace
 
     /** Encoding strength */
     UPROPERTY(BlueprintReadWrite)
-    EEncodingStrength EncodingStrength = EEncodingStrength::Weak;
+    EEpisodicEncodingStrength EncodingStrength = EEpisodicEncodingStrength::Weak;
 
     /** Activation level (0-1) */
     UPROPERTY(BlueprintReadWrite)
@@ -233,7 +233,7 @@ struct FEpisode
  * Semantic Concept - Abstracted knowledge
  */
 USTRUCT(BlueprintType)
-struct FSemanticConcept
+struct FEpisodicSemanticConcept
 {
     GENERATED_BODY()
 
@@ -350,7 +350,7 @@ struct FRetrievalRequest
 
     /** Cue type */
     UPROPERTY(BlueprintReadWrite)
-    ERetrievalCueType CueType = ERetrievalCueType::Content;
+    EEpisodicRetrievalCueType CueType = EEpisodicRetrievalCueType::Content;
 
     /** Cue content (for content-based retrieval) */
     UPROPERTY(BlueprintReadWrite)
@@ -485,11 +485,11 @@ public:
 
     /** Reference to CognitiveCycleManager */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Memory|Config")
-    UCognitiveCycleManager* CognitiveCycleManager;
+    UCognitiveStreamCycleManager* CognitiveCycleManager;
 
     /** Reference to Sensorimotor Integration */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Memory|Config")
-    USensorimotorIntegration* SensorimotorComponent;
+    USensorimotorLoopIntegration* SensorimotorComponent;
 
     // ========================================
     // STATE
@@ -525,7 +525,7 @@ public:
 
     /** Encode new memory trace */
     UFUNCTION(BlueprintCallable, Category = "Memory|Encoding")
-    int64 EncodeTrace(const TArray<float>& Content, EEncodingStrength Strength, float EmotionalValence = 0.0f);
+    int64 EncodeTrace(const TArray<float>& Content, EEpisodicEncodingStrength Strength, float EmotionalValence = 0.0f);
 
     /** Start recording new episode */
     UFUNCTION(BlueprintCallable, Category = "Memory|Encoding")
@@ -577,7 +577,7 @@ public:
 
     /** Retrieve semantic concept by name */
     UFUNCTION(BlueprintCallable, Category = "Memory|Retrieval")
-    FSemanticConcept GetConcept(FName ConceptName) const;
+    FEpisodicSemanticConcept GetConcept(FName ConceptName) const;
 
     /** Retrieve procedural skill by name */
     UFUNCTION(BlueprintCallable, Category = "Memory|Retrieval")
@@ -701,7 +701,7 @@ private:
     TMap<int32, FEpisode> Episodes;
 
     /** All semantic concepts */
-    TMap<int32, FSemanticConcept> Concepts;
+    TMap<int32, FEpisodicSemanticConcept> Concepts;
 
     /** Concept name to ID mapping */
     TMap<FName, int32> ConceptNameToID;

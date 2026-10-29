@@ -668,10 +668,10 @@ void UAdvancedEmotionBlending::ProcessSensoryInput(const FSensoryInputData& Inpu
     // Modality-specific effects
     switch (Input.Modality)
     {
-    case ESensoryModality::Social:
+    case ESensoryInputModality::Social:
         SensoryEmotion.Agency = 0.3f;
         break;
-    case ESensoryModality::Tactile:
+    case ESensoryInputModality::Tactile:
         SensoryEmotion.Approach = 0.2f;
         break;
     default:

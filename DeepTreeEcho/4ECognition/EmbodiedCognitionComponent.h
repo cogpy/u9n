@@ -20,7 +20,7 @@
  * Body Schema - Internal representation of body structure
  */
 USTRUCT(BlueprintType)
-struct FBodySchema
+struct FEmbodiedCognitionBodySchema
 {
     GENERATED_BODY()
 
@@ -49,7 +49,7 @@ struct FBodySchema
  * Sensorimotor Contingency - Action-perception relationship
  */
 USTRUCT(BlueprintType)
-struct FSensorimotorContingency
+struct FEmbodiedCognitionContingency
 {
     GENERATED_BODY()
 
@@ -152,7 +152,7 @@ struct FCognitiveTool
  * Somatic Marker - Body-based emotional signal
  */
 USTRUCT(BlueprintType)
-struct FSomaticMarker
+struct FEmbodiedSomaticMarker
 {
     GENERATED_BODY()
 
@@ -224,11 +224,11 @@ public:
 
     /** Current body schema */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Embodied")
-    FBodySchema BodySchema;
+    FEmbodiedCognitionBodySchema BodySchema;
 
     /** Active somatic markers */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Embodied")
-    TArray<FSomaticMarker> ActiveSomaticMarkers;
+    TArray<FEmbodiedSomaticMarker> ActiveSomaticMarkers;
 
     // ========================================
     // EMBEDDED STATE
@@ -248,7 +248,7 @@ public:
 
     /** Learned sensorimotor contingencies */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Enacted")
-    TArray<FSensorimotorContingency> LearnedContingencies;
+    TArray<FEmbodiedCognitionContingency> LearnedContingencies;
 
     /** Current action-perception loop state */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Enacted")
@@ -280,7 +280,7 @@ public:
 
     /** Get somatic marker for stimulus */
     UFUNCTION(BlueprintCallable, Category = "4E|Embodied")
-    FSomaticMarker GetSomaticMarkerForStimulus(const FString& Stimulus) const;
+    FEmbodiedSomaticMarker GetSomaticMarkerForStimulus(const FString& Stimulus) const;
 
     /** Check if position is in peripersonal space */
     UFUNCTION(BlueprintCallable, Category = "4E|Embodied")

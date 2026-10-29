@@ -96,7 +96,7 @@ void UAXIOMActiveInference::Reset()
     Initialize();
 }
 
-void UAXIOMActiveInference::SetCognitiveCycleManager(UCognitiveCycleManager* Manager)
+void UAXIOMActiveInference::SetCognitiveCycleManager(UCognitiveStreamCycleManager* Manager)
 {
     CognitiveCycleManager = Manager;
 }
@@ -610,20 +610,20 @@ int32 UAXIOMActiveInference::SelectAction()
     return Action;
 }
 
-float UAXIOMActiveInference::ComputeExpectedFreeEnergy(const FPolicy& Policy)
+float UAXIOMActiveInference::ComputeExpectedFreeEnergy(const FAXIOMPolicy& Policy)
 {
     // EFE = -Expected Utility - Information Gain Weight * Information Gain
     float Utility = ComputeExpectedUtility(Policy);
     float InfoGain = ComputeInformationGain(Policy);
     
     // Store components
-    const_cast<FPolicy&>(Policy).ExpectedUtility = Utility;
-    const_cast<FPolicy&>(Policy).InformationGain = InfoGain;
+    const_cast<FAXIOMPolicy&>(Policy).ExpectedUtility = Utility;
+    const_cast<FAXIOMPolicy&>(Policy).InformationGain = InfoGain;
     
     return -Utility - Config.InformationGainWeight * InfoGain;
 }
 
-float UAXIOMActiveInference::ComputeExpectedUtility(const FPolicy& Policy)
+float UAXIOMActiveInference::ComputeExpectedUtility(const FAXIOMPolicy& Policy)
 {
     // Rollout policy and compute expected cumulative reward
     TArray<FWorldState> Trajectory = RolloutPolicy(Policy, Config.RolloutsPerPolicy);
@@ -641,7 +641,7 @@ float UAXIOMActiveInference::ComputeExpectedUtility(const FPolicy& Policy)
     return TotalReward / FMath::Max(1, Config.RolloutsPerPolicy);
 }
 
-float UAXIOMActiveInference::ComputeInformationGain(const FPolicy& Policy)
+float UAXIOMActiveInference::ComputeInformationGain(const FAXIOMPolicy& Policy)
 {
     // Compute expected information gain (epistemic value)
     // This is the expected reduction in uncertainty about the world model
@@ -855,7 +855,7 @@ float UAXIOMActiveInference::GetAffordanceValue(int32 Action) const
     float Affordance = 0.0f;
     
     // Find policies starting with this action
-    for (const FPolicy& Policy : Policies)
+    for (const FAXIOMPolicy& Policy : Policies)
     {
         if (Policy.ActionSequence.Num() > 0 && Policy.ActionSequence[0] == Action)
         {
@@ -978,7 +978,7 @@ void UAXIOMActiveInference::VariationalUpdate()
     CurrentState.VariationalFreeEnergy = FreeEnergy;
 }
 
-TArray<FWorldState> UAXIOMActiveInference::RolloutPolicy(const FPolicy& Policy, int32 NumSamples)
+TArray<FWorldState> UAXIOMActiveInference::RolloutPolicy(const FAXIOMPolicy& Policy, int32 NumSamples)
 {
     TArray<FWorldState> Trajectory;
     

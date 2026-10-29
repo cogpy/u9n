@@ -41,7 +41,7 @@ struct FBodyPartState
  * Embodied State - Physical body state for 4E cognition
  */
 USTRUCT(BlueprintType)
-struct FEmbodiedState
+struct FAvatarEmbodiedState
 {
     GENERATED_BODY()
 
@@ -65,7 +65,7 @@ struct FEmbodiedState
  * Embedded State - Environmental coupling state
  */
 USTRUCT(BlueprintType)
-struct FEmbeddedState
+struct FAvatarEmbeddedState
 {
     GENERATED_BODY()
 
@@ -86,7 +86,7 @@ struct FEmbeddedState
  * Enacted State - Sensorimotor contingency state
  */
 USTRUCT(BlueprintType)
-struct FEnactedState
+struct FAvatarEnactedState
 {
     GENERATED_BODY()
 
@@ -128,7 +128,7 @@ struct FToolState
  * Extended State - Tool integration state
  */
 USTRUCT(BlueprintType)
-struct FExtendedState
+struct FAvatarExtendedState
 {
     GENERATED_BODY()
 
@@ -227,7 +227,7 @@ struct F4ECoherenceState
  * Sensory Input - Gathered sensory information
  */
 USTRUCT(BlueprintType)
-struct FSensoryInput
+struct FAvatarSensoryInput
 {
     GENERATED_BODY()
 
@@ -251,7 +251,7 @@ struct FSensoryInput
  * Sensorimotor Contingency - Learned action-outcome mapping
  */
 USTRUCT(BlueprintType)
-struct FSensorimotorContingency
+struct FAvatarSensorimotorContingency
 {
     GENERATED_BODY()
 
@@ -259,10 +259,10 @@ struct FSensorimotorContingency
     FString Action;
 
     UPROPERTY(BlueprintReadWrite)
-    FSensoryInput InitialState;
+    FAvatarSensoryInput InitialState;
 
     UPROPERTY(BlueprintReadWrite)
-    FSensoryInput ResultState;
+    FAvatarSensoryInput ResultState;
 
     UPROPERTY(BlueprintReadWrite)
     float PredictionError = 0.0f;
@@ -272,7 +272,7 @@ struct FSensorimotorContingency
 };
 
 // Delegate declarations
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActionCompleted, const FString&, ActionName);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAvatarActionCompleted, const FString&, ActionName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInsightRealized, float, Relevance);
 
 /**
@@ -370,7 +370,7 @@ public:
 
     /** Called when an action is completed */
     UPROPERTY(BlueprintAssignable, Category = "Embodiment|Events")
-    FOnActionCompleted OnActionCompleted;
+    FOnAvatarActionCompleted OnActionCompleted;
 
     /** Called when an insight is realized */
     UPROPERTY(BlueprintAssignable, Category = "Embodiment|Events")
@@ -435,10 +435,10 @@ protected:
 
     // Sensorimotor Processing
     void ProcessSensorimotorLoop(float DeltaTime);
-    FSensoryInput GatherSensoryInput();
-    FSensoryInput PredictSensoryOutcome(const FString& Action);
-    float ComputePredictionError(const FSensoryInput& Actual, const FSensoryInput& Predicted);
-    void UpdateInternalModels(const FSensoryInput& Actual, const FSensoryInput& Predicted, float Error);
+    FAvatarSensoryInput GatherSensoryInput();
+    FAvatarSensoryInput PredictSensoryOutcome(const FString& Action);
+    float ComputePredictionError(const FAvatarSensoryInput& Actual, const FAvatarSensoryInput& Predicted);
+    void UpdateInternalModels(const FAvatarSensoryInput& Actual, const FAvatarSensoryInput& Predicted, float Error);
     void UpdateSensorimotorContingencies(float DeltaTime);
 
     // Visual Updates
@@ -482,10 +482,10 @@ private:
     UEchobeatsStreamEngine* EchobeatsEngine = nullptr;
 
     // 4E States
-    FEmbodiedState EmbodiedState;
-    FEmbeddedState EmbeddedState;
-    FEnactedState EnactedState;
-    FExtendedState ExtendedState;
+    FAvatarEmbodiedState EmbodiedState;
+    FAvatarEmbeddedState EmbeddedState;
+    FAvatarEnactedState EnactedState;
+    FAvatarExtendedState ExtendedState;
 
     // Visual States
     FVisualCouplingState VisualState;
@@ -496,8 +496,8 @@ private:
     TMap<FString, FBodyPartState> BodyPartStates;
 
     // Sensorimotor Learning
-    TArray<FSensorimotorContingency> LearnedContingencies;
-    FSensoryInput LastSensoryInput;
+    TArray<FAvatarSensorimotorContingency> LearnedContingencies;
+    FAvatarSensoryInput LastSensoryInput;
     float LastPredictionError = 0.0f;
 
     // State

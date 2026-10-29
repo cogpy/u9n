@@ -216,7 +216,7 @@ void UEmbodied4ECognition::DetectAffordances(const TArray<AActor*>& EnvironmentA
         if (!Actor)
             continue;
 
-        FEnvironmentalAffordance Affordance;
+        FEmbodied4EAffordance Affordance;
         Affordance.AffordanceID = Actor->GetName();
         Affordance.Location = Actor->GetActorLocation();
 
@@ -252,24 +252,24 @@ void UEmbodied4ECognition::DetectAffordances(const TArray<AActor*>& EnvironmentA
     }
 }
 
-FEnvironmentalAffordance UEmbodied4ECognition::GetAffordance(const FString& AffordanceID) const
+FEmbodied4EAffordance UEmbodied4ECognition::GetAffordance(const FString& AffordanceID) const
 {
-    for (const FEnvironmentalAffordance& Affordance : Affordances)
+    for (const FEmbodied4EAffordance& Affordance : Affordances)
     {
         if (Affordance.AffordanceID == AffordanceID)
         {
             return Affordance;
         }
     }
-    return FEnvironmentalAffordance();
+    return FEmbodied4EAffordance();
 }
 
-FEnvironmentalAffordance UEmbodied4ECognition::GetStrongestAffordance() const
+FEmbodied4EAffordance UEmbodied4ECognition::GetStrongestAffordance() const
 {
-    FEnvironmentalAffordance Strongest;
+    FEmbodied4EAffordance Strongest;
     float MaxStrength = -1.0f;
 
-    for (const FEnvironmentalAffordance& Affordance : Affordances)
+    for (const FEmbodied4EAffordance& Affordance : Affordances)
     {
         if (Affordance.Strength > MaxStrength)
         {
@@ -287,7 +287,7 @@ TArray<float> UEmbodied4ECognition::ComputeEnvironmentalEmbedding() const
     Embedding.SetNum(UnitsPerDimension);
 
     // Combine all affordance encodings
-    for (const FEnvironmentalAffordance& Affordance : Affordances)
+    for (const FEmbodied4EAffordance& Affordance : Affordances)
     {
         for (int32 i = 0; i < Embedding.Num() && i < Affordance.ReservoirEncoding.Num(); i++)
         {
@@ -314,7 +314,7 @@ TArray<float> UEmbodied4ECognition::ComputeEnvironmentalEmbedding() const
 
 void UEmbodied4ECognition::LearnSensorimotorContingency(const TArray<float>& SensoryPattern, const TArray<float>& MotorPattern)
 {
-    FSensorimotorContingency Contingency;
+    FEmbodied4EContingency Contingency;
     Contingency.ContingencyID = FString::Printf(TEXT("SMC_%d"), SensorimotorContingencies.Num());
     Contingency.SensoryPattern = SensoryPattern;
     Contingency.MotorPattern = MotorPattern;
@@ -338,7 +338,7 @@ TArray<float> UEmbodied4ECognition::PredictMotorFromSensory(const TArray<float>&
 
     for (int32 i = 0; i < SensorimotorContingencies.Num(); i++)
     {
-        const FSensorimotorContingency& Contingency = SensorimotorContingencies[i];
+        const FEmbodied4EContingency& Contingency = SensorimotorContingencies[i];
 
         // Compute similarity
         float DotProduct = 0.0f;
@@ -390,7 +390,7 @@ TArray<float> UEmbodied4ECognition::PredictSensoryFromMotor(const TArray<float>&
 
     for (int32 i = 0; i < SensorimotorContingencies.Num(); i++)
     {
-        const FSensorimotorContingency& Contingency = SensorimotorContingencies[i];
+        const FEmbodied4EContingency& Contingency = SensorimotorContingencies[i];
 
         float DotProduct = 0.0f;
         float NormInput = 0.0f;
@@ -435,7 +435,7 @@ TArray<float> UEmbodied4ECognition::ComputeEnactionState() const
     State.SetNum(UnitsPerDimension);
 
     // Combine all contingency patterns
-    for (const FSensorimotorContingency& Contingency : SensorimotorContingencies)
+    for (const FEmbodied4EContingency& Contingency : SensorimotorContingencies)
     {
         for (int32 i = 0; i < State.Num(); i++)
         {
@@ -629,7 +629,7 @@ TMap<FString, float> UEmbodied4ECognition::Map4EToExpressionHints() const
     Hints.Add(TEXT("Groundedness"), EmbodiedState.ActivationLevel);
 
     // Map embedded state to environmental awareness hints
-    FEnvironmentalAffordance StrongestAffordance = GetStrongestAffordance();
+    FEmbodied4EAffordance StrongestAffordance = GetStrongestAffordance();
     Hints.Add(TEXT("EnvironmentalEngagement"), EmbeddedState.ActivationLevel);
     Hints.Add(TEXT("AffordanceAttention"), StrongestAffordance.Strength);
 
@@ -842,7 +842,7 @@ TArray<float> UEmbodied4ECognition::EncodeBodyElementToReservoir(const FBodySche
     return Encoding;
 }
 
-TArray<float> UEmbodied4ECognition::EncodeAffordanceToReservoir(const FEnvironmentalAffordance& Affordance) const
+TArray<float> UEmbodied4ECognition::EncodeAffordanceToReservoir(const FEmbodied4EAffordance& Affordance) const
 {
     TArray<float> Encoding;
     int32 EncodingSize = UnitsPerDimension / FMath::Max(1, Affordances.Num());

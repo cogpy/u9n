@@ -240,7 +240,7 @@ struct FAvatarCognitiveState
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEmotionStateChanged, EAvatarEmotionState, OldState, EAvatarEmotionState, NewState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnExpressionUpdated, EAvatarExpressionChannel, Channel);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCognitiveStateChanged, FString, Parameter, float, Value);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAvatarCognitiveStateChanged, FString, Parameter, float, Value);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRelevanceRealizationTriggered, float, RelevanceLevel);
 
 /**
@@ -338,7 +338,7 @@ public:
     FOnExpressionUpdated OnExpressionUpdated;
 
     UPROPERTY(BlueprintAssignable, Category = "Avatar|Events")
-    FOnCognitiveStateChanged OnCognitiveStateChanged;
+    FOnAvatarCognitiveStateChanged OnCognitiveStateChanged;
 
     UPROPERTY(BlueprintAssignable, Category = "Avatar|Events")
     FOnRelevanceRealizationTriggered OnRelevanceRealizationTriggered;

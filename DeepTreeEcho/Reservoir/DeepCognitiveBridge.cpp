@@ -128,7 +128,7 @@ void UDeepCognitiveBridge::InitializeNestedShells()
 
     for (int32 Level = 0; Level < 4; Level++)
     {
-        FNestedShellLevel Shell;
+        FCognitiveBridgeShellLevel Shell;
         Shell.Level = Level + 1;
         Shell.TermCount = TermCounts[Level];
         Shell.StepsBetween = StepsBetween[Level];
@@ -464,7 +464,7 @@ void UDeepCognitiveBridge::UpdateNestedShell(int32 Level, const TArray<float>& I
     if (Level < 1 || Level > NestedShells.Num())
         return;
 
-    FNestedShellLevel& Shell = NestedShells[Level - 1];
+    FCognitiveBridgeShellLevel& Shell = NestedShells[Level - 1];
 
     // Update each term's reservoir
     for (int32 Term = 0; Term < Shell.TermReservoirs.Num(); Term++)
@@ -483,13 +483,13 @@ void UDeepCognitiveBridge::UpdateNestedShell(int32 Level, const TArray<float>& I
     }
 }
 
-FNestedShellLevel UDeepCognitiveBridge::GetNestedShellState(int32 Level) const
+FCognitiveBridgeShellLevel UDeepCognitiveBridge::GetNestedShellState(int32 Level) const
 {
     if (Level >= 1 && Level <= NestedShells.Num())
     {
         return NestedShells[Level - 1];
     }
-    return FNestedShellLevel();
+    return FCognitiveBridgeShellLevel();
 }
 
 void UDeepCognitiveBridge::PropagateNestedShells()
@@ -683,8 +683,8 @@ void UDeepCognitiveBridge::ComputeShellCoupling(int32 SourceLevel, int32 TargetL
         TargetLevel < 0 || TargetLevel >= NestedShells.Num())
         return;
 
-    FNestedShellLevel& Source = NestedShells[SourceLevel];
-    FNestedShellLevel& Target = NestedShells[TargetLevel];
+    FCognitiveBridgeShellLevel& Source = NestedShells[SourceLevel];
+    FCognitiveBridgeShellLevel& Target = NestedShells[TargetLevel];
 
     // Compute average activation from source
     TArray<float> SourceAverage;

@@ -577,7 +577,7 @@ void UDeepTreeEchoUnrealIntegration::SetEmotionIntensity(const FString& EmotionN
 }
 
 void UDeepTreeEchoUnrealIntegration::BlendToExpression(
-    const FAvatarExpressionState& TargetState, float BlendTime)
+    const FUnrealIntegrationExpressionState& TargetState, float BlendTime)
 {
     // This would typically use a timeline or async task
     // For now, immediate blend

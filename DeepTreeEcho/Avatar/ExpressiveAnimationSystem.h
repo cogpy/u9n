@@ -353,7 +353,7 @@ struct FExpressionEvent
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnExpressionChanged, const FExpressionEvent&, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGestureTriggered, const FGestureDefinition&, Gesture, float, Intensity);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVocalParametersChanged, const FVocalParameters&, Parameters);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOn4EModeChanged, E4ECognitionMode, NewMode);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnExpressive4EModeChanged, E4ECognitionMode, NewMode);
 
 /**
  * Expressive Animation System
@@ -455,7 +455,7 @@ public:
     FOnVocalParametersChanged OnVocalParametersChanged;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
-    FOn4EModeChanged On4EModeChanged;
+    FOnExpressive4EModeChanged On4EModeChanged;
 
     // ========================================
     // PUBLIC API - FACIAL ANIMATION

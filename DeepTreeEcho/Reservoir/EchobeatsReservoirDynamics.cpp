@@ -84,7 +84,7 @@ void UEchobeatsReservoirDynamics::InitializeStepConfigurations()
 
     for (int32 Step = 1; Step <= 12; Step++)
     {
-        FEchobeatStepConfig Config;
+        FReservoirEchobeatStepConfig Config;
         Config.StepNumber = Step;
 
         // Determine step type
@@ -276,7 +276,7 @@ void UEchobeatsReservoirDynamics::AdvanceStep()
     CurrentStep = (CurrentStep % 12) + 1;
 
     // Get current config
-    FEchobeatStepConfig Config = GetCurrentStepConfig();
+    FReservoirEchobeatStepConfig Config = GetCurrentStepConfig();
 
     // Check for triadic sync point
     if (bEnableTriadicSync && IsTriadicSyncPoint())
@@ -297,7 +297,7 @@ void UEchobeatsReservoirDynamics::AdvanceStep()
 
 void UEchobeatsReservoirDynamics::ProcessStep(const TArray<float>& SensoryInput)
 {
-    FEchobeatStepConfig Config = GetCurrentStepConfig();
+    FReservoirEchobeatStepConfig Config = GetCurrentStepConfig();
 
     // Process based on step type
     switch (Config.StepType)
@@ -333,13 +333,13 @@ void UEchobeatsReservoirDynamics::ProcessStep(const TArray<float>& SensoryInput)
     }
 }
 
-FEchobeatStepConfig UEchobeatsReservoirDynamics::GetCurrentStepConfig() const
+FReservoirEchobeatStepConfig UEchobeatsReservoirDynamics::GetCurrentStepConfig() const
 {
     if (CurrentStep >= 1 && CurrentStep <= StepConfigs.Num())
     {
         return StepConfigs[CurrentStep - 1];
     }
-    return FEchobeatStepConfig();
+    return FReservoirEchobeatStepConfig();
 }
 
 EEchobeatStepType UEchobeatsReservoirDynamics::GetStepType(int32 Step) const
