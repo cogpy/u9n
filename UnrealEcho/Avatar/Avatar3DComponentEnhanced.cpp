@@ -5,6 +5,8 @@
 #include "GameFramework/Actor.h"
 #include "AvatarAnimInstance.h"
 #include "EchoCharacterReaction.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 namespace
 {
@@ -45,6 +47,14 @@ UAvatar3DComponentEnhanced::UAvatar3DComponentEnhanced()
     EmotionTransitionProgress = 0.0f;
     
     ChaosFactor = 0.3f;
+
+    EmotionChoicePromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent rendered as a photorealistic avatar. "
+        "Your affect has just been measured on three dimensions: valence {valence} (-1 unpleasant .. 1 pleasant), "
+        "arousal {arousal} (0 calm .. 1 activated), dominance {dominance} (0 submissive .. 1 in control). "
+        "Your face currently shows {current_emotion}. Choose the emotion your face should show now and how "
+        "strongly. Reply with only a JSON object: {\"emotion\": \"<exactly one of: {emotions}>\", "
+        "\"intensity\": <number 0..1>}");
     
     EchoResonanceIntensity = 0.0f;
     GlitchIntensity = 0.0f;
@@ -222,29 +232,80 @@ void UAvatar3DComponentEnhanced::SetEmotionalDimensions(float Valence, float Aro
     EmotionalState.Valence = FMath::Clamp(Valence, -1.0f, 1.0f);
     EmotionalState.Arousal = FMath::Clamp(Arousal, 0.0f, 1.0f);
     EmotionalState.Dominance = FMath::Clamp(Dominance, 0.0f, 1.0f);
-    
-    // Map dimensional model to discrete emotions
-    // High valence + high arousal = Excited/Happy
-    // Low valence + high arousal = Angry/Surprised
-    // High valence + low arousal = Calm/Content
-    // Low valence + low arousal = Sad
-    
-    if (Valence > 0.5f && Arousal > 0.5f)
+
+    // The character model chooses the discrete emotion for these dimensions; no table maps them
+    const UEnum* Enum = StaticEnum<EAvatarEmotionalState>();
+    TArray<FString> Names;
+    if (Enum)
     {
-        SetEmotionalState(EAvatarEmotionalState::Excited, Arousal);
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            Names.Add(Enum->GetNameStringByIndex(Index));
+        }
     }
-    else if (Valence < -0.5f && Arousal > 0.5f)
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), !ReactionCharacterName.IsEmpty() ? ReactionCharacterName
+        : (GetOwner() ? GetOwner()->GetName() : GetName()));
+    Slots.Add(TEXT("valence"), FString::Printf(TEXT("%.2f"), EmotionalState.Valence));
+    Slots.Add(TEXT("arousal"), FString::Printf(TEXT("%.2f"), EmotionalState.Arousal));
+    Slots.Add(TEXT("dominance"), FString::Printf(TEXT("%.2f"), EmotionalState.Dominance));
+    Slots.Add(TEXT("current_emotion"), Enum ? Enum->GetNameStringByValue(static_cast<int64>(EmotionalState.CurrentEmotion)) : FString());
+    Slots.Add(TEXT("emotions"), FString::Join(Names, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(EmotionChoicePromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++EmotionChoiceRequestSerial;
+    TWeakObjectPtr<UAvatar3DComponentEnhanced> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial](bool bSuccess, const FString& TextOrError)
+        {
+            if (UAvatar3DComponentEnhanced* Self = WeakThis.Get())
+            {
+                Self->HandleEmotionChoiceReply(RequestSerial, bSuccess, TextOrError);
+            }
+        }), 0.7f);
+}
+
+void UAvatar3DComponentEnhanced::HandleEmotionChoiceReply(int32 RequestSerial, bool bSuccess, const FString& TextOrError)
+{
+    // A newer SetEmotionalDimensions call supersedes this reply
+    if (RequestSerial != EmotionChoiceRequestSerial)
     {
-        SetEmotionalState(EAvatarEmotionalState::Angry, Arousal);
+        return;
     }
-    else if (Valence > 0.5f && Arousal < 0.5f)
+
+    // On any failure the face stays as it is; the error is a system event only
+    if (!bSuccess)
     {
-        SetEmotionalState(EAvatarEmotionalState::Happy, Valence);
+        LastEmotionChoiceError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("Avatar3DComponentEnhanced: no model emotion choice: %s"), *TextOrError);
+        return;
     }
-    else if (Valence < -0.5f && Arousal < 0.5f)
+
+    TSharedPtr<FJsonObject> Json;
+    FString EmotionName;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("emotion"), EmotionName) ||
+        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
     {
-        SetEmotionalState(EAvatarEmotionalState::Sad, FMath::Abs(Valence));
+        LastEmotionChoiceError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("Avatar3DComponentEnhanced: %s"), *LastEmotionChoiceError);
+        return;
     }
+
+    EAvatarEmotionalState Emotion{};
+    if (!ParseReactionEnum(EmotionName, Emotion))
+    {
+        LastEmotionChoiceError = FString::Printf(TEXT("model chose an emotion outside the offered list: %s"), *EmotionName);
+        UE_LOG(LogTemp, Error, TEXT("Avatar3DComponentEnhanced: %s"), *LastEmotionChoiceError);
+        return;
+    }
+
+    LastEmotionChoiceError.Reset();
+    SetEmotionalState(Emotion, FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f));
 }
 
 FAvatarEmotionalState UAvatar3DComponentEnhanced::GetCurrentEmotionalState() const

@@ -131,6 +131,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Avatar|Emotion")
     void TransitionToEmotion(EAvatarEmotionalState TargetEmotion, float TransitionTime);
 
+    /**
+     * Records the dimensional state and asks the character model which EAvatarEmotionalState to
+     * show for it (EmotionChoicePromptTemplate). The reply is validated against the enum names;
+     * on model failure or an invalid reply the expression is left unchanged and the error is
+     * kept in LastEmotionChoiceError. Only the latest request's reply is applied.
+     */
     UFUNCTION(BlueprintCallable, Category = "Avatar|Emotion")
     void SetEmotionalDimensions(float Valence, float Arousal, float Dominance);
 
@@ -229,6 +235,18 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction")
     FString ReactionCharacterName;
 
+    /**
+     * Instruction sent to the model by SetEmotionalDimensions. Slots: {character}, {valence},
+     * {arousal}, {dominance}, {current_emotion}, {emotions}. It must ask for a JSON object
+     * {"emotion": "<one of {emotions}>", "intensity": 0..1}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction", meta = (MultiLine = "true"))
+    FString EmotionChoicePromptTemplate;
+
+    /** Why the last model emotion choice was not applied (empty after a successful choice) */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Avatar|Reaction")
+    FString LastEmotionChoiceError;
+
     /** Envelope samples per second consumed by StartLipSync */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Speech", meta = (ClampMin = "1.0"))
     float LipSyncEnvelopeRate = 60.0f;
@@ -286,6 +304,11 @@ protected:
     bool bLipSyncActive = false;
 
     FDelegateHandle ReactionHandle;
+
+    /** Incremented per SetEmotionalDimensions request; stale replies are discarded */
+    int32 EmotionChoiceRequestSerial = 0;
+
+    void HandleEmotionChoiceReply(int32 RequestSerial, bool bSuccess, const FString& TextOrError);
 
     // ===== Visual Effects State =====
 
