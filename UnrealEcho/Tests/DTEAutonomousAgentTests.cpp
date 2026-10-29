@@ -36,6 +36,8 @@
 #include "Avatar/Sys6AvatarIntegration.h"
 #include "ActiveInference/ActiveInferenceEngine.h"
 #include "ActiveInference/AXIOMActiveInference.h"
+#include "ActiveInference/NicheConstructionSystem.h"
+#include "Emotion/EmotionalSystem.h"
 #include "EchoCharacterReaction.h"
 #include "DTEAutonomousAgentTestReceiver.h"
 
@@ -1187,5 +1189,85 @@ bool FAXIOM_UntrainedGateTest::RunTest(const FString& Parameters)
         bSame = First[i].ActionSequence == AXIOM->Policies[i].ActionSequence;
     }
     TestTrue(TEXT("Candidate policies are deterministic"), bSame);
+    return true;
+}
+
+// ============================================================
+// Emotional system — mood inertia is deterministic (no random gate on OnMoodChanged)
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEmotionalSystem_DeterministicMoodTest,
+    "DTE.Emotion.MoodChangeIsDeterministic",
+    DTE_TEST_FLAGS)
+
+bool FEmotionalSystem_DeterministicMoodTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = GetDTETestWorld();
+    if (!World)
+    {
+        AddError(TEXT("No test world"));
+        return false;
+    }
+    AActor* Actor = World->SpawnActor<AActor>();
+    if (!Actor)
+    {
+        AddError(TEXT("Failed to spawn test actor"));
+        return false;
+    }
+
+    UEmotionalSystem* Emotion = NewObject<UEmotionalSystem>(Actor);
+    Actor->AddInstanceComponent(Emotion);
+    Emotion->RegisterComponent();
+    Emotion->ResetToBaseline();
+    Emotion->MoodInertia = 0.9f;
+    Emotion->MoodSwitchDwellSeconds = 2.0f; // required persistence: 0.9 * 1.0 * 2.0 = 1.8 s
+
+    Emotion->SetDimensionalEmotion(0.9f, 0.9f, 0.5f); // computes to Elated
+    Emotion->TickComponent(1.0f, LEVELTICK_All, nullptr);
+    TestTrue(TEXT("The mood holds before the dwell time"), Emotion->GetCurrentMood() == EMoodState::Calm);
+    Emotion->TickComponent(0.5f, LEVELTICK_All, nullptr);
+    TestTrue(TEXT("Still held at 1.5 s"), Emotion->GetCurrentMood() == EMoodState::Calm);
+    Emotion->TickComponent(0.5f, LEVELTICK_All, nullptr);
+    TestTrue(TEXT("The mood changes once the new mood has persisted"), Emotion->GetCurrentMood() == EMoodState::Elated);
+
+    World->DestroyActor(Actor);
+    return true;
+}
+
+// ============================================================
+// Niche construction — only measured affordances are detected
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNicheConstruction_MeasuredAffordancesTest,
+    "DTE.NicheConstruction.OnlyMeasuredAffordancesAreDetected",
+    DTE_TEST_FLAGS)
+
+bool FNicheConstruction_MeasuredAffordancesTest::RunTest(const FString& Parameters)
+{
+    UNicheConstructionSystem* Niche = NewObject<UNicheConstructionSystem>();
+    TestNotNull(TEXT("Niche system should be created"), Niche);
+    if (!Niche) { return false; }
+
+    // Nothing measured: nothing detected, however often we look
+    for (int32 i = 0; i < 20; ++i)
+    {
+        TestEqual(TEXT("No affordance without a measurement"), Niche->DetectAffordances().Num(), 0);
+    }
+    TestEqual(TEXT("Most salient list is empty"), Niche->GetMostSalientAffordances(5).Num(), 0);
+
+    // A measured affordance is detected once, with its measured salience
+    FEcologicalAffordance Door;
+    Door.AffordanceID = TEXT("door_east");
+    Door.Type = EAffordanceType::Physical;
+    Door.ActionPossibilities = { TEXT("Open") };
+    Door.Salience = 0.42f;
+    Niche->ObserveAffordance(Door);
+    const TArray<FEcologicalAffordance> Detected = Niche->DetectAffordances();
+    TestEqual(TEXT("The measured affordance is detected"), Detected.Num(), 1);
+    if (Detected.Num() == 1)
+    {
+        TestEqual(TEXT("Its salience is the measured value"), Detected[0].Salience, 0.42f);
+    }
+    TestEqual(TEXT("It is not detected again"), Niche->DetectAffordances().Num(), 0);
     return true;
 }

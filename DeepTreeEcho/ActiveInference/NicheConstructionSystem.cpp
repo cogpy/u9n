@@ -211,101 +211,41 @@ float UNicheConstructionSystem::GetNicheStability() const
     return CurrentNicheState.Stability;
 }
 
+void UNicheConstructionSystem::ObserveAffordance(const FEcologicalAffordance& Measured)
+{
+    if (Measured.AffordanceID.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("NicheConstructionSystem: ignored an observed affordance without an id"));
+        return;
+    }
+    PendingObservedAffordances.Add(Measured);
+}
+
 TArray<FEcologicalAffordance> UNicheConstructionSystem::DetectAffordances()
 {
+    // Only affordances measured in the environment (ObserveAffordance) are detected; nothing is
+    // generated, and salience is the measured value.
     TArray<FEcologicalAffordance> NewAffordances;
-    float CurrentTime = GetWorld()->GetTimeSeconds();
+    const UWorld* World = GetWorld();
+    const float CurrentTime = World ? World->GetTimeSeconds() : 0.0f;
 
-    // Generate affordances based on current niche state
-    TArray<EAffordanceType> Types = {
-        EAffordanceType::Physical,
-        EAffordanceType::Social,
-        EAffordanceType::Cognitive,
-        EAffordanceType::Informational,
-        EAffordanceType::Temporal
-    };
-
-    for (EAffordanceType Type : Types)
+    TArray<FEcologicalAffordance> Observed = MoveTemp(PendingObservedAffordances);
+    PendingObservedAffordances.Reset();
+    for (FEcologicalAffordance& Affordance : Observed)
     {
-        // Probability of detecting affordance depends on niche state
-        float DetectionProb = 0.3f + 0.2f * CurrentNicheState.Stability;
-
-        if (FMath::FRand() < DetectionProb)
+        const bool bExists = DetectedAffordances.ContainsByPredicate(
+            [&Affordance](const FEcologicalAffordance& Existing) { return Existing.AffordanceID == Affordance.AffordanceID; });
+        if (bExists || DetectedAffordances.Num() >= MaxAffordances)
         {
-            FEcologicalAffordance Affordance = GenerateAffordance(Type);
-            Affordance.DiscoveryTime = CurrentTime;
-
-            // Check if we already have this affordance
-            bool bExists = false;
-            for (const FEcologicalAffordance& Existing : DetectedAffordances)
-            {
-                if (Existing.AffordanceID == Affordance.AffordanceID)
-                {
-                    bExists = true;
-                    break;
-                }
-            }
-
-            if (!bExists && DetectedAffordances.Num() < MaxAffordances)
-            {
-                DetectedAffordances.Add(Affordance);
-                NewAffordances.Add(Affordance);
-                OnAffordanceDiscovered.Broadcast(Affordance);
-            }
+            continue;
         }
+        Affordance.DiscoveryTime = CurrentTime;
+        DetectedAffordances.Add(Affordance);
+        NewAffordances.Add(Affordance);
+        OnAffordanceDiscovered.Broadcast(Affordance);
     }
 
     return NewAffordances;
-}
-
-FEcologicalAffordance UNicheConstructionSystem::GenerateAffordance(EAffordanceType Type)
-{
-    FEcologicalAffordance Affordance;
-
-    static int32 AffordanceCounter = 0;
-    Affordance.AffordanceID = FString::Printf(TEXT("Affordance_%d_%d"), (int32)Type, AffordanceCounter++);
-    Affordance.Type = Type;
-
-    // Generate action possibilities based on type
-    switch (Type)
-    {
-    case EAffordanceType::Physical:
-        Affordance.ActionPossibilities = {TEXT("Manipulate"), TEXT("Navigate"), TEXT("Construct")};
-        Affordance.ModificationPotential = 0.7f;
-        break;
-
-    case EAffordanceType::Social:
-        Affordance.ActionPossibilities = {TEXT("Communicate"), TEXT("Cooperate"), TEXT("Observe")};
-        Affordance.ModificationPotential = 0.5f;
-        break;
-
-    case EAffordanceType::Cognitive:
-        Affordance.ActionPossibilities = {TEXT("Learn"), TEXT("Remember"), TEXT("Reason")};
-        Affordance.ModificationPotential = 0.3f;
-        break;
-
-    case EAffordanceType::Informational:
-        Affordance.ActionPossibilities = {TEXT("Read"), TEXT("Write"), TEXT("Search")};
-        Affordance.ModificationPotential = 0.6f;
-        break;
-
-    case EAffordanceType::Temporal:
-        Affordance.ActionPossibilities = {TEXT("Wait"), TEXT("Schedule"), TEXT("Predict")};
-        Affordance.ModificationPotential = 0.2f;
-        break;
-    }
-
-    // Compute salience based on niche state
-    Affordance.Salience = FMath::FRandRange(0.3f, 1.0f);
-
-    // Compute goal relevance
-    float Distance = GetNichePreferenceDistance();
-    Affordance.GoalRelevance = FMath::Exp(-Distance) * Affordance.ModificationPotential;
-
-    // Persistence based on type
-    Affordance.Persistence = (Type == EAffordanceType::Physical) ? 10.0f : 5.0f;
-
-    return Affordance;
 }
 
 FEcologicalAffordance UNicheConstructionSystem::GetAffordance(const FString& AffordanceID) const
