@@ -456,14 +456,15 @@ public:
 
     /**
      * Reward observations needed before the world model's policy scores are used to choose an
-     * action. Below this, SelectAction chooses nothing.
+     * action. Below this, SelectAction chooses nothing. Values below 1 are treated as 1 (ClampMin
+     * is editor-only; Blueprint and C++ writes are not clamped).
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AXIOM|Config", meta = (ClampMin = "1"))
     int32 MinRewardObservationsForTrainedModel = 10;
 
     /** True once the world model has learned from enough real reward observations */
     UFUNCTION(BlueprintPure, Category = "AXIOM|Planning")
-    bool IsWorldModelTrained() const { return RewardObservationCount >= MinRewardObservationsForTrainedModel; }
+    bool IsWorldModelTrained() const { return RewardObservationCount >= FMath::Max(1, MinRewardObservationsForTrainedModel); }
 
     /** Why the last SelectAction chose nothing, or empty */
     UFUNCTION(BlueprintPure, Category = "AXIOM|Planning")

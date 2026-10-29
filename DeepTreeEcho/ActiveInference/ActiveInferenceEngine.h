@@ -532,14 +532,15 @@ public:
 
     /**
      * Learning updates from real executed outcomes (LearnModelStructure) needed before the
-     * generative model's policy scores are used to choose anything.
+     * generative model's policy scores are used to choose anything. Values below 1 are treated as 1
+     * (ClampMin is editor-only; Blueprint and C++ writes are not clamped).
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Model", meta = (ClampMin = "1"))
     int32 MinLearningUpdatesForTrainedModel = 20;
 
     /** True once the generative model has learned from enough real executed outcomes */
     UFUNCTION(BlueprintPure, Category = "Model")
-    bool IsGenerativeModelTrained() const { return ModelLearningUpdates >= MinLearningUpdatesForTrainedModel; }
+    bool IsGenerativeModelTrained() const { return ModelLearningUpdates >= FMath::Max(1, MinLearningUpdatesForTrainedModel); }
 
     /** Learning updates applied from real executed outcomes */
     UFUNCTION(BlueprintPure, Category = "Model")

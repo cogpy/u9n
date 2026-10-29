@@ -1106,15 +1106,25 @@ bool FActiveInference_UntrainedGateTest::RunTest(const FString& Parameters)
 
     TestFalse(TEXT("A fresh generative model is untrained"), Engine->IsGenerativeModelTrained());
 
-    AddExpectedError(TEXT("SelectPolicy: generative model untrained"));
+    // Each refusal is logged twice: once here, once below with a zero threshold
+    AddExpectedError(TEXT("SelectPolicy: generative model untrained"), EAutomationExpectedErrorFlags::Contains, 2);
+    AddExpectedError(TEXT("RunActiveInference: generative model untrained"), EAutomationExpectedErrorFlags::Contains, 2);
     const FPolicy Policy = Engine->SelectPolicy();
     TestTrue(TEXT("Untrained model selects no policy"), Policy.PolicyID.IsEmpty());
     TestEqual(TEXT("Untrained model's policy has no actions"), Policy.ActionSequence.Num(), 0);
 
-    AddExpectedError(TEXT("RunActiveInference: generative model untrained"));
     TestEqual(TEXT("Untrained model chooses no action"), Engine->RunActiveInference(), (int32)INDEX_NONE);
     TestEqual(TEXT("Nothing was executed"), Engine->GetActionHistory().Num(), 0);
     TestFalse(TEXT("The refusal is recorded"), Engine->GetLastError().IsEmpty());
+
+    // A threshold of 0 (or below) does not bypass the gate: at least one real update is needed
+    Engine->MinLearningUpdatesForTrainedModel = 0;
+    TestFalse(TEXT("A zero threshold does not make a fresh model trained"), Engine->IsGenerativeModelTrained());
+    TestTrue(TEXT("A zero threshold still selects no policy"), Engine->SelectPolicy().PolicyID.IsEmpty());
+    TestEqual(TEXT("A zero threshold still chooses no action"), Engine->RunActiveInference(), (int32)INDEX_NONE);
+    Engine->MinLearningUpdatesForTrainedModel = -5;
+    TestFalse(TEXT("A negative threshold does not make a fresh model trained"), Engine->IsGenerativeModelTrained());
+    TestEqual(TEXT("Nothing was executed with a bypassed threshold"), Engine->GetActionHistory().Num(), 0);
 
     // Only real executed outcomes count as learning
     Engine->MinLearningUpdatesForTrainedModel = 2;
@@ -1153,10 +1163,20 @@ bool FAXIOM_UntrainedGateTest::RunTest(const FString& Parameters)
     AXIOM->EvaluatePolicies();
 
     TestFalse(TEXT("A fresh world model is untrained"), AXIOM->IsWorldModelTrained());
-    AddExpectedError(TEXT("world model untrained"));
+    // Logged three times: fresh model, zero threshold, negative threshold
+    AddExpectedError(TEXT("world model untrained"), EAutomationExpectedErrorFlags::Contains, 3);
     TestEqual(TEXT("Untrained world model selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
     TestEqual(TEXT("No action broadcast"), Receiver->AXIOMActionsSelected, 0);
     TestFalse(TEXT("The refusal is recorded"), AXIOM->GetLastError().IsEmpty());
+
+    // A threshold of 0 (or below) does not bypass the gate: at least one reward observation is needed
+    AXIOM->MinRewardObservationsForTrainedModel = 0;
+    TestFalse(TEXT("A zero threshold does not make a fresh world model trained"), AXIOM->IsWorldModelTrained());
+    TestEqual(TEXT("A zero threshold still selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
+    AXIOM->MinRewardObservationsForTrainedModel = -3;
+    TestEqual(TEXT("A negative threshold still selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
+    TestEqual(TEXT("No action broadcast with a bypassed threshold"), Receiver->AXIOMActionsSelected, 0);
+    AXIOM->MinRewardObservationsForTrainedModel = 10;
 
     // Policies are enumerated candidates, identical on every generation (no random sequences)
     const TArray<FAXIOMPolicy> First = AXIOM->Policies;
