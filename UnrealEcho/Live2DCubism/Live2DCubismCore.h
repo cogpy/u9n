@@ -57,12 +57,12 @@ struct FCubismMocInfo
 };
 
 /**
- * FCubismParameter
+ * FCubismCoreParameter
  * 
  * A single parameter in a Live2D model.
  */
 USTRUCT(BlueprintType)
-struct FCubismParameter
+struct FCubismCoreParameter
 {
 	GENERATED_BODY()
 
@@ -81,7 +81,7 @@ struct FCubismParameter
 	UPROPERTY(BlueprintReadOnly, Category = "Cubism")
 	float DefaultValue;
 
-	FCubismParameter()
+	FCubismCoreParameter()
 		: Id(NAME_None)
 		, Value(0.0f)
 		, MinValue(-1.0f)
@@ -117,12 +117,12 @@ struct FCubismPart
 };
 
 /**
- * FCubismDrawable
+ * FCubismCoreDrawable
  * 
  * A drawable element in a Live2D model.
  */
 USTRUCT(BlueprintType)
-struct FCubismDrawable
+struct FCubismCoreDrawable
 {
 	GENERATED_BODY()
 
@@ -156,7 +156,7 @@ struct FCubismDrawable
 	UPROPERTY(BlueprintReadOnly, Category = "Cubism")
 	TArray<int32> MaskIndices;
 
-	FCubismDrawable()
+	FCubismCoreDrawable()
 		: Id(NAME_None)
 		, TextureIndex(0)
 		, DrawOrder(0)
@@ -314,7 +314,7 @@ public:
 	float GetParameterValue(FName ParameterId) const;
 
 	UFUNCTION(BlueprintPure, Category = "Cubism")
-	TArray<FCubismParameter> GetAllParameters() const { return Parameters; }
+	TArray<FCubismCoreParameter> GetAllParameters() const { return Parameters; }
 
 	// Part access
 	UFUNCTION(BlueprintCallable, Category = "Cubism")
@@ -328,7 +328,7 @@ public:
 
 	// Drawable access
 	UFUNCTION(BlueprintPure, Category = "Cubism")
-	TArray<FCubismDrawable> GetAllDrawables() const { return Drawables; }
+	TArray<FCubismCoreDrawable> GetAllDrawables() const { return Drawables; }
 
 	// Update model
 	UFUNCTION(BlueprintCallable, Category = "Cubism")
@@ -348,9 +348,9 @@ protected:
 
 	// Cached data
 	FCubismMocInfo MocInfo;
-	TArray<FCubismParameter> Parameters;
+	TArray<FCubismCoreParameter> Parameters;
 	TArray<FCubismPart> Parts;
-	TArray<FCubismDrawable> Drawables;
+	TArray<FCubismCoreDrawable> Drawables;
 
 	// Parameter lookup
 	TMap<FName, int32> ParameterIndexMap;

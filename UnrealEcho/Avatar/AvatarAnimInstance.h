@@ -44,7 +44,7 @@ enum class EGestureState : uint8
  * Facial blend shape weights
  */
 USTRUCT(BlueprintType)
-struct FFacialBlendShapes
+struct FAnimFacialBlendShapes
 {
     GENERATED_BODY()
 
@@ -199,11 +199,11 @@ public:
 
     /** Current facial blend shapes */
     UPROPERTY(BlueprintReadOnly, Category = "Facial")
-    FFacialBlendShapes FacialBlendShapes;
+    FAnimFacialBlendShapes FacialBlendShapes;
 
     /** Target facial blend shapes */
     UPROPERTY()
-    FFacialBlendShapes TargetFacialBlendShapes;
+    FAnimFacialBlendShapes TargetFacialBlendShapes;
 
     // ===== Gaze and Attention =====
 
@@ -334,7 +334,7 @@ protected:
 
     // ===== Helper Functions =====
 
-    FFacialBlendShapes CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const;
-    void BlendFacialShapes(const FFacialBlendShapes& Target, float DeltaTime);
+    FAnimFacialBlendShapes CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const;
+    void BlendFacialShapes(const FAnimFacialBlendShapes& Target, float DeltaTime);
     float CalculateBreathingRate() const;
 };

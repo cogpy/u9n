@@ -474,9 +474,9 @@ void UAvatarAnimInstance::ApplyChaoticBehavior(float Intensity)
     GlitchIntensity = ChaosFactor;
 }
 
-FFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const
+FAnimFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const
 {
-    FFacialBlendShapes Shapes;
+    FAnimFacialBlendShapes Shapes;
 
     switch (Emotion)
     {
@@ -547,7 +547,7 @@ FFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmo
     return Shapes;
 }
 
-void UAvatarAnimInstance::BlendFacialShapes(const FFacialBlendShapes& Target, float DeltaTime)
+void UAvatarAnimInstance::BlendFacialShapes(const FAnimFacialBlendShapes& Target, float DeltaTime)
 {
     // Smooth interpolation to target blend shapes
     FacialBlendShapes.BrowInnerUp = FMath::FInterpTo(FacialBlendShapes.BrowInnerUp, Target.BrowInnerUp, DeltaTime, FacialBlendSpeed);
