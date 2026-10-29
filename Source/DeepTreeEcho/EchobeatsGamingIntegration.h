@@ -323,6 +323,8 @@ DECLARE_DYNAMIC_DELEGATE_RetVal_OneParam(FEchoActionExecutionResult, FEchoGameAc
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchoActionPlanReady, const FString&, Strategy, const TArray<FString>&, Actions);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchoActionPlanFailed, const FString&, Strategy, const FString&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEchoStrategyChosen, const FString&, Strategy);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEchoStrategyRequestFailed, const FString&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchoActionExecuted, const FString&, ActionID, const FEchoActionExecutionResult&, Result);
 
 /**
@@ -504,17 +506,41 @@ public:
     // ACTION STREAM API
     // ========================================
 
-    /** Evaluate goals based on situation */
+    /**
+     * Goal pressures derived from the measured situation assessment. This is model input for
+     * SelectStrategy only; it chooses nothing.
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
     TMap<FString, float> EvaluateGoals(const TMap<FString, float>& SituationAssessment);
 
-    /** Select strategy for goals */
+    /**
+     * Asks the model to choose the strategy, from the keys of ActionPlanPromptTemplates, given the
+     * goal evaluation and the measured situation (StrategyPromptTemplate). Asynchronous: the
+     * validated choice is stored (GetSelectedStrategy), broadcast on OnStrategyChosen and then
+     * planned with PlanActions. On failure: Error log, GetLastStrategyError, OnStrategyRequestFailed,
+     * no strategy. Returns false when nothing was requested.
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
-    FString SelectStrategy(const TMap<FString, float>& GoalEvaluation);
+    bool SelectStrategy(const TMap<FString, float>& GoalEvaluation);
+
+    /** The model's last chosen strategy, or empty if it has not chosen one */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Action")
+    FString GetSelectedStrategy() const { return ModelStrategy; }
+
+    /** Why the last strategy request failed, or empty */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Action")
+    FString GetLastStrategyError() const { return LastStrategyError; }
 
     /**
-     * Action-plan prompt templates, keyed by strategy (the names SelectStrategy returns, plus
-     * "balanced"). Each is an instruction to the model with slots {strategy}, {game_state},
+     * Instructions to the model for choosing a strategy. Slots: {goals}, {situation},
+     * {affordances}, {strategies}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats|Action", meta = (MultiLine = true))
+    FString StrategyPromptTemplate;
+
+    /**
+     * Action-plan prompt templates, keyed by strategy. The keys are the strategy vocabulary the
+     * model chooses from in SelectStrategy. Each is an instruction to the model with slots {strategy}, {game_state},
      * {situation}, {affordances}, {salience}, {allowed_actions}, {max_actions}; the model returns
      * the plan as JSON {"actions": [...]}, validated against AllowedActionVocabulary.
      */
@@ -536,8 +562,8 @@ public:
      * Asks the model to plan actions for SelectedStrategy from the current game state, affordances
      * and the allowed action vocabulary. Asynchronous: the validated plan is queued and broadcast on
      * OnActionPlanReady, or the reason on OnActionPlanFailed. Returns false (nothing requested)
-     * when no prompt template exists for the strategy, the vocabulary is empty, or a plan request
-     * is already in flight.
+     * when SelectedStrategy is not the model's chosen strategy (GetSelectedStrategy), no prompt
+     * template exists for it, the vocabulary is empty, or a plan request is already in flight.
      */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Action")
     bool PlanActions(const FString& SelectedStrategy);
@@ -697,6 +723,14 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
     FOnEchoActionPlanFailed OnActionPlanFailed;
 
+    /** The model chose the strategy (planning follows) */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnEchoStrategyChosen OnStrategyChosen;
+
+    /** A strategy request failed; no strategy was chosen and nothing was planned */
+    UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
+    FOnEchoStrategyRequestFailed OnStrategyRequestFailed;
+
     /** An action was attempted through the game executor (see Result.bExecuted) */
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
     FOnEchoActionExecuted OnActionExecuted;
@@ -729,6 +763,15 @@ private:
 
     /** Status of the most recent ExecuteAction call */
     FString LastActionStatus;
+
+    /** The model's chosen strategy (empty until it has answered) */
+    FString ModelStrategy;
+
+    FString LastStrategyError;
+    bool bStrategyRequestInFlight = false;
+
+    void HandleStrategyReply(TArray<FString> Offered, bool bSuccess, const FString& TextOrError);
+    void FailStrategyRequest(const FString& Error);
 
     /** Builds the default per-strategy plan prompt templates and action vocabulary */
     void InitializeActionPlanning();

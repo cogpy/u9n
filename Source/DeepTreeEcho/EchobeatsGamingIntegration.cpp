@@ -39,6 +39,14 @@ void UEchobeatsGamingIntegration::InitializeActionPlanning()
     ActionPlanPromptTemplates.Add(TEXT("balanced"),
         TEXT("Strategy {strategy}: no single goal dominates - observe and adapt to what the state shows.") + Common);
 
+    StrategyPromptTemplate = TEXT(
+        "You are Deep Tree Echo, playing a game in real time. Decide your strategy for the next few seconds.\n"
+        "Goal pressures (0-1, derived from the situation): {goals}.\n"
+        "Measured situation: {situation}.\n"
+        "Detected affordances: {affordances}.\n"
+        "Choose exactly one strategy from: {strategies}.\n"
+        "Reply with only a JSON object: {\"strategy\": \"<strategy>\"}");
+
     // Default action vocabulary (model input). The game should replace it with the action names
     // its bound executor understands.
     AllowedActionVocabulary = {
@@ -480,51 +488,129 @@ TMap<FString, float> UEchobeatsGamingIntegration::EvaluateGoals(const TMap<FStri
     return GoalEvaluation;
 }
 
-FString UEchobeatsGamingIntegration::SelectStrategy(const TMap<FString, float>& GoalEvaluation)
+bool UEchobeatsGamingIntegration::SelectStrategy(const TMap<FString, float>& GoalEvaluation)
 {
-    // Find highest priority goal
-    FString TopGoal;
-    float TopPriority = 0.0f;
+    // The strategy vocabulary is the set of strategies the model can also plan for
+    TArray<FString> Offered;
+    for (const auto& Pair : ActionPlanPromptTemplates)
+    {
+        if (!Pair.Key.IsEmpty() && !Pair.Value.IsEmpty()) { Offered.Add(Pair.Key); }
+    }
+    if (Offered.Num() == 0)
+    {
+        FailStrategyRequest(TEXT("no strategies to offer (ActionPlanPromptTemplates is empty)"));
+        return false;
+    }
+    if (GoalEvaluation.Num() == 0)
+    {
+        FailStrategyRequest(TEXT("no goal evaluation to choose a strategy from"));
+        return false;
+    }
+    if (StrategyPromptTemplate.IsEmpty())
+    {
+        FailStrategyRequest(TEXT("StrategyPromptTemplate is empty"));
+        return false;
+    }
+    if (bStrategyRequestInFlight)
+    {
+        FailStrategyRequest(TEXT("a strategy request is already in flight"));
+        return false;
+    }
 
+    FString GoalsText;
     for (const auto& Pair : GoalEvaluation)
     {
-        if (Pair.Value > TopPriority)
+        GoalsText += FString::Printf(TEXT("%s%s=%.2f"), GoalsText.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value);
+    }
+
+    FString SituationText;
+    const TMap<FString, float> Situation = AssessSituation(MatchPatterns(PerceptionStream.OutputData));
+    for (const auto& Pair : Situation)
+    {
+        SituationText += FString::Printf(TEXT("%s%s=%.2f"), SituationText.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value);
+    }
+    if (SituationText.IsEmpty()) { SituationText = TEXT("(none)"); }
+
+    FString AffordanceText;
+    for (const FAffordanceDetection& A : DetectedAffordances)
+    {
+        AffordanceText += FString::Printf(TEXT("%s%s (type %s, confidence %.2f, value %.2f, risk %.2f)"),
+            AffordanceText.IsEmpty() ? TEXT("") : TEXT("; "), *A.AffordanceID, *A.AffordanceType,
+            A.Confidence, A.EstimatedValue, A.RiskLevel);
+    }
+    if (AffordanceText.IsEmpty()) { AffordanceText = TEXT("(none detected)"); }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("goals"), GoalsText);
+    Slots.Add(TEXT("situation"), SituationText);
+    Slots.Add(TEXT("affordances"), AffordanceText);
+    Slots.Add(TEXT("strategies"), FString::Join(Offered, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(StrategyPromptTemplate, Slots)));
+
+    bStrategyRequestInFlight = true;
+    TWeakObjectPtr<UEchobeatsGamingIntegration> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, Offered](bool bSuccess, const FString& TextOrError)
         {
-            TopPriority = Pair.Value;
-            TopGoal = Pair.Key;
-        }
+            if (UEchobeatsGamingIntegration* Self = WeakThis.Get())
+            {
+                Self->HandleStrategyReply(Offered, bSuccess, TextOrError);
+            }
+        }), 0.5f);
+    return true;
+}
+
+void UEchobeatsGamingIntegration::HandleStrategyReply(TArray<FString> Offered, bool bSuccess, const FString& TextOrError)
+{
+    bStrategyRequestInFlight = false;
+    if (!bSuccess)
+    {
+        FailStrategyRequest(TextOrError);
+        return;
     }
 
-    // Map goal to strategy
-    if (TopGoal == TEXT("survive"))
+    TSharedPtr<FJsonObject> Json;
+    FString Strategy;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("strategy"), Strategy))
     {
-        return TEXT("defensive_retreat");
+        FailStrategyRequest(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
     }
-    else if (TopGoal == TEXT("attack"))
+    Strategy.TrimStartAndEndInline();
+    const FString* Known = Offered.FindByPredicate(
+        [&Strategy](const FString& Candidate) { return Candidate.Equals(Strategy, ESearchCase::IgnoreCase); });
+    if (!Known)
     {
-        return TEXT("aggressive_push");
-    }
-    else if (TopGoal == TEXT("defend"))
-    {
-        return TEXT("hold_position");
-    }
-    else if (TopGoal == TEXT("expand"))
-    {
-        return TEXT("map_control");
-    }
-    else if (TopGoal == TEXT("gather"))
-    {
-        return TEXT("resource_focus");
+        FailStrategyRequest(FString::Printf(TEXT("model chose a strategy outside the vocabulary: %s"), *Strategy));
+        return;
     }
 
-    return TEXT("balanced");
+    LastStrategyError.Reset();
+    ModelStrategy = *Known;
+    OnStrategyChosen.Broadcast(ModelStrategy);
+    PlanActions(ModelStrategy);
+}
+
+void UEchobeatsGamingIntegration::FailStrategyRequest(const FString& Error)
+{
+    LastStrategyError = Error;
+    UE_LOG(LogTemp, Error, TEXT("Echobeats: no model strategy: %s"), *Error);
+    OnStrategyRequestFailed.Broadcast(Error);
 }
 
 bool UEchobeatsGamingIntegration::PlanActions(const FString& SelectedStrategy)
 {
     const FString* Template = ActionPlanPromptTemplates.Find(SelectedStrategy);
     FString Error;
-    if (!Template || Template->IsEmpty())
+    if (SelectedStrategy.IsEmpty() || !SelectedStrategy.Equals(ModelStrategy, ESearchCase::IgnoreCase))
+    {
+        // Only a strategy the model chose may be planned
+        Error = FString::Printf(TEXT("strategy '%s' was not chosen by the model (model strategy: '%s')"),
+            *SelectedStrategy, *ModelStrategy);
+    }
+    else if (!Template || Template->IsEmpty())
     {
         Error = FString::Printf(TEXT("no action-plan prompt template for strategy '%s'"), *SelectedStrategy);
     }
