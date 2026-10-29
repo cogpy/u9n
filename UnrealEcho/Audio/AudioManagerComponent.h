@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Sound/SoundBase.h"
+#include "Avatar/AvatarEmotionalState.h"
 #include "AudioManagerComponent.generated.h"
 
 // Forward declarations
@@ -11,18 +12,6 @@ struct FEchoCharacterReaction;
 
 /** Text the avatar is saying (for captions/subtitles). Only model-produced utterances reach Speak(). */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAvatarSpeechCaption, const FString&, Text);
-
-UENUM(BlueprintType)
-enum class EAvatarEmotionalState : uint8
-{
-    Neutral UMETA(DisplayName = "Neutral"),
-    Happy UMETA(DisplayName = "Happy"),
-    Sad UMETA(DisplayName = "Sad"),
-    Excited UMETA(DisplayName = "Excited"),
-    Angry UMETA(DisplayName = "Angry"),
-    Flirty UMETA(DisplayName = "Flirty"),
-    Surprised UMETA(DisplayName = "Surprised")
-};
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class UNREALENGINE_API UAudioManagerComponent : public UActorComponent

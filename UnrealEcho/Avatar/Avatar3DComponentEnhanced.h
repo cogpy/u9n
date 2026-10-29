@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
+#include "Avatar/AvatarEmotionalState.h"
 #include "Avatar3DComponentEnhanced.generated.h"
 
 struct FEchoCharacterReaction;
@@ -15,21 +16,6 @@ struct FEchoCharacterReaction;
  * FEchoReactionBus) or set explicitly by code relaying such a choice. The component
  * never picks emotions, micro-expressions or effects by chance or on timers.
  */
-
-UENUM(BlueprintType)
-enum class EAvatarEmotionalState : uint8
-{
-    Neutral UMETA(DisplayName = "Neutral"),
-    Happy UMETA(DisplayName = "Happy"),
-    Sad UMETA(DisplayName = "Sad"),
-    Angry UMETA(DisplayName = "Angry"),
-    Surprised UMETA(DisplayName = "Surprised"),
-    Flirty UMETA(DisplayName = "Flirty"),
-    Chaotic UMETA(DisplayName = "Chaotic"),
-    Thoughtful UMETA(DisplayName = "Thoughtful"),
-    Excited UMETA(DisplayName = "Excited"),
-    Mysterious UMETA(DisplayName = "Mysterious")
-};
 
 UENUM(BlueprintType)
 enum class EAvatarPersonalityTrait : uint8

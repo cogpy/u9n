@@ -12,7 +12,7 @@
 class UPersonalityTraitSystem;
 class UCognitiveStateComponent;
 class UNeurochemicalSimulationComponent;
-class UAvatar3DComponent;
+class UAvatar3DComponentEnhanced;
 class UDeepTreeEchoMovementComponent;
 class UDeepTreeEchoInteractionComponent;
 class UDeepTreeEchoCosmeticsComponent;
@@ -115,7 +115,7 @@ public:
 	UNeurochemicalSimulationComponent* GetNeurochemicalSystem() const { return NeurochemicalSystem; }
 
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo")
-	UAvatar3DComponent* GetAvatarComponent() const { return AvatarComponent; }
+	UAvatar3DComponentEnhanced* GetAvatarComponent() const { return AvatarComponent; }
 
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo")
 	UAudioManagerComponent* GetAudioManager() const { return AudioManager; }
@@ -126,9 +126,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo|Emotion")
 	float GetEmotionalArousal() const;
-
-	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo|Emotion")
-	float GetEmotionalDominance() const;
 
 	// Cognitive state accessors
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo|Cognition")
@@ -159,9 +156,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo|Visual")
 	void SetEmotionalAuraColor(FLinearColor Color, float Intensity);
 
-	UFUNCTION(BlueprintCallable, Category = "Deep Tree Echo|Visual")
-	void TriggerCognitiveVisualization(FName VisualizationType);
-
 protected:
 	// Core Deep Tree Echo components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Deep Tree Echo|Components", Meta = (AllowPrivateAccess = "true"))
@@ -174,7 +168,7 @@ protected:
 	TObjectPtr<UNeurochemicalSimulationComponent> NeurochemicalSystem;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Deep Tree Echo|Components", Meta = (AllowPrivateAccess = "true"))
-	TObjectPtr<UAvatar3DComponent> AvatarComponent;
+	TObjectPtr<UAvatar3DComponentEnhanced> AvatarComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Deep Tree Echo|Components", Meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UDeepTreeEchoInteractionComponent> InteractionComponent;
@@ -205,9 +199,6 @@ protected:
 	void InitializeAbilitySystem();
 
 	// Event handlers
-	UFUNCTION()
-	void OnPersonalityShift(const FPersonalityState& OldState, const FPersonalityState& NewState);
-
 	UFUNCTION()
 	void OnCognitiveLoadChanged(float NewLoad);
 

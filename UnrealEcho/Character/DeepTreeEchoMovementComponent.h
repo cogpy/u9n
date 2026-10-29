@@ -5,10 +5,9 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Cognitive/EmotionalState.h"
 #include "DeepTreeEchoMovementComponent.generated.h"
 
-struct FEmotionalState;
-struct FPersonalityState;
 
 /**
  * UDeepTreeEchoMovementComponent
