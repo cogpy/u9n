@@ -287,9 +287,24 @@ void UAvatar3DComponentEnhanced::HandleEmotionChoiceReply(int32 RequestSerial, b
     TSharedPtr<FJsonObject> Json;
     FString EmotionName;
     double Intensity = 0.0;
+    // Smaller models sometimes quote the number ("0.5"); accept a numeric string as the same value.
+    auto ReadIntensity = [&Json, &Intensity]() -> bool
+    {
+        if (Json->TryGetNumberField(TEXT("intensity"), Intensity))
+        {
+            return true;
+        }
+        FString Text;
+        if (Json->TryGetStringField(TEXT("intensity"), Text) && Text.TrimStartAndEnd().IsNumeric())
+        {
+            Intensity = FCString::Atod(*Text.TrimStartAndEnd());
+            return true;
+        }
+        return false;
+    };
     if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
         !Json->TryGetStringField(TEXT("emotion"), EmotionName) ||
-        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
+        !ReadIntensity())
     {
         LastEmotionChoiceError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
         UE_LOG(LogTemp, Error, TEXT("Avatar3DComponentEnhanced: %s"), *LastEmotionChoiceError);
