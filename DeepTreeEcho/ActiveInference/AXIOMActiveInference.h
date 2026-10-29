@@ -450,6 +450,25 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "AXIOM|State")
     int32 TotalSteps = 0;
 
+    /** Real reward observations the interaction model (rMM) has learned from */
+    UPROPERTY(BlueprintReadOnly, Category = "AXIOM|State")
+    int32 RewardObservationCount = 0;
+
+    /**
+     * Reward observations needed before the world model's policy scores are used to choose an
+     * action. Below this, SelectAction chooses nothing.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AXIOM|Config", meta = (ClampMin = "1"))
+    int32 MinRewardObservationsForTrainedModel = 10;
+
+    /** True once the world model has learned from enough real reward observations */
+    UFUNCTION(BlueprintPure, Category = "AXIOM|Planning")
+    bool IsWorldModelTrained() const { return RewardObservationCount >= MinRewardObservationsForTrainedModel; }
+
+    /** Why the last SelectAction chose nothing, or empty */
+    UFUNCTION(BlueprintPure, Category = "AXIOM|Planning")
+    FString GetLastError() const { return LastError; }
+
     // ========================================
     // PUBLIC API - INITIALIZATION
     // ========================================
@@ -530,7 +549,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "AXIOM|Planning")
     void EvaluatePolicies();
 
-    /** Select action from policy distribution */
+    /**
+     * Select the first action of the most probable policy. While the world model is untrained
+     * (IsWorldModelTrained) or no policy has an action, returns INDEX_NONE, sets GetLastError and
+     * broadcasts nothing; never a random or default action.
+     */
     UFUNCTION(BlueprintCallable, Category = "AXIOM|Planning")
     int32 SelectAction();
 
@@ -634,13 +657,11 @@ private:
     /** Compute KL divergence between Gaussians */
     float ComputeKLDivergence(const FGaussianComponent& P, const FGaussianComponent& Q) const;
 
-    /** Sample from categorical distribution */
-    int32 SampleCategorical(const TArray<float>& Probabilities) const;
-
     /** Softmax normalization */
     TArray<float> Softmax(const TArray<float>& Values, float Temperature = 1.0f) const;
 
     // Internal state
     float AccumulatedDeltaTime = 0.0f;
     int32 LastProcessedStep = -1;
+    FString LastError;
 };

@@ -34,6 +34,7 @@
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
 #include "ActiveInference/ActiveInferenceEngine.h"
+#include "ActiveInference/AXIOMActiveInference.h"
 #include "EchoCharacterReaction.h"
 #include "DTEAutonomousAgentTestReceiver.h"
 
@@ -1083,5 +1084,44 @@ bool FActiveInference_UntrainedGateTest::RunTest(const FString& Parameters)
     Executed.bExecuted = true;
     Engine->LearnModelStructure({ Executed, Executed });
     TestTrue(TEXT("Real executed outcomes train the model"), Engine->IsGenerativeModelTrained());
+    return true;
+}
+
+// ============================================================
+// AXIOM — an untrained world model selects no action
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAXIOM_UntrainedGateTest,
+    "DTE.AXIOM.UntrainedWorldModelSelectsNothing",
+    DTE_TEST_FLAGS)
+
+bool FAXIOM_UntrainedGateTest::RunTest(const FString& Parameters)
+{
+    UAXIOMActiveInference* AXIOM = NewObject<UAXIOMActiveInference>();
+    TestNotNull(TEXT("AXIOM should be created"), AXIOM);
+    if (!AXIOM) { return false; }
+
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    AXIOM->OnActionSelected.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleAXIOMActionSelected);
+
+    AXIOM->Initialize();
+    AXIOM->GeneratePolicies();
+    AXIOM->EvaluatePolicies();
+
+    TestFalse(TEXT("A fresh world model is untrained"), AXIOM->IsWorldModelTrained());
+    AddExpectedError(TEXT("world model untrained"));
+    TestEqual(TEXT("Untrained world model selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
+    TestEqual(TEXT("No action broadcast"), Receiver->AXIOMActionsSelected, 0);
+    TestFalse(TEXT("The refusal is recorded"), AXIOM->GetLastError().IsEmpty());
+
+    // Policies are enumerated candidates, identical on every generation (no random sequences)
+    const TArray<FAXIOMPolicy> First = AXIOM->Policies;
+    AXIOM->GeneratePolicies();
+    bool bSame = First.Num() == AXIOM->Policies.Num();
+    for (int32 i = 0; bSame && i < First.Num(); ++i)
+    {
+        bSame = First[i].ActionSequence == AXIOM->Policies[i].ActionSequence;
+    }
+    TestTrue(TEXT("Candidate policies are deterministic"), bSame);
     return true;
 }

@@ -91,6 +91,7 @@ void UAXIOMActiveInference::Reset()
     ObjectTypes.Empty();
     InteractionClusters.Empty();
     TotalSteps = 0;
+    RewardObservationCount = 0;
     LearningPhase = EAXIOMLearningPhase::Exploration;
     
     Initialize();
@@ -483,6 +484,7 @@ void UAXIOMActiveInference::UpdateInteractionModel(float ObservedReward)
                     Cluster.ExpectedReward = (1.0f - Alpha) * Cluster.ExpectedReward + Alpha * ObservedReward;
                     Cluster.DistanceThreshold = (1.0f - Alpha) * Cluster.DistanceThreshold + Alpha * Distance;
                     Cluster.ActivationCount++;
+                    ++RewardObservationCount;
                     Found = true;
                     break;
                 }
@@ -501,6 +503,7 @@ void UAXIOMActiveInference::UpdateInteractionModel(float ObservedReward)
                 NewCluster.ActivationCount = 1;
                 
                 AddInteractionCluster(NewCluster);
+                ++RewardObservationCount;
             }
         }
     }
@@ -542,23 +545,27 @@ int32 UAXIOMActiveInference::FindNearestInteractor(int32 SlotIndex) const
 
 void UAXIOMActiveInference::GeneratePolicies()
 {
-    // Generate random action sequences
+    // Candidate action sequences, enumerated deterministically (the trained model scores them):
+    // policy p takes the base-5 digits of p as its first three actions and then repeats them.
     const int32 NumActions = 5; // 0=none, 1=left, 2=right, 3=up, 4=down
-    
-    for (int32 p = 0; p < Config.NumPolicies; ++p)
+
+    Policies.SetNum(FMath::Max(0, Config.NumPolicies));
+    for (int32 p = 0; p < Policies.Num(); ++p)
     {
         Policies[p].PolicyIndex = p;
         Policies[p].ActionSequence.SetNum(Config.PlanningHorizon);
-        
+
         for (int32 t = 0; t < Config.PlanningHorizon; ++t)
         {
-            Policies[p].ActionSequence[t] = FMath::RandRange(0, NumActions - 1);
+            const int32 Digit = t % 3;
+            const int32 Divisor = Digit == 0 ? 1 : (Digit == 1 ? NumActions : NumActions * NumActions);
+            Policies[p].ActionSequence[t] = (p / Divisor) % NumActions;
         }
-        
+
         Policies[p].ExpectedFreeEnergy = 0.0f;
         Policies[p].ExpectedUtility = 0.0f;
         Policies[p].InformationGain = 0.0f;
-        Policies[p].Probability = 1.0f / Config.NumPolicies;
+        Policies[p].Probability = 1.0f / FMath::Max(1, Config.NumPolicies);
     }
 }
 
@@ -590,23 +597,35 @@ void UAXIOMActiveInference::EvaluatePolicies()
 
 int32 UAXIOMActiveInference::SelectAction()
 {
-    // Sample policy from distribution
-    TArray<float> Probs;
-    Probs.SetNum(Config.NumPolicies);
-    for (int32 p = 0; p < Config.NumPolicies; ++p)
+    // An untrained world model scores policies arbitrarily: choose nothing
+    if (!IsWorldModelTrained())
     {
-        Probs[p] = Policies[p].Probability;
+        LastError = FString::Printf(TEXT("world model untrained (%d of %d reward observations); no action selected"),
+            RewardObservationCount, MinRewardObservationsForTrainedModel);
+        UE_LOG(LogTemp, Error, TEXT("AXIOMActiveInference: %s"), *LastError);
+        return INDEX_NONE;
     }
-    
-    int32 SelectedPolicyIdx = SampleCategorical(Probs);
-    SelectedPolicy = Policies[SelectedPolicyIdx];
-    
-    // Return first action of selected policy
-    int32 Action = SelectedPolicy.ActionSequence.Num() > 0 ? SelectedPolicy.ActionSequence[0] : 0;
-    
-    // Broadcast event
+
+    // The most probable policy (no sampling, no default)
+    const FAXIOMPolicy* Best = nullptr;
+    for (const FAXIOMPolicy& Policy : Policies)
+    {
+        if (Policy.ActionSequence.Num() > 0 && (!Best || Policy.Probability > Best->Probability))
+        {
+            Best = &Policy;
+        }
+    }
+    if (!Best)
+    {
+        LastError = TEXT("no evaluated policy has an action; no action selected");
+        UE_LOG(LogTemp, Error, TEXT("AXIOMActiveInference: %s"), *LastError);
+        return INDEX_NONE;
+    }
+
+    LastError.Reset();
+    SelectedPolicy = *Best;
+    const int32 Action = SelectedPolicy.ActionSequence[0];
     OnActionSelected.Broadcast(Action, SelectedPolicy.ExpectedFreeEnergy);
-    
     return Action;
 }
 
@@ -1118,21 +1137,6 @@ float UAXIOMActiveInference::ComputeKLDivergence(const FGaussianComponent& P, co
     }
     
     return 0.5f * KL;
-}
-
-int32 UAXIOMActiveInference::SampleCategorical(const TArray<float>& Probabilities) const
-{
-    float U = FMath::FRand();
-    float CumSum = 0.0f;
-    
-    for (int32 i = 0; i < Probabilities.Num(); ++i)
-    {
-        CumSum += Probabilities[i];
-        if (U < CumSum)
-            return i;
-    }
-    
-    return Probabilities.Num() - 1;
 }
 
 TArray<float> UAXIOMActiveInference::Softmax(const TArray<float>& Values, float Temperature) const

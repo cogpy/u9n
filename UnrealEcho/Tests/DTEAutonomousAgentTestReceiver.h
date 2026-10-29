@@ -11,6 +11,7 @@
 #include "CNS/AutonomousAgentController.h"
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
+#include "ActiveInference/AXIOMActiveInference.h"
 #include "DTEAutonomousAgentTestReceiver.generated.h"
 
 UCLASS()
@@ -28,6 +29,7 @@ public:
     bool bComboExecuted = false;
     bool bTimingWindowOpened = false;
     bool bExpressionStateUpdated = false;
+    int32 AXIOMActionsSelected = 0;
 
     UFUNCTION()
     void HandleReflexFired(const FString& ReflexID, const FControllerOutputCommand& Response) { bReflexFired = true; }
@@ -56,4 +58,7 @@ public:
 
     UFUNCTION()
     void HandleExpressionStateUpdated(const FCognitiveExpressionState& Expression) { bExpressionStateUpdated = true; }
+
+    UFUNCTION()
+    void HandleAXIOMActionSelected(int32 Action, float ExpectedFreeEnergy) { ++AXIOMActionsSelected; }
 };
