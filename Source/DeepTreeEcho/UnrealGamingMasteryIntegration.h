@@ -309,6 +309,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnComboRecommended, const FString&
 /** A combo request failed; Error is a system message, nothing was recommended. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnComboRecommendationFailed, const FString&, CurrentState, const FString&, Error);
 
+/** The character's model chose Transition to reach TargetAction. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAnimationTransitionChosen, const FString&, TargetAction, const FString&, Transition);
+
+/** An animation-transition request failed; Error is a system message, nothing was chosen. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAnimationTransitionFailed, const FString&, TargetAction, const FString&, Error);
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class DEEPTREEECHO_API UUnrealGamingMasteryIntegration : public UActorComponent
 {
@@ -521,7 +527,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Integration|AI")
     void ModelOpponentBehavior(AActor* Opponent, const FString& ObservedAction);
 
-    /** Get counter-strategy for opponent */
+    /**
+     * Ask the model (via GamingMasterySystem->RequestCounterStrategy) to choose a counter-strategy
+     * for this opponent; the answer arrives on GamingMasterySystem->OnCounterStrategyChosen.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Integration|AI")
+    void RequestCounterStrategyForOpponent(AActor* Opponent);
+
+    /** The model's last counter-strategy for this opponent, or empty if it has not chosen one */
     UFUNCTION(BlueprintCallable, Category = "Integration|AI")
     FString GetCounterStrategyForOpponent(AActor* Opponent) const;
 
@@ -544,9 +557,40 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Integration|Animation")
     float PredictAnimationCompletion(UAnimInstance* AnimInstance) const;
 
-    /** Get optimal animation transition */
+    /**
+     * Ask the character's model to choose the transition to TargetAction from
+     * AnimationTransitionVocabulary, given the active montage, its progress and cancel window.
+     * Asynchronous: the answer arrives on OnAnimationTransitionChosen and is kept; on failure
+     * OnAnimationTransitionFailed fires, the error is logged and kept in LastAnimationTransitionError,
+     * and nothing is chosen.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Integration|Animation")
+    void RequestOptimalAnimationTransition(UAnimInstance* AnimInstance, const FString& TargetAction);
+
+    /** The model's last transition to TargetAction, or empty if it has not chosen one */
     UFUNCTION(BlueprintCallable, Category = "Integration|Animation")
     FString GetOptimalAnimationTransition(UAnimInstance* AnimInstance, const FString& TargetAction) const;
+
+    /** The game's authored animation transitions the model may choose from (empty = unavailable) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Integration|Animation")
+    TArray<FString> AnimationTransitionVocabulary;
+
+    /**
+     * Instruction sent to the model by RequestOptimalAnimationTransition. Slots: {current_animation},
+     * {progress}, {cancel_window}, {target}, {transitions}. The reply must be {"transition": "<transition>"}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Integration|Animation", meta = (MultiLine = true))
+    FString AnimationTransitionPromptTemplate;
+
+    /** Last animation-transition request failure, or empty. */
+    UPROPERTY(BlueprintReadOnly, Category = "Integration|Animation")
+    FString LastAnimationTransitionError;
+
+    UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
+    FOnAnimationTransitionChosen OnAnimationTransitionChosen;
+
+    UPROPERTY(BlueprintAssignable, Category = "Integration|Events")
+    FOnAnimationTransitionFailed OnAnimationTransitionFailed;
 
     // ========================================
     // VISUAL FEEDBACK SYSTEM
@@ -733,6 +777,15 @@ private:
     int32 ComboRequestSerial = 0;
 
     void HandleComboReply(int32 RequestSerial, const FString& CurrentState, bool bSuccess, const FString& TextOrError);
+
+    /** Model-chosen animation transitions by target action */
+    TMap<FString, FString> AnimationTransitions;
+
+    /** Incremented per RequestOptimalAnimationTransition; stale replies are discarded */
+    int32 AnimationTransitionRequestSerial = 0;
+
+    void HandleAnimationTransitionReply(int32 RequestSerial, const FString& TargetAction, TArray<FString> OfferedTransitions,
+                                        bool bSuccess, const FString& TextOrError);
 
     // ========================================
     // INTERNAL METHODS

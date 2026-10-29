@@ -28,6 +28,13 @@ UUnrealGamingMasteryIntegration::UUnrealGamingMasteryIntegration()
         "Your measured combat performance:\n{metrics}\nYour most recent inputs: {recent_inputs}.\n"
         "Choose the combo you will use next: a sequence of 1 to {max_length} moves, each exactly one of: {moves}. "
         "Reply with only a JSON object: {\"combo\": [\"<move>\", ...]}");
+
+    AnimationTransitionPromptTemplate = TEXT(
+        "You are Deep Tree Echo, controlling your own body in a real-time game. "
+        "Your current animation: {current_animation}, {progress} complete. Cancel window: {cancel_window}.\n"
+        "You want to perform: {target}.\n"
+        "Choose the animation transition you will use to get there. It must be exactly one of: {transitions}. "
+        "Reply with only a JSON object: {\"transition\": \"<transition>\"}");
 }
 
 void UUnrealGamingMasteryIntegration::BeginPlay()
@@ -806,10 +813,24 @@ void UUnrealGamingMasteryIntegration::ModelOpponentBehavior(AActor* Opponent, co
     GamingMasterySystem->UpdateOpponentModel(OpponentID, ObservedAction, LastGameStateFeatures);
 }
 
+void UUnrealGamingMasteryIntegration::RequestCounterStrategyForOpponent(AActor* Opponent)
+{
+    if (!Opponent || !GamingMasterySystem)
+    {
+        UE_LOG(LogTemp, Error, TEXT("UnrealGamingMasteryIntegration: no counter-strategy request: %s"),
+            Opponent ? TEXT("no GamingMasterySystem") : TEXT("no opponent"));
+        return;
+    }
+
+    // Model-chosen; the answer arrives on GamingMasterySystem->OnCounterStrategyChosen
+    GamingMasterySystem->RequestCounterStrategy(Opponent->GetName());
+}
+
 FString UUnrealGamingMasteryIntegration::GetCounterStrategyForOpponent(AActor* Opponent) const
 {
     if (!Opponent || !GamingMasterySystem) return TEXT("");
 
+    // The model's last counter-strategy for this opponent, or empty
     FString OpponentID = Opponent->GetName();
     return GamingMasterySystem->GetCounterStrategy(OpponentID);
 }
@@ -882,12 +903,125 @@ float UUnrealGamingMasteryIntegration::PredictAnimationCompletion(UAnimInstance*
     return FMath::Clamp(AnimInstance->Montage_GetPosition(Montage) / Length, 0.0f, 1.0f);
 }
 
+void UUnrealGamingMasteryIntegration::RequestOptimalAnimationTransition(UAnimInstance* AnimInstance, const FString& TargetAction)
+{
+    auto Fail = [this, &TargetAction](const FString& Error)
+    {
+        LastAnimationTransitionError = Error;
+        UE_LOG(LogTemp, Error, TEXT("UnrealGamingMasteryIntegration: no model animation transition to '%s': %s"), *TargetAction, *Error);
+        OnAnimationTransitionFailed.Broadcast(TargetAction, Error);
+    };
+
+    if (!AnimInstance)
+    {
+        Fail(TEXT("no anim instance"));
+        return;
+    }
+    if (TargetAction.IsEmpty())
+    {
+        Fail(TEXT("no target action"));
+        return;
+    }
+    TArray<FString> Offered;
+    for (const FString& Transition : AnimationTransitionVocabulary)
+    {
+        if (!Transition.IsEmpty()) { Offered.AddUnique(Transition); }
+    }
+    if (Offered.Num() == 0)
+    {
+        Fail(TEXT("AnimationTransitionVocabulary is empty (the game must list its authored transitions)"));
+        return;
+    }
+
+    FString CurrentAnimation = TEXT("none (no montage playing)");
+    FString Progress = TEXT("unknown");
+    if (UAnimMontage* Montage = AnimInstance->GetCurrentActiveMontage())
+    {
+        CurrentAnimation = Montage->GetName();
+        const float Completion = PredictAnimationCompletion(AnimInstance);
+        if (Completion >= 0.0f)
+        {
+            Progress = FString::Printf(TEXT("%.0f%%"), Completion * 100.0f);
+        }
+    }
+    FString CancelType;
+    float WindowStart = 0.0f, WindowEnd = 0.0f;
+    const FString CancelWindow = GetCancelWindow(AnimInstance, CancelType, WindowStart, WindowEnd)
+        ? FString::Printf(TEXT("%s cancel from %.0f%% to %.0f%%"), *CancelType, WindowStart * 100.0f, WindowEnd * 100.0f)
+        : FString(TEXT("none authored"));
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("current_animation"), CurrentAnimation);
+    Slots.Add(TEXT("progress"), Progress);
+    Slots.Add(TEXT("cancel_window"), CancelWindow);
+    Slots.Add(TEXT("target"), TargetAction);
+    Slots.Add(TEXT("transitions"), FString::Join(Offered, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(AnimationTransitionPromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++AnimationTransitionRequestSerial;
+    TWeakObjectPtr<UUnrealGamingMasteryIntegration> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial, TargetAction, Offered](bool bSuccess, const FString& TextOrError)
+        {
+            if (UUnrealGamingMasteryIntegration* Self = WeakThis.Get())
+            {
+                Self->HandleAnimationTransitionReply(RequestSerial, TargetAction, Offered, bSuccess, TextOrError);
+            }
+        }), 0.5f);
+}
+
+void UUnrealGamingMasteryIntegration::HandleAnimationTransitionReply(int32 RequestSerial, const FString& TargetAction,
+                                                                     TArray<FString> OfferedTransitions, bool bSuccess,
+                                                                     const FString& TextOrError)
+{
+    if (RequestSerial != AnimationTransitionRequestSerial)
+    {
+        return; // superseded by a newer request
+    }
+
+    auto Fail = [this, &TargetAction](const FString& Error)
+    {
+        LastAnimationTransitionError = Error;
+        UE_LOG(LogTemp, Error, TEXT("UnrealGamingMasteryIntegration: no model animation transition to '%s': %s"), *TargetAction, *Error);
+        OnAnimationTransitionFailed.Broadcast(TargetAction, Error);
+    };
+
+    if (!bSuccess)
+    {
+        Fail(TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Transition;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("transition"), Transition))
+    {
+        Fail(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+    Transition.TrimStartAndEndInline();
+    const FString* Known = OfferedTransitions.FindByPredicate(
+        [&Transition](const FString& Candidate) { return Candidate.Equals(Transition, ESearchCase::IgnoreCase); });
+    if (!Known)
+    {
+        Fail(FString::Printf(TEXT("model chose a transition outside the vocabulary: %s"), *Transition));
+        return;
+    }
+
+    LastAnimationTransitionError.Reset();
+    AnimationTransitions.Add(TargetAction, *Known);
+    OnAnimationTransitionChosen.Broadcast(TargetAction, *Known);
+}
+
 FString UUnrealGamingMasteryIntegration::GetOptimalAnimationTransition(UAnimInstance* AnimInstance, const FString& TargetAction) const
 {
     if (!AnimInstance) return TEXT("");
 
-    // Recommend optimal transition based on current state
-    return FString::Printf(TEXT("transition_to_%s"), *TargetAction);
+    // The model's last transition for this target action, or empty
+    const FString* Transition = AnimationTransitions.Find(TargetAction);
+    return Transition ? *Transition : FString();
 }
 
 // ========================================

@@ -4,6 +4,7 @@
 
 #include "GamingMasterySystem.h"
 #include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "FGamingMasterySystem"
@@ -161,6 +162,22 @@ UGamingMasterySystem::UGamingMasterySystem()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickInterval = 0.1f; // 10Hz update rate
+
+    CounterStrategyVocabulary = {
+        TEXT("aggressive_pressure"), TEXT("bait_and_punish"), TEXT("defensive_counterattack"),
+        TEXT("zoning"), TEXT("tempo_disruption"), TEXT("mixup_offense"), TEXT("resource_denial"),
+        TEXT("space_control")
+    };
+
+    CounterStrategyPromptTemplate = TEXT(
+        "You are Deep Tree Echo, playing against an opponent in a real-time game. "
+        "What you have observed about them over {observations} observations (model confidence {model_confidence}):\n"
+        "- behavioural tendencies (action: frequency): {tendencies}\n"
+        "- preferred strategies: {preferred}\n"
+        "- weaknesses identified: {weaknesses}\n"
+        "- estimated skill: {opponent_skill} (0 = novice, 1 = expert)\n"
+        "Choose the one strategy you will use to counter this opponent. It must be exactly one of: {strategies}. "
+        "Reply with only a JSON object: {\"strategy\": \"<strategy>\"}");
 }
 
 void UGamingMasterySystem::BeginPlay()
@@ -602,29 +619,119 @@ TArray<FString> UGamingMasterySystem::GetOpponentWeaknesses(const FString& Oppon
     return OpponentModels[OpponentID].IdentifiedWeaknesses;
 }
 
-FString UGamingMasterySystem::GetCounterStrategy(const FString& OpponentID) const
+void UGamingMasterySystem::RequestCounterStrategy(const FString& OpponentID)
 {
-    if (!OpponentModels.Contains(OpponentID))
+    const FOpponentModel* Model = OpponentModels.Find(OpponentID);
+    if (!Model || Model->ObservationCount == 0 || Model->BehavioralTendencies.Num() == 0)
     {
-        return TEXT("");
+        FailCounterStrategyRequest(OpponentID, TEXT("no observed opponent behaviour to counter"));
+        return;
     }
-    
-    const FOpponentModel& Model = OpponentModels[OpponentID];
-    
-    // Find most common opponent strategy
-    FString MostCommonStrategy;
-    float MaxTendency = 0.0f;
-    for (const auto& Pair : Model.BehavioralTendencies)
+
+    // Strategies the character knows: the strategy vocabulary plus every response in its pattern library
+    TArray<FString> Offered;
+    for (const FString& Strategy : CounterStrategyVocabulary)
     {
-        if (Pair.Value > MaxTendency)
+        if (!Strategy.IsEmpty()) { Offered.AddUnique(Strategy); }
+    }
+    for (const FStrategicPattern& Pattern : StrategicPatterns)
+    {
+        for (const FString& Response : Pattern.RecommendedResponses)
         {
-            MaxTendency = Pair.Value;
-            MostCommonStrategy = Pair.Key;
+            if (!Response.IsEmpty()) { Offered.AddUnique(Response); }
         }
     }
-    
-    // Return counter-strategy (in full implementation, this would use a strategy database)
-    return FString::Printf(TEXT("Counter_%s"), *MostCommonStrategy);
+    if (Offered.Num() == 0)
+    {
+        FailCounterStrategyRequest(OpponentID, TEXT("no known strategies to offer (CounterStrategyVocabulary and pattern responses are empty)"));
+        return;
+    }
+
+    TArray<TPair<FString, float>> Tendencies;
+    for (const auto& Pair : Model->BehavioralTendencies)
+    {
+        Tendencies.Add(TPair<FString, float>(Pair.Key, Pair.Value));
+    }
+    Tendencies.Sort([](const TPair<FString, float>& A, const TPair<FString, float>& B) { return A.Value > B.Value; });
+    TArray<FString> TendencyText;
+    for (const TPair<FString, float>& T : Tendencies)
+    {
+        TendencyText.Add(FString::Printf(TEXT("%s %.2f"), *T.Key, T.Value));
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("tendencies"), FString::Join(TendencyText, TEXT(", ")));
+    Slots.Add(TEXT("preferred"), Model->PreferredStrategies.Num() > 0 ? FString::Join(Model->PreferredStrategies, TEXT(", ")) : FString(TEXT("none identified")));
+    Slots.Add(TEXT("weaknesses"), Model->IdentifiedWeaknesses.Num() > 0 ? FString::Join(Model->IdentifiedWeaknesses, TEXT(", ")) : FString(TEXT("none identified")));
+    Slots.Add(TEXT("opponent_skill"), FString::Printf(TEXT("%.2f"), Model->EstimatedSkillLevel));
+    Slots.Add(TEXT("observations"), FString::FromInt(Model->ObservationCount));
+    Slots.Add(TEXT("model_confidence"), FString::Printf(TEXT("%.2f"), Model->ModelConfidence));
+    Slots.Add(TEXT("strategies"), FString::Join(Offered, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(CounterStrategyPromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++CounterStrategyRequestCounter;
+    CounterStrategyRequestSerials.Add(OpponentID, RequestSerial);
+    TWeakObjectPtr<UGamingMasterySystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial, OpponentID, Offered](bool bSuccess, const FString& TextOrError)
+        {
+            if (UGamingMasterySystem* Self = WeakThis.Get())
+            {
+                Self->HandleCounterStrategyReply(RequestSerial, OpponentID, Offered, bSuccess, TextOrError);
+            }
+        }), 0.6f);
+}
+
+void UGamingMasterySystem::HandleCounterStrategyReply(int32 RequestSerial, const FString& OpponentID,
+                                                      TArray<FString> OfferedStrategies, bool bSuccess, const FString& TextOrError)
+{
+    if (CounterStrategyRequestSerials.FindRef(OpponentID) != RequestSerial)
+    {
+        return; // superseded by a newer request for this opponent
+    }
+
+    if (!bSuccess)
+    {
+        FailCounterStrategyRequest(OpponentID, TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Strategy;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("strategy"), Strategy))
+    {
+        FailCounterStrategyRequest(OpponentID, FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+
+    Strategy.TrimStartAndEndInline();
+    const FString* Known = OfferedStrategies.FindByPredicate(
+        [&Strategy](const FString& Candidate) { return Candidate.Equals(Strategy, ESearchCase::IgnoreCase); });
+    if (!Known)
+    {
+        FailCounterStrategyRequest(OpponentID, FString::Printf(TEXT("model chose a strategy outside the vocabulary: %s"), *Strategy));
+        return;
+    }
+
+    LastCounterStrategyError.Reset();
+    ModelCounterStrategies.Add(OpponentID, *Known);
+    OnCounterStrategyChosen.Broadcast(OpponentID, *Known);
+}
+
+void UGamingMasterySystem::FailCounterStrategyRequest(const FString& OpponentID, const FString& Error)
+{
+    LastCounterStrategyError = Error;
+    UE_LOG(LogTemp, Error, TEXT("GamingMasterySystem: no model counter-strategy for '%s': %s"), *OpponentID, *Error);
+    OnCounterStrategyRequestFailed.Broadcast(OpponentID, Error);
+}
+
+FString UGamingMasterySystem::GetCounterStrategy(const FString& OpponentID) const
+{
+    // Only the model's last answer for this opponent; nothing is derived from a template
+    const FString* Strategy = ModelCounterStrategies.Find(OpponentID);
+    return Strategy ? *Strategy : FString();
 }
 
 // ========================================
