@@ -420,18 +420,10 @@ void UCubismEnhancedFeatures::GenerateGlitchEffect(UCubismSDKIntegration* Model,
     // Store in DTE-specific state
     Model->GlitchIntensity = FMath::Clamp(Severity, 0.0f, 1.0f);
 
+    // Purely visual render effect. The glitch never moves the character's head:
+    // head pose belongs to the character and comes only from the model
+    // (RequestModelFacialParameters).
     Model->SetParameterValue(TEXT("ParamGlitchIntensity"), Model->GlitchIntensity);
-
-    // Random displacement during glitch
-    if (Severity > 0.5f)
-    {
-        FRandomStream RandStream(FPlatformTime::Cycles());
-        const float GlitchX = RandStream.FRandRange(-10.0f, 10.0f) * Severity;
-        const float GlitchY = RandStream.FRandRange(-10.0f, 10.0f) * Severity;
-
-        Model->SetParameterValue(TEXT("ParamAngleX"), GlitchX);
-        Model->SetParameterValue(TEXT("ParamAngleY"), GlitchY);
-    }
 }
 
 void UCubismEnhancedFeatures::ApplyHairShimmer(UCubismSDKIntegration* Model, float Time, float Intensity)
