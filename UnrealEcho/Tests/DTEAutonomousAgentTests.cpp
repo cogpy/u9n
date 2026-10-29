@@ -1007,3 +1007,39 @@ bool FIntegration_AgentRewardTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+// ============================================================
+// RL bridge — an untrained policy chooses no action for the character
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRLBridge_TrainedGateTest,
+    "DTE.RLBridge.UntrainedPolicyChoosesNothing",
+    DTE_TEST_FLAGS)
+
+bool FRLBridge_TrainedGateTest::RunTest(const FString& Parameters)
+{
+    UReinforcementLearningBridge* RL = NewObject<UReinforcementLearningBridge>();
+    TestNotNull(TEXT("RL bridge should be created"), RL);
+    if (!RL) { return false; }
+
+    const TArray<float> State = { 0.2f, 0.5f, 0.8f };
+    FRLAction Action;
+    TestFalse(TEXT("Untrained policy is not trained"), RL->IsPolicyTrained());
+    TestFalse(TEXT("Untrained policy selects no action"), RL->SelectTrainedAction(State, Action));
+
+    RL->MinLearningUpdatesForTrainedPolicy = 10;
+    for (int32 i = 0; i < 10; ++i)
+    {
+        RL->UpdateQValue(State, 3, 1.0f);
+    }
+    TestTrue(TEXT("Policy is trained after enough learning updates"), RL->IsPolicyTrained());
+    TestTrue(TEXT("Trained policy selects an action for a learned state"), RL->SelectTrainedAction(State, Action));
+    TestEqual(TEXT("Trained action is the learned greedy action"), Action.ActionIndex, 3);
+
+    const TArray<float> Unseen = { -0.9f, 0.0f, 0.9f };
+    TestFalse(TEXT("No action for a state the policy never learned"), RL->SelectTrainedAction(Unseen, Action));
+
+    RL->ResetLearning();
+    TestFalse(TEXT("Reset policy is untrained again"), RL->IsPolicyTrained());
+    return true;
+}

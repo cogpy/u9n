@@ -326,6 +326,38 @@ FRLAction UReinforcementLearningBridge::GetGreedyAction(const TArray<float>& Sta
     return Action;
 }
 
+bool UReinforcementLearningBridge::IsPolicyTrained() const
+{
+    return LearningUpdateCount >= FMath::Max(1, MinLearningUpdatesForTrainedPolicy);
+}
+
+bool UReinforcementLearningBridge::SelectTrainedAction(const TArray<float>& State, FRLAction& OutAction) const
+{
+    OutAction = FRLAction();
+    if (!IsPolicyTrained() || NumActions <= 0)
+    {
+        return false;
+    }
+    const FString StateKey = StateToKey(State);
+    if (!QTable.Contains(StateKey))
+    {
+        return false; // no learned values for this state
+    }
+    const FRLAction Greedy = GetGreedyAction(State);
+    if (!LearnedStateActions.Contains(FString::Printf(TEXT("%s#%d"), *StateKey, Greedy.ActionIndex)))
+    {
+        return false; // the best value here is still an untrained default
+    }
+    OutAction = Greedy;
+    return true;
+}
+
+void UReinforcementLearningBridge::MarkLearned(const FString& StateKey, int32 ActionIndex)
+{
+    LearnedStateActions.Add(FString::Printf(TEXT("%s#%d"), *StateKey, ActionIndex));
+    ++LearningUpdateCount;
+}
+
 FRLAction UReinforcementLearningBridge::SelectEpsilonGreedy(const TArray<float>& State)
 {
     float EffectiveEpsilon = GetEffectiveExplorationRate();
@@ -593,6 +625,7 @@ void UReinforcementLearningBridge::ApplyQLearningUpdate(const FTransition& Trans
 
     QValues[Transition.Action.ActionIndex] = NewQ;
     QTable.Add(StateKey, QValues);
+    MarkLearned(StateKey, Transition.Action.ActionIndex);
 }
 
 void UReinforcementLearningBridge::ApplySARSAUpdate(const FTransition& Transition)
@@ -615,6 +648,7 @@ void UReinforcementLearningBridge::ApplySARSAUpdate(const FTransition& Transitio
 
     QValues[Transition.Action.ActionIndex] = NewQ;
     QTable.Add(StateKey, QValues);
+    MarkLearned(StateKey, Transition.Action.ActionIndex);
 }
 
 void UReinforcementLearningBridge::UpdateQValue(const TArray<float>& State, int32 ActionIndex, float Target)
@@ -627,6 +661,7 @@ void UReinforcementLearningBridge::UpdateQValue(const TArray<float>& State, int3
         float EffectiveLR = GetEffectiveLearningRate();
         QValues[ActionIndex] += EffectiveLR * (Target - QValues[ActionIndex]);
         QTable.Add(StateKey, QValues);
+        MarkLearned(StateKey, ActionIndex);
     }
 }
 
@@ -985,6 +1020,8 @@ void UReinforcementLearningBridge::LoadPolicy(const TArray<float>& PolicyData)
 void UReinforcementLearningBridge::ResetLearning()
 {
     QTable.Empty();
+    LearnedStateActions.Empty();
+    LearningUpdateCount = 0;
     ClearReplayBuffer();
     TotalSteps = 0;
     TotalEpisodes = 0;

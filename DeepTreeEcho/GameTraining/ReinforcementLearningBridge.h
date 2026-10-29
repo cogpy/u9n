@@ -298,6 +298,31 @@ public:
     UFUNCTION(BlueprintPure, Category = "Actions")
     FRLAction GetGreedyAction(const TArray<float>& State) const;
 
+    /**
+     * True once the policy has been trained: at least MinLearningUpdatesForTrainedPolicy Q-value
+     * updates have been applied by the learning code. An untrained policy (empty or optimistic
+     * default Q-table) must not drive the character.
+     */
+    UFUNCTION(BlueprintPure, Category = "Actions")
+    bool IsPolicyTrained() const;
+
+    /**
+     * The action the trained policy chooses for State, with no exploration: the greedy action,
+     * only if the policy is trained (IsPolicyTrained), this state has learned Q-values, and the
+     * greedy action's own Q-value was learned. Returns false (and leaves OutAction empty)
+     * otherwise - the caller must then produce no action.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Actions")
+    bool SelectTrainedAction(const TArray<float>& State, FRLAction& OutAction) const;
+
+    /** Learning updates required before the policy counts as trained (see IsPolicyTrained) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (ClampMin = "1"))
+    int32 MinLearningUpdatesForTrainedPolicy = 500;
+
+    /** Q-value updates applied so far (training progress) */
+    UFUNCTION(BlueprintPure, Category = "Statistics")
+    int32 GetLearningUpdateCount() const { return LearningUpdateCount; }
+
     // ========================================
     // LEARNING
     // ========================================
@@ -465,6 +490,14 @@ protected:
 
     // Q-table (for tabular Q-learning)
     TMap<FString, TArray<float>> QTable;
+
+    // (state key, action index) pairs whose Q-value was set by a learning update ("<key>#<index>")
+    TSet<FString> LearnedStateActions;
+
+    // Q-value updates applied by learning code
+    int32 LearningUpdateCount = 0;
+
+    void MarkLearned(const FString& StateKey, int32 ActionIndex);
 
     // Experience replay buffer
     TArray<FTransition> ReplayBuffer;

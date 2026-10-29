@@ -786,12 +786,28 @@ void UVirtualCNS::ProcessSubcortical(const FControllerInputState& Input,
         {
             State = ControllerInterface->InputToSensoryVector(Input);
         }
-        // The RL bridge selects and emits the best-known action
-        const FRLAction Action = RLBridge->SelectAction(State);
-        const FControllerOutputCommand Cmd = RLBridge->ActionToControllerOutput(Action);
-        if (Cmd.ActionName.Len() > 0)
+        // Only a trained policy moves the character. Outside explicit training mode
+        // (RLBridge->StartTraining) the action is the trained greedy choice with no exploration;
+        // an untrained policy, or a state it has not learned, produces no motor command.
+        FRLAction Action;
+        bool bHaveAction = false;
+        if (RLBridge->IsTraining())
         {
-            EnqueueMotorCommand(Cmd, ECNSPathwayTier::Brainstem);
+            // Labelled training mode: the policy (including its exploration) drives the body so it can learn
+            Action = RLBridge->SelectAction(State);
+            bHaveAction = true;
+        }
+        else
+        {
+            bHaveAction = RLBridge->SelectTrainedAction(State, Action);
+        }
+        if (bHaveAction)
+        {
+            const FControllerOutputCommand Cmd = RLBridge->ActionToControllerOutput(Action);
+            if (Cmd.ActionName.Len() > 0)
+            {
+                EnqueueMotorCommand(Cmd, ECNSPathwayTier::Brainstem);
+            }
         }
     }
 }
