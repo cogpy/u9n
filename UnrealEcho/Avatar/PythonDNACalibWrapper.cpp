@@ -1,18 +1,157 @@
 // PythonDNACalibWrapper.cpp
 // Deep Tree Echo - Python DNACalib Integration Implementation
 // Copyright (c) 2025 Deep Tree Echo Project
+//
+// Every operation runs the real MetaHuman DNACalib Python bindings (dna, dnacalib) in a Python
+// process and parses its JSON reply. There is no simulation mode: without Python or the bindings
+// the wrapper reports failure with the reason.
 
 #include "PythonDNACalibWrapper.h"
 #include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/FileManager.h"
-
-// Note: This implementation provides a simulation of Python embedding.
-// In a production environment, this would use the Python C API (Python.h)
-// or a binding library like pybind11 to actually embed Python.
-// For now, we simulate the behavior to allow compilation and testing.
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPythonDNA, Log, All);
+
+namespace
+{
+    // Bridge script run by the wrapper: one operation per process, one JSON object on stdout.
+    const char* const DNACalibBridgeScript = R"PY(# Deep Tree Echo - DNACalib bridge (written by FPythonDNACalibWrapper; runs the real dna/dnacalib bindings)
+# usage: python dnacalib_bridge.py <bindings_dir|-> <op> [args...]; prints one JSON object
+import json, sys
+
+def out(obj):
+    sys.stdout.write(json.dumps(obj))
+    sys.stdout.flush()
+
+def fail(msg):
+    out({"ok": False, "error": msg})
+    sys.exit(1)
+
+def main(argv):
+    if len(argv) < 2:
+        fail("usage: dnacalib_bridge.py <bindings_dir|-> <op> [args...]")
+    if argv[0] != "-":
+        for p in argv[0].split(";"):
+            if p:
+                sys.path.insert(0, p)
+    try:
+        import dna
+        import dnacalib
+    except Exception as e:
+        fail("cannot import the dna/dnacalib Python bindings: %s" % e)
+    op, args = argv[1], argv[2:]
+
+    def check(what):
+        if not dna.Status.isOk():
+            fail("%s: %s" % (what, dna.Status.get().message))
+
+    def load(path):
+        stream = dna.FileStream(path, dna.FileStream.AccessMode_Read, dna.FileStream.OpenMode_Binary)
+        reader = dna.BinaryStreamReader(stream, dna.DataLayer_All)
+        reader.read()
+        check("reading " + path)
+        return dnacalib.DNACalibDNAReader(reader)
+
+    def save(reader, path):
+        stream = dna.FileStream(path, dna.FileStream.AccessMode_Write, dna.FileStream.OpenMode_Binary)
+        writer = dna.BinaryStreamWriter(stream)
+        writer.setFrom(reader)
+        writer.write()
+        check("writing " + path)
+
+    def names(count, get):
+        return [get(i) for i in range(count)]
+
+    def index_of(count, get, name, kind):
+        for i in range(count):
+            if get(i) == name:
+                return i
+        fail("%s '%s' not found in the DNA" % (kind, name))
+
+    if op == "probe":
+        out({"ok": True})
+        return
+    if not args:
+        fail("missing DNA path")
+    path = args[0]
+    r = load(path)
+    if op == "info":
+        out({"ok": True, "db_name": r.getDBName(),
+             "joints": names(r.getJointCount(), r.getJointName),
+             "blend_shapes": names(r.getBlendShapeChannelCount(), r.getBlendShapeChannelName),
+             "meshes": names(r.getMeshCount(), r.getMeshName),
+             "lods": r.getLODCount()})
+        return
+    if op == "save":
+        if len(args) < 2:
+            fail("save needs an output path")
+        save(r, args[1])
+        out({"ok": True})
+        return
+    if op == "rename_joint" and len(args) == 3:
+        index_of(r.getJointCount(), r.getJointName, args[1], "joint")
+        dnacalib.RenameJointCommand(args[1], args[2]).run(r)
+    elif op == "remove_joint" and len(args) == 2:
+        dnacalib.RemoveJointCommand(index_of(r.getJointCount(), r.getJointName, args[1], "joint")).run(r)
+    elif op == "rename_mesh" and len(args) == 3:
+        index_of(r.getMeshCount(), r.getMeshName, args[1], "mesh")
+        dnacalib.RenameMeshCommand(args[1], args[2]).run(r)
+    elif op == "remove_mesh" and len(args) == 2:
+        dnacalib.RemoveMeshCommand(index_of(r.getMeshCount(), r.getMeshName, args[1], "mesh")).run(r)
+    elif op == "clear_blend_shapes" and len(args) == 1:
+        dnacalib.ClearBlendShapesCommand().run(r)
+    elif op == "remove_lod" and len(args) == 2:
+        lod = int(args[1])
+        count = r.getLODCount()
+        if lod < 0 or lod >= count or count < 2:
+            fail("cannot remove LOD %d from a DNA with %d LODs" % (lod, count))
+        cmd = dnacalib.SetLODsCommand()
+        cmd.setLODs([i for i in range(count) if i != lod])
+        cmd.run(r)
+    else:
+        fail("unknown operation or wrong arguments: %s %s" % (op, args[1:]))
+    save(r, path)
+    out({"ok": True})
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except SystemExit:
+        raise
+    except Exception as e:
+        fail("%s: %s" % (type(e).__name__, e))
+)PY";
+
+    FString QuoteArg(const FString& Arg)
+    {
+        return TEXT("\"") + Arg.Replace(TEXT("\""), TEXT("\\\"")) + TEXT("\"");
+    }
+
+    TArray<FString> ReadStringArray(const TSharedPtr<FJsonObject>& Json, const TCHAR* Field)
+    {
+        TArray<FString> Result;
+        const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+        if (Json.IsValid() && Json->TryGetArrayField(Field, Items) && Items)
+        {
+            for (const TSharedPtr<FJsonValue>& Item : *Items)
+            {
+                FString Value;
+                if (Item.IsValid() && Item->TryGetString(Value))
+                {
+                    Result.Add(Value);
+                }
+            }
+        }
+        return Result;
+    }
+}
 
 // ========================================
 // Constructor / Destructor
@@ -20,15 +159,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogPythonDNA, Log, All);
 
 FPythonDNACalibWrapper::FPythonDNACalibWrapper()
     : bInitialized(false)
-    , PythonInterpreter(nullptr)
-    , PythonMainModule(nullptr)
-    , PythonMainDict(nullptr)
-    , DNAModule(nullptr)
-    , DNACalibModule(nullptr)
-    , DNAReaderObject(nullptr)
-    , DNAWriterObject(nullptr)
-    , DNAStreamReaderObject(nullptr)
-    , DNAStreamWriterObject(nullptr)
+    , bProbing(false)
+    , bInfoValid(false)
 {
 }
 
@@ -53,122 +185,195 @@ bool FPythonDNACalibWrapper::Initialize(const FString& DNACalibPath)
     }
 
     DNACalibRootPath = DNACalibPath;
-
-    // Verify DNACalib path exists
     if (!IFileManager::Get().DirectoryExists(*DNACalibPath))
     {
         SetLastError(FString::Printf(TEXT("DNACalib path does not exist: %s"), *DNACalibPath));
         return false;
     }
 
-    // Initialize Python interpreter
-    if (!InitializePythonInterpreter())
+    PythonExecutable = FPlatformMisc::GetEnvironmentVariable(TEXT("DNACALIB_PYTHON"));
+    if (PythonExecutable.IsEmpty())
     {
+        PythonExecutable = PLATFORM_WINDOWS ? TEXT("python") : TEXT("python3");
+    }
+
+    // Write the bridge script
+    const FString WorkDir = FPaths::ProjectSavedDir() / TEXT("DNACalib");
+    IFileManager::Get().MakeDirectory(*WorkDir, true);
+    BridgeScriptPath = WorkDir / TEXT("dnacalib_bridge.py");
+    if (!FFileHelper::SaveStringToFile(FString(UTF8_TO_TCHAR(DNACalibBridgeScript)), *BridgeScriptPath))
+    {
+        SetLastError(FString::Printf(TEXT("cannot write the DNACalib bridge script to %s"), *BridgeScriptPath));
         return false;
     }
 
-    // Setup Python path to include DNACalib modules
-    if (!SetupPythonPath())
+    // Find the bindings: an explicit path, else the DNACalib folder and its lib/ subfolders
+    TArray<FString> Candidates;
+    const FString EnvPath = FPlatformMisc::GetEnvironmentVariable(TEXT("DNACALIB_PYTHON_PATH"));
+    if (!EnvPath.IsEmpty())
     {
-        Shutdown();
-        return false;
+        Candidates.Add(EnvPath);
+    }
+    else
+    {
+        const TCHAR* Platform = PLATFORM_WINDOWS ? TEXT("windows") : TEXT("linux");
+        Candidates.Add(DNACalibPath);
+        Candidates.Add(DNACalibPath / TEXT("lib"));
+        for (const TCHAR* Maya : { TEXT("Maya2024"), TEXT("Maya2023"), TEXT("Maya2022") })
+        {
+            Candidates.Add(DNACalibPath / TEXT("lib") / Maya / Platform);
+        }
     }
 
-    // Load DNACalib modules
-    if (!LoadDNACalibModules())
+    TArray<FString> ProbeErrors;
+    bProbing = true; // a candidate that fails is not an error yet
+    for (const FString& Candidate : Candidates)
     {
-        Shutdown();
-        return false;
+        BindingsPath = Candidate;
+        TSharedPtr<FJsonObject> Reply;
+        const bool bFound = RunBridge(TEXT("probe"), {}, Reply);
+        if (bFound)
+        {
+            bProbing = false;
+            bInitialized = true;
+            LastError.Reset();
+            UE_LOG(LogPythonDNA, Log, TEXT("DNACalib Python bindings found in %s (%s)"), *BindingsPath, *PythonExecutable);
+            return true;
+        }
+        ProbeErrors.Add(FString::Printf(TEXT("%s: %s"), *Candidate, *LastError));
     }
+    bProbing = false;
 
-    bInitialized = true;
-    UE_LOG(LogPythonDNA, Log, TEXT("Python DNACalib wrapper initialized successfully"));
-    return true;
+    BindingsPath.Reset();
+    SetLastError(FString::Printf(TEXT("the dna/dnacalib Python bindings could not be imported with %s (build them from MetaHuman-DNA-Calibration/dnacalib or set DNACALIB_PYTHON_PATH). Tried: %s"),
+        *PythonExecutable, *FString::Join(ProbeErrors, TEXT(" | "))));
+    return false;
 }
 
 void FPythonDNACalibWrapper::Shutdown()
 {
-    if (!bInitialized)
+    if (!WorkingDNAPath.IsEmpty())
     {
-        return;
+        IFileManager::Get().Delete(*WorkingDNAPath, false, true, true);
+    }
+    WorkingDNAPath.Reset();
+    LoadedDNAPath.Reset();
+    bInfoValid = false;
+    CachedDBName.Reset();
+    CachedJointNames.Reset();
+    CachedBlendShapeNames.Reset();
+    CachedMeshNames.Reset();
+
+    if (bInitialized)
+    {
+        UE_LOG(LogPythonDNA, Log, TEXT("Python DNACalib wrapper shut down"));
+    }
+    bInitialized = false;
+}
+
+// ========================================
+// Process plumbing
+// ========================================
+
+bool FPythonDNACalibWrapper::RunPythonFile(const FString& ScriptPath, const TArray<FString>& Args, FString& OutStdOut)
+{
+    FString Params = QuoteArg(ScriptPath);
+    for (const FString& Arg : Args)
+    {
+        Params += TEXT(" ") + QuoteArg(Arg);
     }
 
-    CleanupPythonObjects();
-
-    // In production, this would call Py_Finalize()
-    PythonInterpreter = nullptr;
-    PythonMainModule = nullptr;
-    PythonMainDict = nullptr;
-    DNAModule = nullptr;
-    DNACalibModule = nullptr;
-
-    bInitialized = false;
-    UE_LOG(LogPythonDNA, Log, TEXT("Python DNACalib wrapper shut down"));
-}
-
-bool FPythonDNACalibWrapper::InitializePythonInterpreter()
-{
-    // In production, this would:
-    // 1. Call Py_Initialize()
-    // 2. Import the __main__ module
-    // 3. Get the __main__ dict
-
-    // Simulation: Create placeholder
-    PythonInterpreter = reinterpret_cast<void*>(1);
-    PythonMainModule = reinterpret_cast<void*>(2);
-    PythonMainDict = reinterpret_cast<void*>(3);
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Python interpreter initialized (simulation mode)"));
+    int32 ReturnCode = -1;
+    FString StdErr;
+    OutStdOut.Reset();
+    if (!FPlatformProcess::ExecProcess(*PythonExecutable, *Params, &ReturnCode, &OutStdOut, &StdErr))
+    {
+        SetLastError(FString::Printf(TEXT("could not run %s"), *PythonExecutable));
+        return false;
+    }
+    if (ReturnCode != 0 && OutStdOut.TrimStartAndEnd().IsEmpty())
+    {
+        SetLastError(FString::Printf(TEXT("%s exited with code %d: %s"), *PythonExecutable, ReturnCode, *StdErr.Left(500)));
+        return false;
+    }
     return true;
 }
 
-bool FPythonDNACalibWrapper::SetupPythonPath()
+bool FPythonDNACalibWrapper::RunBridge(const FString& Op, const TArray<FString>& Args, TSharedPtr<FJsonObject>& OutJson)
 {
-    // In production, this would add DNACalib paths to sys.path:
-    // import sys
-    // sys.path.insert(0, DNACalibRootPath)
-    // sys.path.insert(0, DNACalibRootPath + "/lib")
+    TArray<FString> AllArgs;
+    AllArgs.Add(BindingsPath.IsEmpty() ? FString(TEXT("-")) : BindingsPath);
+    AllArgs.Add(Op);
+    AllArgs.Append(Args);
 
-    FString LibPath = DNACalibRootPath / TEXT("lib");
-    FString DNCPath = DNACalibRootPath / TEXT("dnacalib");
+    FString StdOut;
+    if (!RunPythonFile(BridgeScriptPath, AllArgs, StdOut))
+    {
+        return false;
+    }
 
-    UE_LOG(LogPythonDNA, Log, TEXT("Added to Python path: %s, %s"), *LibPath, *DNCPath);
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(StdOut);
+    if (!FJsonSerializer::Deserialize(Reader, OutJson) || !OutJson.IsValid())
+    {
+        SetLastError(FString::Printf(TEXT("DNACalib bridge '%s' gave no JSON reply: %s"), *Op, *StdOut.Left(300)));
+        return false;
+    }
+    bool bOk = false;
+    if (!OutJson->TryGetBoolField(TEXT("ok"), bOk) || !bOk)
+    {
+        FString Error;
+        OutJson->TryGetStringField(TEXT("error"), Error);
+        SetLastError(FString::Printf(TEXT("DNACalib %s failed: %s"), *Op, Error.IsEmpty() ? TEXT("(no reason given)") : *Error));
+        return false;
+    }
     return true;
 }
 
-bool FPythonDNACalibWrapper::LoadDNACalibModules()
+bool FPythonDNACalibWrapper::RefreshInfo()
 {
-    // In production, this would:
-    // import dna
-    // import dnacalib
+    if (bInfoValid)
+    {
+        return true;
+    }
+    if (!bInitialized || WorkingDNAPath.IsEmpty())
+    {
+        SetLastError(TEXT("No DNA loaded"));
+        return false;
+    }
 
-    // Simulation: Create placeholders
-    DNAModule = reinterpret_cast<void*>(4);
-    DNACalibModule = reinterpret_cast<void*>(5);
-
-    UE_LOG(LogPythonDNA, Log, TEXT("DNACalib modules loaded (simulation mode)"));
+    TSharedPtr<FJsonObject> Reply;
+    if (!RunBridge(TEXT("info"), { WorkingDNAPath }, Reply))
+    {
+        return false;
+    }
+    Reply->TryGetStringField(TEXT("db_name"), CachedDBName);
+    CachedJointNames = ReadStringArray(Reply, TEXT("joints"));
+    CachedBlendShapeNames = ReadStringArray(Reply, TEXT("blend_shapes"));
+    CachedMeshNames = ReadStringArray(Reply, TEXT("meshes"));
+    bInfoValid = true;
     return true;
 }
 
-bool FPythonDNACalibWrapper::CreateDNAReader()
+bool FPythonDNACalibWrapper::RunEdit(const FString& Op, const TArray<FString>& Args, const FString& Description)
 {
-    // In production, this would create the DNA reader objects:
-    // stream = dna.FileStream(path, dna.FileStream.AccessMode_Read, dna.FileStream.OpenMode_Binary)
-    // reader = dna.BinaryStreamReader(stream, dna.DataLayer_All)
+    if (!bInitialized || WorkingDNAPath.IsEmpty())
+    {
+        SetLastError(TEXT("No DNA loaded"));
+        return false;
+    }
 
-    DNAStreamReaderObject = reinterpret_cast<void*>(6);
-    DNAReaderObject = reinterpret_cast<void*>(7);
+    TArray<FString> AllArgs;
+    AllArgs.Add(WorkingDNAPath);
+    AllArgs.Append(Args);
+    TSharedPtr<FJsonObject> Reply;
+    if (!RunBridge(Op, AllArgs, Reply))
+    {
+        return false;
+    }
 
+    bInfoValid = false; // the working copy changed
+    UE_LOG(LogPythonDNA, Log, TEXT("%s"), *Description);
     return true;
-}
-
-void FPythonDNACalibWrapper::CleanupPythonObjects()
-{
-    // In production, this would decref all Python objects
-    DNAReaderObject = nullptr;
-    DNAWriterObject = nullptr;
-    DNAStreamReaderObject = nullptr;
-    DNAStreamWriterObject = nullptr;
 }
 
 // ========================================
@@ -182,59 +387,59 @@ bool FPythonDNACalibWrapper::LoadDNA(const FString& DNAPath)
         SetLastError(TEXT("Wrapper not initialized"));
         return false;
     }
-
     if (!FPaths::FileExists(DNAPath))
     {
         SetLastError(FString::Printf(TEXT("DNA file not found: %s"), *DNAPath));
         return false;
     }
 
-    // In production, this would:
-    // 1. Create FileStream in read mode
-    // 2. Create BinaryStreamReader
-    // 3. Read the DNA data
-
-    if (!CreateDNAReader())
+    // Read the DNA with the bindings and write the working copy edits will be applied to
+    const FString NewWorking = FPaths::ProjectSavedDir() / TEXT("DNACalib") /
+        FString::Printf(TEXT("working_%s.dna"), *FGuid::NewGuid().ToString());
+    TSharedPtr<FJsonObject> Reply;
+    if (!RunBridge(TEXT("save"), { DNAPath, NewWorking }, Reply))
     {
         return false;
     }
 
-    UE_LOG(LogPythonDNA, Log, TEXT("Loaded DNA file: %s"), *DNAPath);
+    if (!WorkingDNAPath.IsEmpty())
+    {
+        IFileManager::Get().Delete(*WorkingDNAPath, false, true, true);
+    }
+    WorkingDNAPath = NewWorking;
+    LoadedDNAPath = DNAPath;
+    bInfoValid = false;
+    if (!RefreshInfo())
+    {
+        return false;
+    }
+
+    UE_LOG(LogPythonDNA, Log, TEXT("Loaded DNA file: %s (%s, %d joints, %d blend shapes, %d meshes)"), *DNAPath,
+        *CachedDBName, CachedJointNames.Num(), CachedBlendShapeNames.Num(), CachedMeshNames.Num());
     return true;
 }
 
 bool FPythonDNACalibWrapper::SaveDNA(const FString& DNAPath)
 {
-    if (!bInitialized || !DNAReaderObject)
+    if (!bInitialized || WorkingDNAPath.IsEmpty())
     {
         SetLastError(TEXT("No DNA loaded"));
         return false;
     }
 
-    // In production, this would:
-    // 1. Create FileStream in write mode
-    // 2. Create BinaryStreamWriter
-    // 3. Write the DNA data
-
-    DNAStreamWriterObject = reinterpret_cast<void*>(8);
-    DNAWriterObject = reinterpret_cast<void*>(9);
-
+    TSharedPtr<FJsonObject> Reply;
+    if (!RunBridge(TEXT("save"), { WorkingDNAPath, DNAPath }, Reply))
+    {
+        return false;
+    }
     UE_LOG(LogPythonDNA, Log, TEXT("Saved DNA file: %s"), *DNAPath);
     return true;
 }
 
 FString FPythonDNACalibWrapper::GetDNADatabaseName()
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return TEXT("Unknown");
-    }
-
-    // In production, this would call:
-    // reader.getDBName()
-
-    // Return simulated value - would detect DHI vs MH.4
-    return TEXT("DHI");
+    // The rig definition the DNA reports (reader.getDBName()), or empty if it could not be read
+    return RefreshInfo() ? CachedDBName : FString();
 }
 
 // ========================================
@@ -243,151 +448,31 @@ FString FPythonDNACalibWrapper::GetDNADatabaseName()
 
 TArray<FString> FPythonDNACalibWrapper::GetJointNames()
 {
-    TArray<FString> JointNames;
-
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return JointNames;
-    }
-
-    // In production, this would call:
-    // for i in range(reader.getJointCount()):
-    //     jointNames.append(reader.getJointName(i))
-
-    // Return simulated MetaHuman joints
-    JointNames = {
-        TEXT("root"),
-        TEXT("pelvis"),
-        TEXT("spine_01"),
-        TEXT("spine_02"),
-        TEXT("spine_03"),
-        TEXT("spine_04"),
-        TEXT("spine_05"),
-        TEXT("neck_01"),
-        TEXT("neck_02"),
-        TEXT("head"),
-        TEXT("clavicle_l"),
-        TEXT("upperarm_l"),
-        TEXT("lowerarm_l"),
-        TEXT("hand_l"),
-        TEXT("clavicle_r"),
-        TEXT("upperarm_r"),
-        TEXT("lowerarm_r"),
-        TEXT("hand_r"),
-        TEXT("thigh_l"),
-        TEXT("calf_l"),
-        TEXT("foot_l"),
-        TEXT("thigh_r"),
-        TEXT("calf_r"),
-        TEXT("foot_r"),
-        TEXT("FACIAL_C_FacialRoot")
-    };
-
-    return JointNames;
+    return RefreshInfo() ? CachedJointNames : TArray<FString>();
 }
 
 TArray<FString> FPythonDNACalibWrapper::GetBlendShapeNames()
 {
-    TArray<FString> BlendShapeNames;
-
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return BlendShapeNames;
-    }
-
-    // In production, this would iterate through blend shape channels
-    // Return simulated MetaHuman blend shapes
-    BlendShapeNames = {
-        TEXT("brow_down_L"),
-        TEXT("brow_down_R"),
-        TEXT("brow_inner_up_L"),
-        TEXT("brow_inner_up_R"),
-        TEXT("brow_outer_up_L"),
-        TEXT("brow_outer_up_R"),
-        TEXT("eye_blink_L"),
-        TEXT("eye_blink_R"),
-        TEXT("eye_wide_L"),
-        TEXT("eye_wide_R"),
-        TEXT("eye_squint_L"),
-        TEXT("eye_squint_R"),
-        TEXT("nose_sneer_L"),
-        TEXT("nose_sneer_R"),
-        TEXT("cheek_puff_L"),
-        TEXT("cheek_puff_R"),
-        TEXT("mouth_smile_L"),
-        TEXT("mouth_smile_R"),
-        TEXT("mouth_frown_L"),
-        TEXT("mouth_frown_R"),
-        TEXT("mouth_open"),
-        TEXT("mouth_pucker"),
-        TEXT("jaw_open"),
-        TEXT("jaw_forward"),
-        TEXT("tongue_out")
-    };
-
-    return BlendShapeNames;
+    return RefreshInfo() ? CachedBlendShapeNames : TArray<FString>();
 }
 
 TArray<FString> FPythonDNACalibWrapper::GetMeshNames()
 {
-    TArray<FString> MeshNames;
-
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return MeshNames;
-    }
-
-    // In production, this would iterate through meshes
-    // Return simulated MetaHuman meshes
-    MeshNames = {
-        TEXT("head_lod0"),
-        TEXT("head_lod1"),
-        TEXT("head_lod2"),
-        TEXT("head_lod3"),
-        TEXT("teeth_lod0"),
-        TEXT("saliva_lod0"),
-        TEXT("eyeLeft_lod0"),
-        TEXT("eyeRight_lod0"),
-        TEXT("eyeshell_lod0"),
-        TEXT("eyelashes_lod0"),
-        TEXT("eyeOcclusion_lod0"),
-        TEXT("tearLine_lod0"),
-        TEXT("cartilage_lod0")
-    };
-
-    return MeshNames;
+    return RefreshInfo() ? CachedMeshNames : TArray<FString>();
 }
 
 int32 FPythonDNACalibWrapper::GetJointCount()
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return 0;
-    }
-
-    // In production: reader.getJointCount()
     return GetJointNames().Num();
 }
 
 int32 FPythonDNACalibWrapper::GetBlendShapeCount()
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return 0;
-    }
-
-    // In production: reader.getBlendShapeChannelCount()
     return GetBlendShapeNames().Num();
 }
 
 int32 FPythonDNACalibWrapper::GetMeshCount()
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        return 0;
-    }
-
-    // In production: reader.getMeshCount()
     return GetMeshNames().Num();
 }
 
@@ -397,111 +482,32 @@ int32 FPythonDNACalibWrapper::GetMeshCount()
 
 bool FPythonDNACalibWrapper::RenameJoint(const FString& OldName, const FString& NewName)
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        SetLastError(TEXT("No DNA loaded"));
-        return false;
-    }
-
-    // In production, this would use DNACalib commands:
-    // calibrated = dnacalib.DNACalibDNAReader(reader)
-    // command = dnacalib.RenameJointCommand(oldName, newName)
-    // command.run(calibrated)
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Renamed joint: %s -> %s"), *OldName, *NewName);
-    return true;
+    return RunEdit(TEXT("rename_joint"), { OldName, NewName }, FString::Printf(TEXT("Renamed joint: %s -> %s"), *OldName, *NewName));
 }
 
 bool FPythonDNACalibWrapper::RemoveJoint(const FString& JointName)
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        SetLastError(TEXT("No DNA loaded"));
-        return false;
-    }
-
-    // In production, this would use DNACalib commands:
-    // calibrated = dnacalib.DNACalibDNAReader(reader)
-    // command = dnacalib.RemoveJointCommand(jointName)
-    // command.run(calibrated)
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Removed joint: %s"), *JointName);
-    return true;
+    return RunEdit(TEXT("remove_joint"), { JointName }, FString::Printf(TEXT("Removed joint: %s"), *JointName));
 }
 
 bool FPythonDNACalibWrapper::RenameMesh(const FString& OldName, const FString& NewName)
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        SetLastError(TEXT("No DNA loaded"));
-        return false;
-    }
-
-    // In production, this would use DNACalib commands:
-    // calibrated = dnacalib.DNACalibDNAReader(reader)
-    // command = dnacalib.RenameMeshCommand(oldName, newName)
-    // command.run(calibrated)
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Renamed mesh: %s -> %s"), *OldName, *NewName);
-    return true;
+    return RunEdit(TEXT("rename_mesh"), { OldName, NewName }, FString::Printf(TEXT("Renamed mesh: %s -> %s"), *OldName, *NewName));
 }
 
 bool FPythonDNACalibWrapper::RemoveMesh(const FString& MeshName)
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        SetLastError(TEXT("No DNA loaded"));
-        return false;
-    }
-
-    // In production, this would use DNACalib commands:
-    // calibrated = dnacalib.DNACalibDNAReader(reader)
-    // command = dnacalib.RemoveMeshCommand(meshName)
-    // command.run(calibrated)
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Removed mesh: %s"), *MeshName);
-    return true;
+    return RunEdit(TEXT("remove_mesh"), { MeshName }, FString::Printf(TEXT("Removed mesh: %s"), *MeshName));
 }
 
 bool FPythonDNACalibWrapper::ClearBlendShapes()
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        SetLastError(TEXT("No DNA loaded"));
-        return false;
-    }
-
-    // In production, this would use DNACalib commands:
-    // calibrated = dnacalib.DNACalibDNAReader(reader)
-    // command = dnacalib.ClearBlendShapesCommand()
-    // command.run(calibrated)
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Cleared all blend shapes"));
-    return true;
+    return RunEdit(TEXT("clear_blend_shapes"), {}, TEXT("Cleared all blend shapes"));
 }
 
 bool FPythonDNACalibWrapper::RemoveLOD(int32 LODIndex)
 {
-    if (!bInitialized || !DNAReaderObject)
-    {
-        SetLastError(TEXT("No DNA loaded"));
-        return false;
-    }
-
-    if (LODIndex < 0 || LODIndex > 7)
-    {
-        SetLastError(FString::Printf(TEXT("Invalid LOD index: %d"), LODIndex));
-        return false;
-    }
-
-    // In production, this would use DNACalib commands:
-    // calibrated = dnacalib.DNACalibDNAReader(reader)
-    // lodIndices = [LODIndex]
-    // command = dnacalib.PruneLODsCommand(lodIndices)
-    // command.run(calibrated)
-
-    UE_LOG(LogPythonDNA, Log, TEXT("Removed LOD: %d"), LODIndex);
-    return true;
+    return RunEdit(TEXT("remove_lod"), { FString::FromInt(LODIndex) }, FString::Printf(TEXT("Removed LOD: %d"), LODIndex));
 }
 
 // ========================================
@@ -516,10 +522,27 @@ bool FPythonDNACalibWrapper::ExecutePythonScript(const FString& Script)
         return false;
     }
 
-    // In production, this would:
-    // PyRun_SimpleString(Script)
+    // Run the script with the bindings importable; success means it exited cleanly
+    const FString ScriptPath = FPaths::ProjectSavedDir() / TEXT("DNACalib") /
+        FString::Printf(TEXT("script_%s.py"), *FGuid::NewGuid().ToString());
+    const FString Prelude = FString::Printf(TEXT("import sys\nfor _p in %s.split(';'):\n    sys.path.insert(0, _p)\n"),
+        *QuoteArg(BindingsPath.Replace(TEXT("\\"), TEXT("/"))));
+    if (!FFileHelper::SaveStringToFile(Prelude + Script, *ScriptPath))
+    {
+        SetLastError(FString::Printf(TEXT("cannot write the script to %s"), *ScriptPath));
+        return false;
+    }
 
-    UE_LOG(LogPythonDNA, Log, TEXT("Executed Python script: %s"), *Script.Left(100));
+    int32 ReturnCode = -1;
+    FString StdOut, StdErr;
+    const bool bRan = FPlatformProcess::ExecProcess(*PythonExecutable, *QuoteArg(ScriptPath), &ReturnCode, &StdOut, &StdErr);
+    IFileManager::Get().Delete(*ScriptPath, false, true, true);
+    if (!bRan || ReturnCode != 0)
+    {
+        SetLastError(FString::Printf(TEXT("Python script failed (exit %d): %s"), ReturnCode, *StdErr.Left(500)));
+        return false;
+    }
+    UE_LOG(LogPythonDNA, Log, TEXT("Executed Python script (%d chars)"), Script.Len());
     return true;
 }
 
@@ -531,57 +554,47 @@ FString FPythonDNACalibWrapper::CallPythonFunction(const FString& FunctionName, 
         return FString();
     }
 
-    // In production, this would:
-    // 1. Get the function object
-    // 2. Build args tuple
-    // 3. Call PyObject_CallObject
-    // 4. Convert result to string
+    // FunctionName is "module.function"; arguments are passed as strings; the result is str(result)
+    int32 Dot = INDEX_NONE;
+    if (!FunctionName.FindLastChar(TEXT('.'), Dot) || Dot <= 0)
+    {
+        SetLastError(FString::Printf(TEXT("CallPythonFunction needs module.function, got '%s'"), *FunctionName));
+        return FString();
+    }
 
-    UE_LOG(LogPythonDNA, Log, TEXT("Called Python function: %s with %d args"),
-           *FunctionName, Args.Num());
+    const FString ScriptPath = FPaths::ProjectSavedDir() / TEXT("DNACalib") /
+        FString::Printf(TEXT("call_%s.py"), *FGuid::NewGuid().ToString());
+    const FString Script = FString::Printf(TEXT(
+        "import sys, json, importlib\n"
+        "for _p in sys.argv[1].split(';'):\n    sys.path.insert(0, _p)\n"
+        "_m = importlib.import_module(sys.argv[2])\n"
+        "_r = getattr(_m, sys.argv[3])(*sys.argv[4:])\n"
+        "sys.stdout.write(json.dumps({'ok': True, 'result': str(_r)}))\n"));
+    if (!FFileHelper::SaveStringToFile(Script, *ScriptPath))
+    {
+        SetLastError(FString::Printf(TEXT("cannot write the call script to %s"), *ScriptPath));
+        return FString();
+    }
 
-    return TEXT("success");
-}
+    TArray<FString> CallArgs = { BindingsPath, FunctionName.Left(Dot), FunctionName.Mid(Dot + 1) };
+    CallArgs.Append(Args);
+    FString StdOut;
+    const bool bRan = RunPythonFile(ScriptPath, CallArgs, StdOut);
+    IFileManager::Get().Delete(*ScriptPath, false, true, true);
+    if (!bRan)
+    {
+        return FString();
+    }
 
-// ========================================
-// Helper Functions
-// ========================================
-
-void* FPythonDNACalibWrapper::GetPythonObject(const FString& Name)
-{
-    // In production: PyDict_GetItemString(mainDict, Name)
-    return nullptr;
-}
-
-bool FPythonDNACalibWrapper::SetPythonObject(const FString& Name, void* Object)
-{
-    // In production: PyDict_SetItemString(mainDict, Name, Object)
-    return true;
-}
-
-void* FPythonDNACalibWrapper::CallPythonMethod(void* Object, const FString& MethodName, void* Args)
-{
-    // In production: PyObject_CallMethod(Object, MethodName, Args)
-    return nullptr;
-}
-
-FString FPythonDNACalibWrapper::PythonObjectToString(void* Object)
-{
-    // In production: PyUnicode_AsUTF8(PyObject_Str(Object))
-    return FString();
-}
-
-TArray<FString> FPythonDNACalibWrapper::PythonListToStringArray(void* List)
-{
-    TArray<FString> Result;
-    // In production: iterate PyList and convert each item
+    TSharedPtr<FJsonObject> Reply;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(StdOut);
+    FString Result;
+    if (!FJsonSerializer::Deserialize(Reader, Reply) || !Reply.IsValid() || !Reply->TryGetStringField(TEXT("result"), Result))
+    {
+        SetLastError(FString::Printf(TEXT("Python call %s failed: %s"), *FunctionName, *StdOut.Left(300)));
+        return FString();
+    }
     return Result;
-}
-
-int32 FPythonDNACalibWrapper::PythonObjectToInt(void* Object)
-{
-    // In production: PyLong_AsLong(Object)
-    return 0;
 }
 
 // ========================================
@@ -591,13 +604,8 @@ int32 FPythonDNACalibWrapper::PythonObjectToInt(void* Object)
 void FPythonDNACalibWrapper::SetLastError(const FString& Error)
 {
     LastError = Error;
-    UE_LOG(LogPythonDNA, Error, TEXT("Python wrapper error: %s"), *Error);
-}
-
-void FPythonDNACalibWrapper::LogPythonError()
-{
-    // In production, this would:
-    // 1. Call PyErr_Occurred()
-    // 2. Call PyErr_Fetch() to get error details
-    // 3. Convert and log the error
+    if (!bProbing)
+    {
+        UE_LOG(LogPythonDNA, Error, TEXT("Python wrapper error: %s"), *Error);
+    }
 }

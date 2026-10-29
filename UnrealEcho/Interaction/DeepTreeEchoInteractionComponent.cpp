@@ -423,17 +423,8 @@ void UDeepTreeEchoInteractionComponent::RecordInteraction(AActor* Target, FName 
 
 	InteractionHistory.Add(Memory);
 
-	// Notify cognitive system
-	if (CognitiveState)
-	{
-		CognitiveState->RecordInteraction(Target);
-	}
-
-	// Notify personality system
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->ProcessInteractionFeedback(Target);
-	}
+	// The interaction is remembered here (InteractionHistory); the cognitive state and personality
+	// components have no per-interaction recording API.
 }
 
 void UDeepTreeEchoInteractionComponent::CleanupOldMemories()
@@ -452,14 +443,9 @@ FInteractionResult UDeepTreeEchoInteractionComponent::ExecuteInteraction(AActor*
 	Result.bSuccess = true;
 	Result.ResultMessage = FText::FromString(FString::Printf(TEXT("Interacted with %s"), *Target->GetName()));
 
-	// Calculate emotional impact based on personality and past experiences
-	float EmotionalAssociation = GetEmotionalAssociation(Target);
-	
-	// Positive association = positive impact, negative = negative
+	// Emotional impact from the remembered association with this target (measured history only)
+	const float EmotionalAssociation = GetEmotionalAssociation(Target);
 	Result.EmotionalImpact = (EmotionalAssociation - 0.5f) * 0.4f;
-
-	// Add some randomness for emergent behavior
-	Result.EmotionalImpact += FMath::RandRange(-0.1f, 0.1f);
 
 	// Cognitive impact based on novelty
 	int32 PastInteractions = GetInteractionCount(Target);
@@ -477,16 +463,12 @@ FInteractionResult UDeepTreeEchoInteractionComponent::ExecuteInteraction(AActor*
 	// Apply cognitive impact to cognitive state
 	if (CognitiveState)
 	{
-		CognitiveState->AddCognitiveLoad(Result.CognitiveImpact);
+		CognitiveState->SetCognitiveLoad(CognitiveState->GetCurrentCognitiveLoad() + Result.CognitiveImpact);
 	}
 
-	// Apply emotional impact to personality system
-	if (PersonalitySystem)
-	{
-		FEmotionalState CurrentEmotion = PersonalitySystem->GetCurrentEmotionalState();
-		CurrentEmotion.Valence = FMath::Clamp(CurrentEmotion.Valence + Result.EmotionalImpact, 0.0f, 1.0f);
-		PersonalitySystem->SetEmotionalState(CurrentEmotion);
-	}
+	// UPersonalityTraitSystem has no settable emotional state (no Get/SetEmotionalState). The impact
+	// is reported in Result and remembered by RecordInteraction; no emotion is written for the
+	// character here.
 
 	return Result;
 }
@@ -541,32 +523,32 @@ float UDeepTreeEchoInteractionComponent::GetPersonalityInteractionModifier(const
 		return Modifier;
 	}
 
-	// Extraversion: Prefer social interactions
-	float Extraversion = PersonalitySystem->GetTraitValue(TEXT("Extraversion"));
+	// Social engagement: prefer social interactions
+	const float SocialEngagement = PersonalitySystem->GetSocialEngagementLevel();
 	if (Info.InteractionTags.HasTag(FGameplayTag::RequestGameplayTag(TEXT("Interaction.Social"))))
 	{
-		Modifier += (Extraversion - 0.5f) * 20.0f;
+		Modifier += (SocialEngagement - 0.5f) * 20.0f;
 	}
 
-	// Openness: Prefer novel/creative interactions
-	float Openness = PersonalitySystem->GetTraitValue(TEXT("Openness"));
+	// Intellectual trait: prefer novel/creative interactions
+	const float Intellectual = PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Intellectual);
 	if (Info.InteractionTags.HasTag(FGameplayTag::RequestGameplayTag(TEXT("Interaction.Creative"))))
 	{
-		Modifier += (Openness - 0.5f) * 20.0f;
+		Modifier += (Intellectual - 0.5f) * 20.0f;
 	}
 
-	// Conscientiousness: Prefer task-oriented interactions
-	float Conscientiousness = PersonalitySystem->GetTraitValue(TEXT("Conscientiousness"));
+	// Assertive trait: prefer task-oriented interactions
+	const float Assertive = PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Assertive);
 	if (Info.InteractionTags.HasTag(FGameplayTag::RequestGameplayTag(TEXT("Interaction.Task"))))
 	{
-		Modifier += (Conscientiousness - 0.5f) * 20.0f;
+		Modifier += (Assertive - 0.5f) * 20.0f;
 	}
 
-	// Agreeableness: Prefer helpful interactions
-	float Agreeableness = PersonalitySystem->GetTraitValue(TEXT("Agreeableness"));
+	// Empathetic trait: prefer helpful interactions
+	const float Empathetic = PersonalitySystem->GetTraitIntensity(EPersonalityTraitType::Empathetic);
 	if (Info.InteractionTags.HasTag(FGameplayTag::RequestGameplayTag(TEXT("Interaction.Helpful"))))
 	{
-		Modifier += (Agreeableness - 0.5f) * 20.0f;
+		Modifier += (Empathetic - 0.5f) * 20.0f;
 	}
 
 	return Modifier;

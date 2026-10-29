@@ -33,6 +33,9 @@
 #include "CNS/AutonomousAgentController.h"
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
+#include "Avatar/Sys6AvatarIntegration.h"
+#include "ActiveInference/ActiveInferenceEngine.h"
+#include "ActiveInference/AXIOMActiveInference.h"
 #include "EchoCharacterReaction.h"
 #include "DTEAutonomousAgentTestReceiver.h"
 
@@ -626,10 +629,19 @@ bool FGaming_OpponentModelTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("HighAttack should be predicted as most frequent"),
               Predicted, TEXT("HighAttack"));
 
-    // Counter to HighAttack should be DuckUnder
-    const FString Counter = GMS->GetBestCounter(OppID);
-    TestEqual(TEXT("Counter to HighAttack should be DuckUnder"),
-              Counter, TEXT("DuckUnder"));
+    // Counters are chosen by the model only: none exists before it has answered
+    TestTrue(TEXT("No counter should exist before the model has chosen one"),
+             GMS->GetBestCounter(OppID).IsEmpty());
+
+    // With nothing to offer, the request fails without a model call and chooses nothing
+    GMS->CounterActionVocabulary.Empty();
+    GMS->ComboCatalog.Empty();
+    AddExpectedError(TEXT("no model counter"));
+    GMS->RequestBestCounter(OppID);
+    TestFalse(TEXT("Counter request with no known actions should record an error"),
+              GMS->GetLastCounterError().IsEmpty());
+    TestTrue(TEXT("Failed counter request should leave no counter"),
+             GMS->GetBestCounter(OppID).IsEmpty());
 
     // Test model completeness
     const FOpponentModel Model = GMS->GetOpponentModel(OppID);
@@ -941,20 +953,26 @@ bool FIntegration_CNSReflexMasteryTest::RunTest(const FString& Parameters)
     // GMS wires into CNS via SetVirtualCNS
     TestNotNull(TEXT("GMS should have VirtualCNS reference"), CNS);
 
-    // Fire a stimulus via GMS → should propagate to CNS
-    // Prime reflex refractory timers
-    for (FReflexArc& R : CNS->ReflexArcs)
-    {
-        R.TimeSinceLastFire = 999.0f;
-    }
+    // There are no built-in reflex arcs: the character's model authors them
+    TestFalse(TEXT("CNS has no reflex arcs before the model authors them"),
+              CNS->HasReflexArc(TEXT("DodgeLeft")));
+    GMS->OnStimulusDetected(TEXT("DodgeLeft"), 0.85f);
+    TestFalse(TEXT("No reflex fires before the model authors the arcs"),
+              CNS->HasPendingMotorCommand());
+
+    // Install an arc (as model authoring would) and fire it through GMS
+    FReflexArc Arc;
+    Arc.ReflexID = TEXT("DodgeLeft");
+    Arc.TriggerCondition = TEXT("ThreatRight");
+    Arc.Response.ActionName = TEXT("DodgeLeft");
+    CNS->RegisterReflexArc(Arc);
 
     // GMS::OnStimulusDetected is a regular function (not a delegate), call directly
     GMS->OnStimulusDetected(TEXT("DodgeLeft"), 0.85f);
 
-    // Since urgency >= 0.7, VirtualCNS should have tried to fire the DodgeLeft reflex
-    // DodgeLeft is one of the default arcs
-    TestTrue(TEXT("CNS DodgeLeft reflex should exist"),
-             CNS->HasReflexArc(TEXT("DodgeLeft")));
+    // Since urgency >= 0.7, VirtualCNS should have fired the DodgeLeft reflex
+    TestTrue(TEXT("CNS DodgeLeft reflex should have queued its response"),
+             CNS->HasPendingMotorCommand());
 
     return true;
 }
@@ -990,5 +1008,164 @@ bool FIntegration_AgentRewardTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Episodes completed should be 1"),
               AfterEpisode.EpisodesCompleted, 1);
 
+    return true;
+}
+
+// ============================================================
+// RL bridge — an untrained policy chooses no action for the character
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRLBridge_TrainedGateTest,
+    "DTE.RLBridge.UntrainedPolicyChoosesNothing",
+    DTE_TEST_FLAGS)
+
+bool FRLBridge_TrainedGateTest::RunTest(const FString& Parameters)
+{
+    UReinforcementLearningBridge* RL = NewObject<UReinforcementLearningBridge>();
+    TestNotNull(TEXT("RL bridge should be created"), RL);
+    if (!RL) { return false; }
+
+    const TArray<float> State = { 0.2f, 0.5f, 0.8f };
+    FRLAction Action;
+    TestFalse(TEXT("Untrained policy is not trained"), RL->IsPolicyTrained());
+    TestFalse(TEXT("Untrained policy selects no action"), RL->SelectTrainedAction(State, Action));
+
+    RL->MinLearningUpdatesForTrainedPolicy = 10;
+    for (int32 i = 0; i < 10; ++i)
+    {
+        RL->UpdateQValue(State, 3, 1.0f);
+    }
+    TestTrue(TEXT("Policy is trained after enough learning updates"), RL->IsPolicyTrained());
+    TestTrue(TEXT("Trained policy selects an action for a learned state"), RL->SelectTrainedAction(State, Action));
+    TestEqual(TEXT("Trained action is the learned greedy action"), Action.ActionIndex, 3);
+
+    const TArray<float> Unseen = { -0.9f, 0.0f, 0.9f };
+    TestFalse(TEXT("No action for a state the policy never learned"), RL->SelectTrainedAction(Unseen, Action));
+
+    RL->ResetLearning();
+    TestFalse(TEXT("Reset policy is untrained again"), RL->IsPolicyTrained());
+    return true;
+}
+
+// ============================================================
+// Sys6 avatar — the clock never chooses the expression
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSys6Avatar_NoExpressionWithoutModelTest,
+    "DTE.Sys6Avatar.NoExpressionWithoutModel",
+    DTE_TEST_FLAGS)
+
+bool FSys6Avatar_NoExpressionWithoutModelTest::RunTest(const FString& Parameters)
+{
+    USys6AvatarIntegration* Avatar = NewObject<USys6AvatarIntegration>();
+    TestNotNull(TEXT("Sys6 avatar integration should be created"), Avatar);
+    if (!Avatar) { return false; }
+
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    Avatar->OnExpressionChanged.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleAvatarExpressionChanged);
+
+    Avatar->InitializeIntegration();
+    for (int32 i = 0; i < 10; ++i)
+    {
+        Avatar->ApplySys6ToExpression();
+    }
+
+    TestFalse(TEXT("No model expression exists before the model answers"), Avatar->HasModelExpression());
+    TestEqual(TEXT("No expression broadcast before the model answers"), Receiver->AvatarExpressionChanges, 0);
+    for (const FSys6ExpressionState& State : Avatar->GetCognitiveState().ExpressionStates)
+    {
+        TestFalse(TEXT("Channel not chosen by the model"), State.bModelChosen);
+        TestEqual(TEXT("Channel intensity is neutral"), State.Intensity, 0.0f);
+        TestEqual(TEXT("Channel valence is neutral"), State.Valence, 0.0f);
+        TestEqual(TEXT("Channel arousal is neutral"), State.Arousal, 0.0f);
+    }
+
+    // Without a prompt the request fails without a model call and changes nothing
+    Avatar->ExpressionPromptTemplate.Empty();
+    AddExpectedError(TEXT("no model expression"));
+    TestFalse(TEXT("Request without a prompt is refused"), Avatar->RequestModelExpression());
+    TestFalse(TEXT("Failed request records an error"), Avatar->GetLastExpressionError().IsEmpty());
+    TestFalse(TEXT("Failed request leaves no model expression"), Avatar->HasModelExpression());
+    TestEqual(TEXT("Failed request broadcasts no expression"), Receiver->AvatarExpressionChanges, 0);
+    return true;
+}
+
+// ============================================================
+// Active inference — an untrained generative model selects and executes nothing
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FActiveInference_UntrainedGateTest,
+    "DTE.ActiveInference.UntrainedModelSelectsNothing",
+    DTE_TEST_FLAGS)
+
+bool FActiveInference_UntrainedGateTest::RunTest(const FString& Parameters)
+{
+    UActiveInferenceEngine* Engine = NewObject<UActiveInferenceEngine>();
+    TestNotNull(TEXT("Active inference engine should be created"), Engine);
+    if (!Engine) { return false; }
+
+    TestFalse(TEXT("A fresh generative model is untrained"), Engine->IsGenerativeModelTrained());
+
+    AddExpectedError(TEXT("SelectPolicy: generative model untrained"));
+    const FPolicy Policy = Engine->SelectPolicy();
+    TestTrue(TEXT("Untrained model selects no policy"), Policy.PolicyID.IsEmpty());
+    TestEqual(TEXT("Untrained model's policy has no actions"), Policy.ActionSequence.Num(), 0);
+
+    AddExpectedError(TEXT("RunActiveInference: generative model untrained"));
+    TestEqual(TEXT("Untrained model chooses no action"), Engine->RunActiveInference(), (int32)INDEX_NONE);
+    TestEqual(TEXT("Nothing was executed"), Engine->GetActionHistory().Num(), 0);
+    TestFalse(TEXT("The refusal is recorded"), Engine->GetLastError().IsEmpty());
+
+    // Only real executed outcomes count as learning
+    Engine->MinLearningUpdatesForTrainedModel = 2;
+    FActionOutcome NotExecuted;
+    NotExecuted.ActionID = 1;
+    NotExecuted.ActualOutcome = { 0.5f };
+    Engine->LearnModelStructure({ NotExecuted, NotExecuted });
+    TestFalse(TEXT("Outcomes that were never executed do not train the model"), Engine->IsGenerativeModelTrained());
+
+    FActionOutcome Executed = NotExecuted;
+    Executed.bExecuted = true;
+    Engine->LearnModelStructure({ Executed, Executed });
+    TestTrue(TEXT("Real executed outcomes train the model"), Engine->IsGenerativeModelTrained());
+    return true;
+}
+
+// ============================================================
+// AXIOM — an untrained world model selects no action
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAXIOM_UntrainedGateTest,
+    "DTE.AXIOM.UntrainedWorldModelSelectsNothing",
+    DTE_TEST_FLAGS)
+
+bool FAXIOM_UntrainedGateTest::RunTest(const FString& Parameters)
+{
+    UAXIOMActiveInference* AXIOM = NewObject<UAXIOMActiveInference>();
+    TestNotNull(TEXT("AXIOM should be created"), AXIOM);
+    if (!AXIOM) { return false; }
+
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    AXIOM->OnActionSelected.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleAXIOMActionSelected);
+
+    AXIOM->Initialize();
+    AXIOM->GeneratePolicies();
+    AXIOM->EvaluatePolicies();
+
+    TestFalse(TEXT("A fresh world model is untrained"), AXIOM->IsWorldModelTrained());
+    AddExpectedError(TEXT("world model untrained"));
+    TestEqual(TEXT("Untrained world model selects no action"), AXIOM->SelectAction(), (int32)INDEX_NONE);
+    TestEqual(TEXT("No action broadcast"), Receiver->AXIOMActionsSelected, 0);
+    TestFalse(TEXT("The refusal is recorded"), AXIOM->GetLastError().IsEmpty());
+
+    // Policies are enumerated candidates, identical on every generation (no random sequences)
+    const TArray<FAXIOMPolicy> First = AXIOM->Policies;
+    AXIOM->GeneratePolicies();
+    bool bSame = First.Num() == AXIOM->Policies.Num();
+    for (int32 i = 0; bSame && i < First.Num(); ++i)
+    {
+        bSame = First[i].ActionSequence == AXIOM->Policies[i].ActionSequence;
+    }
+    TestTrue(TEXT("Candidate policies are deterministic"), bSame);
     return true;
 }

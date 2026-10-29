@@ -2,6 +2,8 @@
 #include "Avatar/Avatar3DComponentEnhanced.h"
 #include "Personality/PersonalityTraitSystem.h"
 #include "Neurochemical/NeurochemicalSimulationComponent.h"
+#include "Avatar/MetaHumanDNABridge.h"
+#include "Avatar/PythonDNACalibWrapper.h"
 #include "Tests/AutomationCommon.h"
 #include "EchoCharacterReaction.h"
 
@@ -477,5 +479,63 @@ bool FIntegrationNeurochemicalEmotionTest::RunTest(const FString& Parameters)
         UE_LOG(LogTemp, Log, TEXT("Neurochemical-Emotion integration test passed"));
     }
     
+    return true;
+}
+
+// ===== MetaHuman DNA bridge: the face is the model's choice =====
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMetaHumanDNANoNeurochemicalFaceWithoutModelTest,
+    "UnrealEngineCog.MetaHumanDNA.NoNeurochemicalFaceWithoutModel",
+    EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FMetaHumanDNANoNeurochemicalFaceWithoutModelTest::RunTest(const FString& Parameters)
+{
+    UMetaHumanDNABridge* Bridge = NewObject<UMetaHumanDNABridge>();
+    TestNotNull(TEXT("DNA bridge should be created"), Bridge);
+    if (!Bridge) { return false; }
+
+    TestTrue(TEXT("The expression vocabulary is offered to the model"), Bridge->ExpressionRenderMap.Num() > 0);
+
+    // High dopamine/serotonin used to be rendered as a smile directly; now nothing is rendered
+    // until the model chooses an expression. An empty prompt fails without a model call.
+    FNeurochemicalState State;
+    State.DopamineLevel = 0.95f;
+    State.SerotoninLevel = 0.9f;
+    Bridge->FacialExpressionPromptTemplate.Empty();
+    AddExpectedError(TEXT("No model facial expression"));
+    TMap<FString, float> Weights;
+    Bridge->SyncNeurochemicalStateToBlendShapes(State, Weights);
+
+    TestEqual(TEXT("No blend shape weights before the model chooses an expression"), Weights.Num(), 0);
+    TestTrue(TEXT("No model expression"), Bridge->GetModelFacialExpression().IsEmpty());
+    TestFalse(TEXT("The failed request records an error"), Bridge->GetLastFacialExpressionError().IsEmpty());
+    return true;
+}
+
+// ===== DNACalib wrapper: no simulated DNA data =====
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPythonDNACalibNoSimulationTest,
+    "UnrealEngineCog.MetaHumanDNA.DNACalibWrapperReportsFailureHonestly",
+    EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FPythonDNACalibNoSimulationTest::RunTest(const FString& Parameters)
+{
+    // Every failure below is logged as an error by the wrapper
+    AddExpectedError(TEXT("Python wrapper error"), EAutomationExpectedErrorFlags::Contains, 0);
+
+    FPythonDNACalibWrapper Wrapper;
+    TestFalse(TEXT("Initialize fails for a missing DNACalib folder"),
+              Wrapper.Initialize(FPaths::ProjectSavedDir() / TEXT("NoSuchDNACalibFolder")));
+    TestFalse(TEXT("The failure says why"), Wrapper.GetLastError().IsEmpty());
+
+    // Without the real bindings nothing is reported as loaded, saved or edited, and no rig data exists
+    TestFalse(TEXT("LoadDNA fails"), Wrapper.LoadDNA(TEXT("Missing.dna")));
+    TestFalse(TEXT("SaveDNA fails"), Wrapper.SaveDNA(FPaths::ProjectSavedDir() / TEXT("Out.dna")));
+    TestFalse(TEXT("RenameJoint fails"), Wrapper.RenameJoint(TEXT("jaw"), TEXT("jaw2")));
+    TestFalse(TEXT("RemoveJoint fails"), Wrapper.RemoveJoint(TEXT("jaw")));
+    TestEqual(TEXT("No joint names"), Wrapper.GetJointNames().Num(), 0);
+    TestEqual(TEXT("No blend shape names"), Wrapper.GetBlendShapeNames().Num(), 0);
+    TestTrue(TEXT("No rig definition name"), Wrapper.GetDNADatabaseName().IsEmpty());
+    TestTrue(TEXT("No Python call result"), Wrapper.CallPythonFunction(TEXT("os.getcwd"), {}).IsEmpty());
     return true;
 }

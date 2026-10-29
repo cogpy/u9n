@@ -4,6 +4,8 @@
 #include "InteractableObject.h"
 #include "Components/StaticMeshComponent.h"
 #include "Personality/PersonalityTraitSystem.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 //////////////////////////////////////////////////////////////////////////
 // AInteractableObject
@@ -400,6 +402,12 @@ AInteractableNPC::AInteractableNPC()
 	: RelationshipLevel(0.5f)
 	, bInConversation(false)
 {
+	GreetingPromptTemplate = TEXT(
+		"You are {name}, a character in a game world. {partner} has just walked up to talk to you. "
+		"Your relationship with them is {relationship} on a scale from 0 (hostile stranger) to 1 (close friend). "
+		"Write what you say to greet them, in your own words, at most {max_chars} characters.\n"
+		"Style examples written by the designer (match their tone, do not copy them):\n{style_examples}\n"
+		"Reply with only a JSON object: {\"greeting\": \"<what you say>\"}");
 }
 
 void AInteractableNPC::StartConversation(AActor* Initiator)
@@ -408,20 +416,100 @@ void AInteractableNPC::StartConversation(AActor* Initiator)
 	{
 		bInConversation = true;
 		ConversationPartner = Initiator;
+		LastGreeting = FText::GetEmpty();
 
-		// Select a greeting based on relationship level
-		if (GreetingLines.Num() > 0)
+		// The greeting is written by the model; until (and unless) it replies, the NPC says nothing
+		RequestGreeting(Initiator);
+	}
+}
+
+void AInteractableNPC::RequestGreeting(AActor* Partner)
+{
+	TArray<FString> Examples;
+	for (const FText& Line : GreetingLines)
+	{
+		if (!Line.IsEmpty())
 		{
-			int32 GreetingIndex = FMath::Clamp(
-				FMath::FloorToInt(RelationshipLevel * GreetingLines.Num()),
-				0,
-				GreetingLines.Num() - 1
-			);
-
-			// Would trigger dialogue system here
-			UE_LOG(LogTemp, Log, TEXT("NPC %s says: %s"), *NPCName.ToString(), *GreetingLines[GreetingIndex].ToString());
+			Examples.Add(FString::Printf(TEXT("- %s"), *Line.ToString()));
 		}
 	}
+
+	TMap<FString, FString> Slots;
+	Slots.Add(TEXT("name"), NPCName.IsEmpty() ? GetName() : NPCName.ToString());
+	Slots.Add(TEXT("partner"), Partner->GetName());
+	Slots.Add(TEXT("relationship"), FString::Printf(TEXT("%.2f"), FMath::Clamp(RelationshipLevel, 0.0f, 1.0f)));
+	Slots.Add(TEXT("max_chars"), FString::FromInt(FMath::Max(20, MaxGreetingChars)));
+	Slots.Add(TEXT("style_examples"), Examples.Num() ? FString::Join(Examples, TEXT("\n")) : FString(TEXT("(none)")));
+
+	TArray<FEchoModelMessage> Messages;
+	Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(GreetingPromptTemplate, Slots)));
+
+	const int32 RequestSerial = ++GreetingRequestSerial;
+	TWeakObjectPtr<AInteractableNPC> WeakThis(this);
+	TWeakObjectPtr<AActor> WeakPartner(Partner);
+	UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+		[WeakThis, RequestSerial, WeakPartner](bool bSuccess, const FString& TextOrError)
+		{
+			if (AInteractableNPC* Self = WeakThis.Get())
+			{
+				Self->HandleGreetingReply(RequestSerial, WeakPartner, bSuccess, TextOrError);
+			}
+		}), 0.8f);
+}
+
+void AInteractableNPC::HandleGreetingReply(int32 RequestSerial, TWeakObjectPtr<AActor> Partner, bool bSuccess, const FString& TextOrError)
+{
+	// Superseded, or the conversation ended / changed partner while the model was thinking
+	if (RequestSerial != GreetingRequestSerial || !bInConversation || !Partner.IsValid() || ConversationPartner != Partner)
+	{
+		return;
+	}
+
+	auto Fail = [this, &Partner](const FString& Error)
+	{
+		LastGreetingError = Error;
+		UE_LOG(LogTemp, Error, TEXT("InteractableNPC %s: no model greeting: %s"), *GetName(), *Error);
+		OnGreetingFailed.Broadcast(Partner.Get(), Error);
+	};
+
+	if (!bSuccess)
+	{
+		Fail(TextOrError);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Json;
+	FString Greeting;
+	if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("greeting"), Greeting))
+	{
+		Fail(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+		return;
+	}
+
+	Greeting.TrimStartAndEndInline();
+	if (Greeting.IsEmpty())
+	{
+		Fail(TEXT("model greeting is empty"));
+		return;
+	}
+	if (Greeting.Len() > FMath::Max(20, MaxGreetingChars))
+	{
+		Fail(FString::Printf(TEXT("model greeting is %d characters, more than %d"), Greeting.Len(), MaxGreetingChars));
+		return;
+	}
+	for (const FText& Line : GreetingLines)
+	{
+		if (Greeting.Equals(Line.ToString().TrimStartAndEnd(), ESearchCase::IgnoreCase))
+		{
+			Fail(TEXT("model copied a designer style example verbatim"));
+			return;
+		}
+	}
+
+	LastGreetingError.Reset();
+	LastGreeting = FText::FromString(Greeting);
+	UE_LOG(LogTemp, Log, TEXT("NPC %s says: %s"), *NPCName.ToString(), *Greeting);
+	OnGreeting.Broadcast(Partner.Get(), LastGreeting);
 }
 
 void AInteractableNPC::EndConversation()

@@ -376,16 +376,15 @@ FMontageVariant UAnimationMontageSystem::SelectBestVariant(const FMontageEntry& 
 		return Entry.Variants[0];
 	}
 
-	// Score each variant and select the best
+	// Render the (model-chosen) montage with the variant whose authored personality/emotion
+	// weights best match the current state. Deterministic: no random jitter; ties keep the
+	// earlier variant.
 	float BestScore = -FLT_MAX;
 	int32 BestIndex = 0;
 
 	for (int32 i = 0; i < Entry.Variants.Num(); ++i)
 	{
-		float Score = CalculateVariantScore(Entry.Variants[i]);
-
-		// Add some randomness to prevent always selecting the same variant
-		Score += FMath::FRandRange(-0.1f, 0.1f);
+		const float Score = CalculateVariantScore(Entry.Variants[i]);
 
 		if (Score > BestScore)
 		{

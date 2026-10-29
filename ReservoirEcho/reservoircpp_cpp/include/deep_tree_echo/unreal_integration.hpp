@@ -329,6 +329,12 @@ public:
     // Cognitive bridge
     void send_perception_to_cognitive();
     void receive_action_from_cognitive();
+
+    // Action readout: the trained map from cognitive state to avatar actions
+    // (movement 4, then expression 12). Without a trained readout the avatar receives
+    // no movement or expression from the cognitive system.
+    void set_action_readout(std::shared_ptr<LinearReadout> readout) { action_readout_ = readout; }
+    bool has_trained_action_readout() const { return action_readout_ && action_readout_->is_trained(); }
     
     // State
     bool is_active() const { return active_; }
@@ -339,6 +345,7 @@ public:
     
 private:
     std::shared_ptr<DeepTreeEcho> cognitive_system_;
+    std::shared_ptr<LinearReadout> action_readout_;
     
     CharacterController character_;
     FacialController face_;

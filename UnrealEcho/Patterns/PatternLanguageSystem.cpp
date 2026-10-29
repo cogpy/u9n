@@ -2,6 +2,8 @@
 #include "../AtomSpace/AvatarAtomSpaceClient.h"
 #include "../Personality/PersonalityTraitSystem.h"
 #include "../Neurochemical/NeurochemicalSimulationComponent.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPatternLanguage, Log, All);
 
@@ -17,6 +19,27 @@ UPatternLanguageSystem::UPatternLanguageSystem()
     AssessmentTimer = 0.0f;
     PatternMiningTimer = 0.0f;
     AssessmentCacheTime = 0.0f;
+
+    // Instructions to the character model; the replies (never these texts) become diary/insight entries
+    PatternInsightPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent who keeps a private store of insights. "
+        "{purpose} The pattern, as described in your pattern language:\n{pattern}\n"
+        "Write the insight in your own voice, first person, one to three sentences, saying what this pattern "
+        "means for how you live and act. Reply with only a JSON object: "
+        "{\"content\": \"<your insight>\", \"confidence\": <number 0..1, how sure you are of it>}");
+    MinedPatternPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent. Looking over your own recent behaviour you notice the "
+        "sequence {sequence} recurring {support} times. Recent behaviour (type, context, outcome, success):\n"
+        "{recent_behaviour}\nArticulate it as a pattern in the style of Christopher Alexander's pattern language: "
+        "the problem or tension it answers and the solution it embodies, then the insight you take from noticing it. "
+        "Reply with only a JSON object: {\"problem\": \"...\", \"solution\": \"...\", "
+        "\"insight\": \"<first person, one to three sentences>\", \"confidence\": <number 0..1>}");
+    ProgressDiaryPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent who keeps a diary. Your developmental self-assessment "
+        "(Christopher Alexander's living-structure measures, each 0..1) has just produced:\n{metrics}\n"
+        "Write a short diary entry in your own voice reflecting on what these measures say about your growth. "
+        "Reply with only a JSON object: {\"content\": \"<the entry>\", \"valence\": <number -1..1>, "
+        "\"arousal\": <number 0..1>}");
 }
 
 void UPatternLanguageSystem::BeginPlay()
@@ -219,17 +242,8 @@ void UPatternLanguageSystem::InitializeCorePatterns()
 
 void UPatternLanguageSystem::AddPattern(const FPattern& Pattern)
 {
+    // The catalog is internal design data; it is not written into the character's insight store
     PatternCatalog.Add(Pattern.PatternId, Pattern);
-
-    if (AtomSpaceClient)
-    {
-        FInsight PatternInsight;
-        PatternInsight.InsightId = Pattern.PatternId;
-        PatternInsight.Content = FString::Printf(TEXT("Pattern: %s - %s"), *Pattern.Name, *Pattern.Solution);
-        PatternInsight.Category = TEXT("pattern_catalog");
-        PatternInsight.Confidence = Pattern.Confidence;
-        AtomSpaceClient->StoreInsight(PatternInsight);
-    }
 }
 
 FPattern UPatternLanguageSystem::GetPattern(const FString& PatternId)
@@ -384,12 +398,12 @@ void UPatternLanguageSystem::MineNewPatterns(int32 MinSupport)
             NewPattern.PatternNumber = PatternCatalog.Num() + 100; // Discovered patterns start at 100
             NewPattern.Category = EPatternCategory::Behavioral;
             NewPattern.Context = Sequence;
-            NewPattern.Problem = TEXT("Auto-discovered recurring behavior pattern");
-            NewPattern.Solution = TEXT("Continue this successful behavior sequence");
+            // Problem and Solution stay empty until the character model articulates them
             NewPattern.Confidence = 0.5f;
             NewPattern.ApplicationCount = MinSupport;
 
             AddPattern(NewPattern);
+            RequestMinedPatternArticulation(NewPattern.PatternId, Sequence, MinSupport);
 
             UE_LOG(LogPatternLanguage, Log, TEXT("Discovered new pattern: %s"), *Sequence);
         }
@@ -902,18 +916,75 @@ FPattern UPatternLanguageSystem::GetNextDevelopmentalPattern()
 
 void UPatternLanguageSystem::TrackDevelopmentalProgress()
 {
-    // Store assessment history for tracking progress
-    if (AtomSpaceClient)
+    if (!AtomSpaceClient)
     {
-        FDiaryEntry ProgressEntry;
-        ProgressEntry.EntryId = FGuid::NewGuid().ToString();
-        ProgressEntry.Content = FString::Printf(TEXT("Quality assessment: QWAN=%.2f, Wholeness=%.2f, Aliveness=%.2f"),
-            ValidateQualityWithoutAName(), LastAssessment.Wholeness, LastAssessment.Aliveness);
-        ProgressEntry.Timestamp = FDateTime::Now();
-        ProgressEntry.Tags.Add(TEXT("development"));
-        ProgressEntry.Tags.Add(TEXT("quality_assessment"));
-        AtomSpaceClient->StoreDiaryEntry(ProgressEntry);
+        return;
     }
+
+    // The metrics are prompt data; the diary entry is written by the character model
+    TArray<FString> Lines;
+    Lines.Add(FString::Printf(TEXT("quality without a name: %.2f"), ValidateQualityWithoutAName()));
+    Lines.Add(FString::Printf(TEXT("wholeness: %.2f"), LastAssessment.Wholeness));
+    Lines.Add(FString::Printf(TEXT("aliveness: %.2f"), LastAssessment.Aliveness));
+    if (const UEnum* PropertyEnum = StaticEnum<EMorphologicalProperty>())
+    {
+        for (const FQualityMetric& Metric : LastAssessment.PropertyScores)
+        {
+            Lines.Add(FString::Printf(TEXT("%s: %.2f"),
+                *PropertyEnum->GetNameStringByValue(static_cast<int64>(Metric.Property)), Metric.Score));
+        }
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetCharacterName());
+    Slots.Add(TEXT("metrics"), FString::Join(Lines, TEXT("\n")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(ProgressDiaryPromptTemplate, Slots)));
+
+    TWeakObjectPtr<UPatternLanguageSystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            UPatternLanguageSystem* Self = WeakThis.Get();
+            if (!Self || !Self->AtomSpaceClient)
+            {
+                return;
+            }
+            if (!bSuccess)
+            {
+                Self->ReportModelFailure(TEXT("developmental diary entry"), TextOrError);
+                return;
+            }
+
+            TSharedPtr<FJsonObject> Json;
+            FString Content;
+            if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+                !Json->TryGetStringField(TEXT("content"), Content) || Content.TrimStartAndEnd().IsEmpty())
+            {
+                Self->ReportModelFailure(TEXT("developmental diary entry"),
+                    FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+                return;
+            }
+
+            FDiaryEntry ProgressEntry;
+            ProgressEntry.EntryId = FGuid::NewGuid().ToString();
+            ProgressEntry.Content = Content.TrimStartAndEnd();
+            ProgressEntry.Timestamp = FDateTime::Now();
+            double Valence = 0.0, Arousal = 0.0;
+            if (Json->TryGetNumberField(TEXT("valence"), Valence))
+            {
+                ProgressEntry.EmotionalValence = FMath::Clamp(static_cast<float>(Valence), -1.0f, 1.0f);
+            }
+            if (Json->TryGetNumberField(TEXT("arousal"), Arousal))
+            {
+                ProgressEntry.EmotionalArousal = FMath::Clamp(static_cast<float>(Arousal), 0.0f, 1.0f);
+            }
+            ProgressEntry.Tags.Add(TEXT("development"));
+            ProgressEntry.Tags.Add(TEXT("quality_assessment"));
+            Self->AtomSpaceClient->StoreDiaryEntry(ProgressEntry);
+            Self->LastModelError.Reset();
+        }));
 }
 
 // ===== AtomSpace Integration =====
@@ -924,12 +995,13 @@ void UPatternLanguageSystem::StorePatternsInAtomSpace()
 
     for (auto& Pair : PatternCatalog)
     {
-        FInsight PatternInsight;
-        PatternInsight.InsightId = Pair.Key;
-        PatternInsight.Content = FString::Printf(TEXT("%s: %s"), *Pair.Value.Name, *Pair.Value.Solution);
-        PatternInsight.Category = TEXT("pattern_catalog");
-        PatternInsight.Confidence = Pair.Value.Confidence;
-        AtomSpaceClient->StoreInsight(PatternInsight);
+        // Patterns the model has not yet articulated have nothing to reflect on
+        if (Pair.Value.Solution.IsEmpty())
+        {
+            continue;
+        }
+        RequestPatternInsight(Pair.Value, TEXT("pattern_catalog"),
+            TEXT("You are recording what one of the patterns in your pattern language means to you."));
     }
 }
 
@@ -945,15 +1017,165 @@ void UPatternLanguageSystem::SharePatternWithAgents(const FPattern& Pattern)
 {
     if (AtomSpaceClient)
     {
-        FInsight PatternInsight;
-        PatternInsight.InsightId = Pattern.PatternId;
-        PatternInsight.Content = FString::Printf(TEXT("Shared Pattern: %s - %s"), *Pattern.Name, *Pattern.Solution);
-        PatternInsight.Category = TEXT("shared_pattern");
-        PatternInsight.Confidence = Pattern.Confidence;
-        AtomSpaceClient->StoreInsight(PatternInsight);
+        RequestPatternInsight(Pattern, TEXT("shared_pattern"),
+            TEXT("You are sharing this pattern with the other agents you work alongside."));
     }
 
-    UE_LOG(LogPatternLanguage, Log, TEXT("Shared pattern with agents: %s"), *Pattern.Name);
+    UE_LOG(LogPatternLanguage, Log, TEXT("Requested model-written shared insight for pattern: %s"), *Pattern.Name);
+}
+
+// ===== Model-Written Entries =====
+
+FString UPatternLanguageSystem::GetCharacterName() const
+{
+    const AActor* Owner = GetOwner();
+    return Owner ? Owner->GetName() : GetName();
+}
+
+FString UPatternLanguageSystem::DescribePattern(const FPattern& Pattern)
+{
+    TArray<FString> Lines;
+    Lines.Add(FString::Printf(TEXT("name: %s"), *Pattern.Name));
+    if (!Pattern.Context.IsEmpty()) Lines.Add(FString::Printf(TEXT("context: %s"), *Pattern.Context));
+    if (!Pattern.Problem.IsEmpty()) Lines.Add(FString::Printf(TEXT("problem: %s"), *Pattern.Problem));
+    if (!Pattern.Solution.IsEmpty()) Lines.Add(FString::Printf(TEXT("solution: %s"), *Pattern.Solution));
+    if (Pattern.Forces.Num() > 0) Lines.Add(FString::Printf(TEXT("forces: %s"), *FString::Join(Pattern.Forces, TEXT("; "))));
+    Lines.Add(FString::Printf(TEXT("times applied: %d, success rate: %.2f"), Pattern.ApplicationCount, Pattern.SuccessRate));
+    return FString::Join(Lines, TEXT("\n"));
+}
+
+void UPatternLanguageSystem::ReportModelFailure(const FString& What, const FString& Error)
+{
+    LastModelError = FString::Printf(TEXT("%s: %s"), *What, *Error);
+    UE_LOG(LogPatternLanguage, Error, TEXT("No model-written %s stored: %s"), *What, *Error);
+}
+
+void UPatternLanguageSystem::RequestPatternInsight(const FPattern& Pattern, const FString& InsightCategory, const FString& Purpose)
+{
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetCharacterName());
+    Slots.Add(TEXT("pattern"), DescribePattern(Pattern));
+    Slots.Add(TEXT("purpose"), Purpose);
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(PatternInsightPromptTemplate, Slots)));
+
+    const FString PatternId = Pattern.PatternId;
+    const float PatternConfidence = Pattern.Confidence;
+    TWeakObjectPtr<UPatternLanguageSystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, PatternId, PatternConfidence, InsightCategory](bool bSuccess, const FString& TextOrError)
+        {
+            UPatternLanguageSystem* Self = WeakThis.Get();
+            if (!Self || !Self->AtomSpaceClient)
+            {
+                return;
+            }
+            if (!bSuccess)
+            {
+                Self->ReportModelFailure(TEXT("pattern insight"), TextOrError);
+                return;
+            }
+
+            TSharedPtr<FJsonObject> Json;
+            FString Content;
+            if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+                !Json->TryGetStringField(TEXT("content"), Content) || Content.TrimStartAndEnd().IsEmpty())
+            {
+                Self->ReportModelFailure(TEXT("pattern insight"),
+                    FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+                return;
+            }
+
+            FInsight Insight;
+            Insight.InsightId = FString::Printf(TEXT("%s_%s"), *InsightCategory, *PatternId);
+            Insight.Content = Content.TrimStartAndEnd();
+            Insight.Category = InsightCategory;
+            double Confidence = PatternConfidence;
+            Json->TryGetNumberField(TEXT("confidence"), Confidence);
+            Insight.Confidence = FMath::Clamp(static_cast<float>(Confidence), 0.0f, 1.0f);
+            Self->AtomSpaceClient->StoreInsight(Insight);
+            Self->LastModelError.Reset();
+        }), 0.7f);
+}
+
+void UPatternLanguageSystem::RequestMinedPatternArticulation(const FString& PatternId, const FString& Sequence, int32 Support)
+{
+    TArray<FString> Recent;
+    const int32 Start = FMath::Max(0, BehaviorHistory.Num() - 20);
+    for (int32 i = Start; i < BehaviorHistory.Num(); i++)
+    {
+        const FBehaviorHistoryEntry& Entry = BehaviorHistory[i];
+        Recent.Add(FString::Printf(TEXT("%s, %s, %s, %.2f"),
+            *Entry.BehaviorType, *Entry.Context, *Entry.Outcome, Entry.Success));
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetCharacterName());
+    Slots.Add(TEXT("sequence"), Sequence);
+    Slots.Add(TEXT("support"), FString::FromInt(Support));
+    Slots.Add(TEXT("recent_behaviour"), FString::Join(Recent, TEXT("\n")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(MinedPatternPromptTemplate, Slots)));
+
+    TWeakObjectPtr<UPatternLanguageSystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, PatternId](bool bSuccess, const FString& TextOrError)
+        {
+            if (UPatternLanguageSystem* Self = WeakThis.Get())
+            {
+                Self->HandleMinedPatternReply(PatternId, bSuccess, TextOrError);
+            }
+        }), 0.7f);
+}
+
+void UPatternLanguageSystem::HandleMinedPatternReply(const FString& PatternId, bool bSuccess, const FString& TextOrError)
+{
+    // On failure the mined pattern stays unarticulated (empty Problem/Solution) and nothing is stored
+    if (!bSuccess)
+    {
+        ReportModelFailure(TEXT("mined pattern articulation"), TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Problem, Solution, InsightText;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("problem"), Problem) ||
+        !Json->TryGetStringField(TEXT("solution"), Solution) ||
+        Solution.TrimStartAndEnd().IsEmpty())
+    {
+        ReportModelFailure(TEXT("mined pattern articulation"),
+            FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+
+    FPattern* Pattern = PatternCatalog.Find(PatternId);
+    if (!Pattern)
+    {
+        return; // removed meanwhile
+    }
+    Pattern->Problem = Problem.TrimStartAndEnd();
+    Pattern->Solution = Solution.TrimStartAndEnd();
+    double Confidence = Pattern->Confidence;
+    if (Json->TryGetNumberField(TEXT("confidence"), Confidence))
+    {
+        Pattern->Confidence = FMath::Clamp(static_cast<float>(Confidence), 0.0f, 1.0f);
+    }
+    LastModelError.Reset();
+
+    if (AtomSpaceClient && Json->TryGetStringField(TEXT("insight"), InsightText) && !InsightText.TrimStartAndEnd().IsEmpty())
+    {
+        FInsight Insight;
+        Insight.InsightId = FString::Printf(TEXT("pattern_catalog_%s"), *PatternId);
+        Insight.Content = InsightText.TrimStartAndEnd();
+        Insight.Category = TEXT("pattern_catalog");
+        Insight.Confidence = Pattern->Confidence;
+        AtomSpaceClient->StoreInsight(Insight);
+    }
+
+    UE_LOG(LogPatternLanguage, Log, TEXT("Model articulated discovered pattern: %s"), *Pattern->Name);
 }
 
 // ===== Helper Methods =====

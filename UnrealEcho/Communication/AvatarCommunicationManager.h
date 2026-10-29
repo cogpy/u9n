@@ -212,6 +212,41 @@ struct FCommunicationReply
 };
 
 /**
+ * Communication log record: a system record of one exchange (incoming message and the model's
+ * reply, with its real delivery status). Kept in the manager's communication log, not in the
+ * character's diary.
+ */
+USTRUCT(BlueprintType)
+struct FCommunicationLogRecord
+{
+    GENERATED_BODY()
+
+    /** "deltachat" or "email" */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString Channel;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString Sender;
+
+    /** Email subject (empty for chat) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString Subject;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString IncomingContent;
+
+    /** The model's reply, verbatim */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString ReplyContent;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bDelivered = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FDateTime Timestamp;
+};
+
+/**
  * Conversation Context
  */
 USTRUCT(BlueprintType)
@@ -420,12 +455,24 @@ public:
 
     // ===== Narrative Integration =====
 
-    /** Records an exchange whose reply came from the model (Reply.bDelivered says whether it was sent). */
-    UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
-    void LogToNarrativeSystem(const FDeltaChatMessage& Message, const FCommunicationReply& Reply);
+    /**
+     * Records a chat exchange whose reply came from the model (Reply.bDelivered says whether it was
+     * sent) in the communication log. A system record, not written to the character's diary.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Log")
+    void RecordChatExchange(const FDeltaChatMessage& Message, const FCommunicationReply& Reply);
 
-    UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
-    void LogEmailToNarrativeSystem(const FDovecotEmail& Email, const FCommunicationReply& Reply);
+    /** Records an email exchange in the communication log (not the character's diary). */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Log")
+    void RecordEmailExchange(const FDovecotEmail& Email, const FCommunicationReply& Reply);
+
+    /** System record of exchanges (most recent last). */
+    UFUNCTION(BlueprintPure, Category = "Communication|Log")
+    TArray<FCommunicationLogRecord> GetCommunicationLog() const { return CommunicationLog; }
+
+    /** Most records kept in the communication log. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Communication|Log", meta = (ClampMin = "1"))
+    int32 MaxCommunicationLogRecords = 500;
 
     /** Asks the model to reflect on a conversation; the insight is stored only if the model answers. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
@@ -479,6 +526,11 @@ protected:
     FString BuildPersonaPrompt(const FAvatarPendingReplyInfo& Info) const;
     void ApplyModelSentiment(float IncomingSentiment);
     void AppendHistory(const FString& ParticipantId, const FString& Line);
+    void AddCommunicationLogRecord(FCommunicationLogRecord&& Record);
+
+    /** System record of exchanges; see RecordChatExchange */
+    UPROPERTY()
+    TArray<FCommunicationLogRecord> CommunicationLog;
 
     static FString ListEnumNames(const UEnum* Enum);
     static FString MatchVocabulary(const FString& Choice, const UEnum* Enum);

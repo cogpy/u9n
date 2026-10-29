@@ -183,21 +183,33 @@ int32 UActiveInferenceEngine::RunActiveInference()
     CycleState.Mode = EActiveInferenceMode::Action;
     OnInferenceModeChanged.Broadcast(CycleState.Mode);
 
+    // An untrained generative model scores policies arbitrarily: choose and execute nothing
+    if (!IsGenerativeModelTrained())
+    {
+        RefuseUntrained(TEXT("RunActiveInference"));
+        return INDEX_NONE;
+    }
+
     // Evaluate policies
     EvaluatedPolicies = EvaluatePolicies();
 
     // Select policy
-    CurrentPolicy = SelectPolicy();
+    const FPolicy Selected = SelectPolicy();
+    if (Selected.PolicyID.IsEmpty() || !Selected.ActionSequence.IsValidIndex(NextActionIndex))
+    {
+        if (LastError.IsEmpty())
+        {
+            LastError = TEXT("RunActiveInference: the selected policy has no action");
+            UE_LOG(LogTemp, Error, TEXT("ActiveInferenceEngine: %s"), *LastError);
+        }
+        return INDEX_NONE;
+    }
     CycleState.SelectedPolicy = CurrentPolicy;
     OnPolicySelected.Broadcast(CurrentPolicy);
 
-    // Get next action from policy
-    int32 ActionIndex = 0;
-    if (CurrentPolicy.ActionSequence.Num() > NextActionIndex)
-    {
-        ActionIndex = CurrentPolicy.ActionSequence[NextActionIndex];
-        NextActionIndex++;
-    }
+    // Next action from the selected policy
+    const int32 ActionIndex = CurrentPolicy.ActionSequence[NextActionIndex];
+    NextActionIndex++;
 
     // Execute action
     // Only real, environment-observed outcomes are broadcast as executed
@@ -219,6 +231,12 @@ FPolicy UActiveInferenceEngine::RunPlanningInference(int32 Horizon)
     // Update inference mode
     CycleState.Mode = EActiveInferenceMode::Planning;
     OnInferenceModeChanged.Broadcast(CycleState.Mode);
+
+    if (!IsGenerativeModelTrained())
+    {
+        RefuseUntrained(TEXT("RunPlanningInference"));
+        return FPolicy();
+    }
 
     // Generate policies with specified horizon
     TArray<FPolicy> Policies = GeneratePolicies(NumPolicies, Horizon);
@@ -533,37 +551,49 @@ TArray<FPolicy> UActiveInferenceEngine::EvaluatePolicies()
     return EvaluatedPolicies;
 }
 
+bool UActiveInferenceEngine::RefuseUntrained(const TCHAR* What)
+{
+    LastError = FString::Printf(TEXT("%s: generative model untrained (%d of %d learning updates from executed outcomes); no policy selected"),
+        What, ModelLearningUpdates, MinLearningUpdatesForTrainedModel);
+    UE_LOG(LogTemp, Error, TEXT("ActiveInferenceEngine: %s"), *LastError);
+    return false;
+}
+
 FPolicy UActiveInferenceEngine::SelectPolicy()
 {
+    if (!IsGenerativeModelTrained())
+    {
+        RefuseUntrained(TEXT("SelectPolicy"));
+        CurrentPolicy = FPolicy();
+        return CurrentPolicy;
+    }
+
     if (EvaluatedPolicies.Num() == 0)
     {
-        EvaluatePolicies();
+        EvaluatedPolicies = EvaluatePolicies();
     }
 
-    // Sample from policy distribution
-    float RandomValue = FMath::FRand();
-    float CumulativeProb = 0.0f;
-
+    // The most probable policy under the trained model (no sampling, no default)
+    const FPolicy* Best = nullptr;
     for (const FPolicy& Policy : EvaluatedPolicies)
     {
-        CumulativeProb += Policy.Probability;
-        if (RandomValue <= CumulativeProb)
+        if (Policy.ActionSequence.Num() > 0 && (!Best || Policy.Probability > Best->Probability))
         {
-            CurrentPolicy = Policy;
-            CurrentEFE = Policy.ExpectedFreeEnergy;
-            NextActionIndex = 0;
-            return Policy;
+            Best = &Policy;
         }
     }
-
-    // Fallback to first policy
-    if (EvaluatedPolicies.Num() > 0)
+    if (!Best)
     {
-        CurrentPolicy = EvaluatedPolicies[0];
-        CurrentEFE = CurrentPolicy.ExpectedFreeEnergy;
-        NextActionIndex = 0;
+        LastError = TEXT("SelectPolicy: no evaluated policy has an action");
+        UE_LOG(LogTemp, Error, TEXT("ActiveInferenceEngine: %s"), *LastError);
+        CurrentPolicy = FPolicy();
+        return CurrentPolicy;
     }
 
+    LastError.Reset();
+    CurrentPolicy = *Best;
+    CurrentEFE = CurrentPolicy.ExpectedFreeEnergy;
+    NextActionIndex = 0;
     return CurrentPolicy;
 }
 
@@ -589,7 +619,11 @@ TArray<FPolicy> UActiveInferenceEngine::GeneratePolicies(int32 Count, int32 Hori
     TArray<FPolicy> Policies;
 
     // Get number of available actions
-    int32 NumActions = NumActionFactors * StatesPerFactor;
+    const int32 NumActions = NumActionFactors * StatesPerFactor;
+    if (NumActions <= 0)
+    {
+        return Policies;
+    }
 
     for (int32 p = 0; p < Count; ++p)
     {
@@ -633,9 +667,22 @@ TArray<FPolicy> UActiveInferenceEngine::GeneratePolicies(int32 Count, int32 Hori
                 break;
 
             case EPolicyType::Exploratory:
-                // Random exploration
-                Action = FMath::RandRange(0, NumActions - 1);
+            {
+                // Explore the action tried least often in the real action history
+                TArray<int32> TriedCounts;
+                TriedCounts.Init(0, NumActions);
+                for (const FActionOutcome& Past : ActionHistory)
+                {
+                    if (Past.bExecuted && TriedCounts.IsValidIndex(Past.ActionID)) { ++TriedCounts[Past.ActionID]; }
+                }
+                Action = (p + t) % NumActions;
+                for (int32 a = 0; a < NumActions; ++a)
+                {
+                    const int32 Candidate = (p + t + a) % NumActions;
+                    if (TriedCounts[Candidate] < TriedCounts[Action]) { Action = Candidate; }
+                }
                 break;
+            }
 
             case EPolicyType::Epistemic:
                 // Information-seeking actions
@@ -878,9 +925,15 @@ void UActiveInferenceEngine::LearnModelStructure(const TArray<FActionOutcome>& E
     CycleState.Mode = EActiveInferenceMode::Learning;
     OnInferenceModeChanged.Broadcast(CycleState.Mode);
 
-    // Update likelihood mapping based on experiences
+    // Learn only from outcomes the environment actually produced
     for (const FActionOutcome& Exp : Experiences)
     {
+        if (!Exp.bExecuted || Exp.ActualOutcome.Num() == 0)
+        {
+            continue;
+        }
+        ++ModelLearningUpdates;
+
         // Update A matrix based on prediction errors
         for (int32 i = 0; i < Exp.ActualOutcome.Num() && i < GenerativeModel.LikelihoodMapping.Num(); ++i)
         {
@@ -957,6 +1010,12 @@ FPolicy UActiveInferenceEngine::PlanNicheConstruction(int32 Horizon)
     CycleState.Mode = EActiveInferenceMode::NicheConstruct;
     OnInferenceModeChanged.Broadcast(CycleState.Mode);
 
+    if (!IsGenerativeModelTrained())
+    {
+        RefuseUntrained(TEXT("PlanNicheConstruction"));
+        return FPolicy();
+    }
+
     // Generate niche-focused policies
     TArray<FPolicy> NichePolicies;
 
@@ -976,10 +1035,7 @@ FPolicy UActiveInferenceEngine::PlanNicheConstruction(int32 Horizon)
 
             for (int32 a = 0; a < NumActionFactors * StatesPerFactor; ++a)
             {
-                float Potential = GetNicheModificationPotential(a);
-
-                // Add exploration noise
-                Potential += FMath::FRandRange(0.0f, 0.2f);
+                const float Potential = GetNicheModificationPotential(a);
 
                 if (Potential > BestPotential)
                 {

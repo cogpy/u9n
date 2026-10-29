@@ -5,6 +5,109 @@
 #include "CubismSDKIntegration.h"
 #include "Model/CubismParameterComponent.h"
 #include "Model/CubismDrawableComponent.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+
+namespace
+{
+    /** A face parameter the model may set, and the range it must stay within. */
+    struct FFacialParamSpec
+    {
+        FString Id;
+        FString Meaning;
+        float Min;
+        float Max;
+    };
+
+    /**
+     * Asks the character's model to choose values for Params (Purpose says what the movement is
+     * for). Applies them when the reply names every parameter with a number; otherwise logs at
+     * Error, stores LastFacialParameterError and changes nothing.
+     */
+    void RequestModelFacialParameters(UCubismSDKIntegration* Model, const FString& Kind, const FString& Purpose,
+                                      const TArray<FFacialParamSpec>& Params)
+    {
+        TArray<FString> Lines;
+        for (const FFacialParamSpec& P : Params)
+        {
+            Lines.Add(FString::Printf(TEXT("%s (%s): %.2f to %.2f"), *P.Id, *P.Meaning, P.Min, P.Max));
+        }
+
+        TMap<FString, FString> Slots;
+        Slots.Add(TEXT("character"), !Model->CharacterName.IsEmpty() ? Model->CharacterName
+            : (Model->GetOuter() ? Model->GetOuter()->GetName() : Model->GetName()));
+        Slots.Add(TEXT("purpose"), Purpose);
+        Slots.Add(TEXT("chaos"), FString::Printf(TEXT("%.2f"), Model->ChaosLevel));
+        Slots.Add(TEXT("resonance"), FString::Printf(TEXT("%.2f"), Model->EchoResonance));
+        Slots.Add(TEXT("cognitive_load"), FString::Printf(TEXT("%.2f"), Model->CognitiveLoad));
+        Slots.Add(TEXT("parameters"), FString::Join(Lines, TEXT("\n")));
+
+        TArray<FEchoModelMessage> Messages;
+        Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(Model->FacialParameterPromptTemplate, Slots)));
+
+        const int32 RequestSerial = ++Model->FacialRequestSerials.FindOrAdd(Kind);
+        TWeakObjectPtr<UCubismSDKIntegration> WeakModel(Model);
+        UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+            [WeakModel, Kind, RequestSerial, Params](bool bSuccess, const FString& TextOrError)
+            {
+                UCubismSDKIntegration* Target = WeakModel.Get();
+                if (!Target)
+                {
+                    return;
+                }
+                const int32* Current = Target->FacialRequestSerials.Find(Kind);
+                if (!Current || *Current != RequestSerial)
+                {
+                    return; // superseded by a newer request of this kind
+                }
+
+                auto Fail = [Target, &Kind](const FString& Error)
+                {
+                    Target->LastFacialParameterError = Error;
+                    UE_LOG(LogTemp, Error, TEXT("CubismSDKIntegration: no model %s: %s"), *Kind, *Error);
+                };
+                if (!bSuccess)
+                {
+                    Fail(TextOrError);
+                    return;
+                }
+
+                TSharedPtr<FJsonObject> Json;
+                if (!UEchoModelClient::ParseJsonObject(TextOrError, Json))
+                {
+                    Fail(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+                    return;
+                }
+
+                TArray<float> Values;
+                for (const FFacialParamSpec& P : Params)
+                {
+                    double Value = 0.0;
+                    FString Text;
+                    if (!Json->TryGetNumberField(P.Id, Value))
+                    {
+                        // Smaller models sometimes quote numbers; accept a numeric string too
+                        if (Json->TryGetStringField(P.Id, Text) && Text.TrimStartAndEnd().IsNumeric())
+                        {
+                            Value = FCString::Atod(*Text.TrimStartAndEnd());
+                        }
+                        else
+                        {
+                            Fail(FString::Printf(TEXT("model reply has no number for %s: %s"), *P.Id, *TextOrError.Left(200)));
+                            return;
+                        }
+                    }
+                    Values.Add(FMath::Clamp(static_cast<float>(Value), P.Min, P.Max));
+                }
+
+                Target->LastFacialParameterError.Reset();
+                for (int32 Index = 0; Index < Params.Num(); ++Index)
+                {
+                    Target->SetParameterValue(FName(*Params[Index].Id), Values[Index]);
+                }
+            }), 0.9f);
+    }
+}
 
 UCubismSDKIntegration::UCubismSDKIntegration()
     : ChaosLevel(0.3f)
@@ -13,6 +116,15 @@ UCubismSDKIntegration::UCubismSDKIntegration()
     , GlitchIntensity(0.0f)
     , ModelComponent(nullptr)
 {
+    FacialParameterPromptTemplate = TEXT(
+        "You are {character}, an expressive Live2D avatar. {purpose} Your current state: chaos level {chaos} "
+        "(0 calm .. 1 wild), echo resonance {resonance} (0 .. 1), cognitive load {cognitive_load} (0 .. 1). "
+        "Choose a value for each face parameter, within its range:\n{parameters}\n"
+        "Reply with only a JSON object mapping each parameter name to its number: {\"<parameter>\": <number>, ...}");
+    MicroExpressionPurpose = TEXT(
+        "Show a fleeting micro-expression: a brief, involuntary flicker of your brows and mouth that reveals what you feel right now.");
+    ChaoticMotionPurpose = TEXT(
+        "Make a small restless movement of your head and eyes that expresses your chaotic energy.");
 }
 
 UCubismSDKIntegration::~UCubismSDKIntegration()
@@ -233,20 +345,19 @@ void UCubismEnhancedFeatures::ApplyHyperChaoticBehavior(UCubismSDKIntegration* M
     // Store chaos level in DTE-specific state
     Model->ChaosLevel = ChaosFactor;
 
-    // Random micro-adjustments based on chaos (use seeded random for reproducibility)
-    FRandomStream RandStream(FPlatformTime::Cycles());
-    const float RandomAngleX = RandStream.FRandRange(-5.0f, 5.0f) * ChaosFactor;
-    const float RandomAngleY = RandStream.FRandRange(-5.0f, 5.0f) * ChaosFactor;
+    const float Scale = FMath::Abs(ChaosFactor);
+    if (Scale <= KINDA_SMALL_NUMBER)
+    {
+        return; // no room to move
+    }
 
-    Model->SetParameterValue(TEXT("ParamAngleX"), RandomAngleX);
-    Model->SetParameterValue(TEXT("ParamAngleY"), RandomAngleY);
-
-    // Chaotic eye movement
-    const float RandomEyeX = RandStream.FRandRange(-0.3f, 0.3f) * ChaosFactor;
-    const float RandomEyeY = RandStream.FRandRange(-0.2f, 0.2f) * ChaosFactor;
-
-    Model->SetParameterValue(TEXT("ParamEyeBallX"), RandomEyeX);
-    Model->SetParameterValue(TEXT("ParamEyeBallY"), RandomEyeY);
+    // The character's model chooses the head/eye motion within chaos-scaled ranges
+    TArray<FFacialParamSpec> Params;
+    Params.Add({ TEXT("ParamAngleX"), TEXT("head turn, negative = left"), -5.0f * Scale, 5.0f * Scale });
+    Params.Add({ TEXT("ParamAngleY"), TEXT("head tilt, negative = down"), -5.0f * Scale, 5.0f * Scale });
+    Params.Add({ TEXT("ParamEyeBallX"), TEXT("gaze, negative = left"), -0.3f * Scale, 0.3f * Scale });
+    Params.Add({ TEXT("ParamEyeBallY"), TEXT("gaze, negative = down"), -0.2f * Scale, 0.2f * Scale });
+    RequestModelFacialParameters(Model, TEXT("chaotic motion"), Model->ChaoticMotionPurpose, Params);
 }
 
 void UCubismEnhancedFeatures::GenerateEyeSparkle(UCubismSDKIntegration* Model, float Intensity)
@@ -277,15 +388,12 @@ void UCubismEnhancedFeatures::GenerateChaoticMicroExpression(UCubismSDKIntegrati
         return;
     }
 
-    // Use seeded random for reproducibility
-    FRandomStream RandStream(FPlatformTime::Cycles());
-    const float RandomBrowL = RandStream.FRandRange(-0.2f, 0.2f);
-    const float RandomBrowR = RandStream.FRandRange(-0.2f, 0.2f);
-    const float RandomMouth = RandStream.FRandRange(-0.1f, 0.1f);
-
-    Model->SetParameterValue(TEXT("ParamBrowLY"), RandomBrowL);
-    Model->SetParameterValue(TEXT("ParamBrowRY"), RandomBrowR);
-    Model->SetParameterValue(TEXT("ParamMouthForm"), RandomMouth);
+    // The character's model chooses the micro-expression within the allowed ranges
+    TArray<FFacialParamSpec> Params;
+    Params.Add({ TEXT("ParamBrowLY"), TEXT("left brow height, negative = lowered"), -0.2f, 0.2f });
+    Params.Add({ TEXT("ParamBrowRY"), TEXT("right brow height, negative = lowered"), -0.2f, 0.2f });
+    Params.Add({ TEXT("ParamMouthForm"), TEXT("mouth shape, negative = frown, positive = smile"), -0.1f, 0.1f });
+    RequestModelFacialParameters(Model, TEXT("micro-expression"), Model->MicroExpressionPurpose, Params);
 }
 
 void UCubismEnhancedFeatures::ApplyEchoResonanceEffect(UCubismSDKIntegration* Model, float Resonance)
@@ -312,18 +420,10 @@ void UCubismEnhancedFeatures::GenerateGlitchEffect(UCubismSDKIntegration* Model,
     // Store in DTE-specific state
     Model->GlitchIntensity = FMath::Clamp(Severity, 0.0f, 1.0f);
 
+    // Purely visual render effect. The glitch never moves the character's head:
+    // head pose belongs to the character and comes only from the model
+    // (RequestModelFacialParameters).
     Model->SetParameterValue(TEXT("ParamGlitchIntensity"), Model->GlitchIntensity);
-
-    // Random displacement during glitch
-    if (Severity > 0.5f)
-    {
-        FRandomStream RandStream(FPlatformTime::Cycles());
-        const float GlitchX = RandStream.FRandRange(-10.0f, 10.0f) * Severity;
-        const float GlitchY = RandStream.FRandRange(-10.0f, 10.0f) * Severity;
-
-        Model->SetParameterValue(TEXT("ParamAngleX"), GlitchX);
-        Model->SetParameterValue(TEXT("ParamAngleY"), GlitchY);
-    }
 }
 
 void UCubismEnhancedFeatures::ApplyHairShimmer(UCubismSDKIntegration* Model, float Time, float Intensity)

@@ -18,6 +18,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoaching, const FString
 /** A coaching request failed; Error is a system message, never shown as the companion's words. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoachingFailed, const FString&, Topic, const FString&, Error);
 
+/** The model chose Strategy to counter OpponentID */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCounterStrategyChosen, const FString&, OpponentID, const FString&, Strategy);
+
+/** A counter-strategy request failed; Error is a system message, nothing was chosen */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCounterStrategyRequestFailed, const FString&, OpponentID, const FString&, Error);
+
 /**
  * Game forward model for MCTS: writes the state that results from taking Action in State into
  * OutNextState. Returns false when the action is not legal/applicable in State.
@@ -630,9 +636,42 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gaming|Opponent")
     TArray<FString> GetOpponentWeaknesses(const FString& OpponentID) const;
 
-    /** Get counter-strategy recommendation */
+    /**
+     * Ask the model to choose a counter-strategy against the opponent from its observed behaviour.
+     * The answer, validated against CounterStrategyVocabulary plus the pattern library's responses,
+     * arrives on OnCounterStrategyChosen and is then returned by GetCounterStrategy; on failure
+     * OnCounterStrategyRequestFailed fires, the error is logged and kept, and nothing is chosen.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gaming|Opponent")
+    void RequestCounterStrategy(const FString& OpponentID);
+
+    /** The model's last counter-strategy for this opponent, or empty if it has not chosen one */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Opponent")
     FString GetCounterStrategy(const FString& OpponentID) const;
+
+    /** Why the last counter-strategy request failed, or empty */
+    UFUNCTION(BlueprintPure, Category = "Gaming|Opponent")
+    FString GetLastCounterStrategyError() const { return LastCounterStrategyError; }
+
+    /** Strategies the model may choose as a counter (pattern-library responses are offered too) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaming|Model")
+    TArray<FString> CounterStrategyVocabulary;
+
+    /**
+     * Instructions to the model for choosing a counter-strategy. Slots: {observations},
+     * {model_confidence}, {tendencies}, {preferred}, {weaknesses}, {opponent_skill}, {strategies}.
+     * The reply must be {"strategy": "<strategy>"}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaming|Model", meta = (MultiLine = true))
+    FString CounterStrategyPromptTemplate;
+
+    /** The model chose a counter-strategy against an opponent */
+    UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
+    FOnCounterStrategyChosen OnCounterStrategyChosen;
+
+    /** No counter-strategy could be obtained from the model; nothing was chosen */
+    UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
+    FOnCounterStrategyRequestFailed OnCounterStrategyRequestFailed;
 
     // ========================================
     // REPLAY ANALYSIS
@@ -733,8 +772,9 @@ public:
 
     /**
      * Run Monte Carlo Tree Search over MCTSLegalActions using the bound transition model and the
-     * ESN value estimate. Returns the most valuable root action, or an empty string when MCTS cannot
-     * run (no legal actions, no transition model, or no action applicable) - see GetLastMCTSError.
+     * trained ESN value estimate. Returns the most valuable root action, or an empty string when MCTS
+     * cannot run (no legal actions, no transition model, untrained ESN value head, or no action
+     * applicable) - see GetLastMCTSError.
      */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     FString RunMCTS(const TArray<float>& GameState, int32 SimulationCount = 1000);
@@ -743,9 +783,20 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gaming|ML")
     FString GetLastMCTSError() const { return LastMCTSError; }
 
-    /** Get value estimate for game state */
+    /**
+     * ESN value estimate for a game state. Meaningful only when IsESNValueHeadTrained();
+     * otherwise logs an error and returns 0 (there is no default value).
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     float EstimateStateValue(const TArray<float>& GameState);
+
+    /** True once UpdateESNTraining has applied MinESNTrainingUpdatesForValue updates to the output weights */
+    UFUNCTION(BlueprintPure, Category = "Gaming|ML")
+    bool IsESNValueHeadTrained() const;
+
+    /** Training updates the ESN value head needs before MCTS may use it */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaming|ML", meta = (ClampMin = "1"))
+    int32 MinESNTrainingUpdatesForValue = 200;
 
     // ========================================
     // EVENTS
@@ -802,6 +853,9 @@ private:
     /** ESN leaking rate */
     float ESNLeakingRate = 0.3f;
 
+    /** Output-weight training updates applied by UpdateESNTraining */
+    int32 ESNTrainingUpdates = 0;
+
     /** Flow state entry threshold */
     float FlowEntryThreshold = 0.7f;
 
@@ -832,6 +886,19 @@ private:
 
     /** Calculate flow state intensity */
     float CalculateFlowIntensity() const;
+
+    /** The model's last counter-strategy per opponent */
+    TMap<FString, FString> ModelCounterStrategies;
+
+    /** Latest counter-strategy request per opponent (older replies are ignored) */
+    TMap<FString, int32> CounterStrategyRequestSerials;
+    int32 CounterStrategyRequestCounter = 0;
+
+    FString LastCounterStrategyError;
+
+    void HandleCounterStrategyReply(int32 RequestSerial, const FString& OpponentID, TArray<FString> OfferedStrategies,
+                                    bool bSuccess, const FString& TextOrError);
+    void FailCounterStrategyRequest(const FString& OpponentID, const FString& Error);
 
     /** Game forward model for MCTS */
     FEchoGameTransitionModel MCTSTransitionModel;

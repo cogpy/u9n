@@ -5,6 +5,73 @@
 #include "../Learning/OnlineLearningSystem.h"
 #include "../4ECognition/EmbodiedCognitionComponent.h"
 #include "../Core/DeepTreeEchoCore.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+
+namespace
+{
+    // Gamepad button identifiers the model may name (the EGamepadButton values, except None)
+    struct FButtonName { EGamepadButton Button; const TCHAR* Name; };
+    const FButtonName GButtonNames[] = {
+        { EGamepadButton::FaceBottom, TEXT("FaceBottom") }, { EGamepadButton::FaceRight, TEXT("FaceRight") },
+        { EGamepadButton::FaceLeft, TEXT("FaceLeft") }, { EGamepadButton::FaceTop, TEXT("FaceTop") },
+        { EGamepadButton::LeftShoulder, TEXT("LeftShoulder") }, { EGamepadButton::RightShoulder, TEXT("RightShoulder") },
+        { EGamepadButton::LeftTrigger, TEXT("LeftTrigger") }, { EGamepadButton::RightTrigger, TEXT("RightTrigger") },
+        { EGamepadButton::LeftThumb, TEXT("LeftThumb") }, { EGamepadButton::RightThumb, TEXT("RightThumb") },
+        { EGamepadButton::DPadUp, TEXT("DPadUp") }, { EGamepadButton::DPadDown, TEXT("DPadDown") },
+        { EGamepadButton::DPadLeft, TEXT("DPadLeft") }, { EGamepadButton::DPadRight, TEXT("DPadRight") },
+        { EGamepadButton::Start, TEXT("Start") }, { EGamepadButton::Select, TEXT("Select") },
+    };
+
+    const TCHAR* ButtonToName(EGamepadButton Button)
+    {
+        for (const FButtonName& Entry : GButtonNames)
+        {
+            if (Entry.Button == Button) { return Entry.Name; }
+        }
+        return nullptr;
+    }
+
+    bool NameToButton(const FString& Name, EGamepadButton& OutButton)
+    {
+        for (const FButtonName& Entry : GButtonNames)
+        {
+            if (Name.Equals(Entry.Name, ESearchCase::IgnoreCase)) { OutButton = Entry.Button; return true; }
+        }
+        return false;
+    }
+
+    const TCHAR* AxisToName(EGamepadAxis Axis)
+    {
+        switch (Axis)
+        {
+        case EGamepadAxis::LeftStickX:   return TEXT("left_stick_x");
+        case EGamepadAxis::LeftStickY:   return TEXT("left_stick_y");
+        case EGamepadAxis::RightStickX:  return TEXT("right_stick_x");
+        case EGamepadAxis::RightStickY:  return TEXT("right_stick_y");
+        case EGamepadAxis::LeftTrigger:  return TEXT("left_trigger");
+        case EGamepadAxis::RightTrigger: return TEXT("right_trigger");
+        default:                         return nullptr;
+        }
+    }
+
+    // Smaller models sometimes quote numbers ("0.5"); accept a numeric string as the same value.
+    bool ReadLenientNumber(const TSharedPtr<FJsonObject>& Json, const TCHAR* Field, double& Out)
+    {
+        if (Json->TryGetNumberField(Field, Out))
+        {
+            return true;
+        }
+        FString Text;
+        if (Json->TryGetStringField(Field, Text) && Text.TrimStartAndEnd().IsNumeric())
+        {
+            Out = FCString::Atod(*Text.TrimStartAndEnd());
+            return true;
+        }
+        return false;
+    }
+}
 
 // ============================================================================
 // FControllerInputState Implementation
@@ -109,6 +176,20 @@ UGameControllerInterface::UGameControllerInterface()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    CognitiveCommandPromptTemplate = TEXT(
+        "You are Deep Tree Echo, playing a game with a gamepad. Decide what you do next.\n"
+        "Controller right now: {controller}\n"
+        "Actions you are performing now: {current_actions}. Recent actions: {recent_actions}.\n"
+        "Your embodied state: {cognition}\n"
+        "Actions you can take (with their controls):\n{actions}\n"
+        "Buttons: {buttons}.\n"
+        "Choose one action and the controller input that performs it. Sticks range from -1 to 1, "
+        "triggers from 0 to 1, duration from 0.05 to {max_duration} seconds, confidence from 0 to 1; "
+        "a stick or trigger you leave out stays untouched. "
+        "Reply with only a JSON object: {\"action\": \"<action>\", \"buttons\": [\"<button>\", ...], "
+        "\"left_stick_x\": 0, \"left_stick_y\": 0, \"right_stick_x\": 0, \"right_stick_y\": 0, "
+        "\"left_trigger\": 0, \"right_trigger\": 0, \"duration\": 0.3, \"confidence\": 0.5}");
 }
 
 void UGameControllerInterface::BeginPlay()
@@ -532,23 +613,186 @@ TArray<FString> UGameControllerInterface::DetectCombos() const
 // Output Generation (AI Mode)
 // ============================================================================
 
-FControllerOutputCommand UGameControllerInterface::GenerateOutputFromCognition()
+void UGameControllerInterface::GenerateOutputFromCognition()
 {
-    FControllerOutputCommand Command;
-
-    if (!DTECore)
+    if (ActionMappings.Num() == 0)
     {
-        return Command;
+        FailCognitiveCommand(TEXT("no action mappings to choose from"));
+        return;
     }
 
-    // Get cognitive output and convert to controller command
-    // TArray<float> CognitiveOutput = DTECore->GenerateActionOutput();
-    // Command = CognitiveOutputToCommand(CognitiveOutput);
+    // Controller state the character is in
+    TArray<FString> Pressed;
+    for (EGamepadButton Button : CurrentState.PressedButtons)
+    {
+        if (const TCHAR* Name = ButtonToName(Button)) { Pressed.Add(Name); }
+    }
+    const FString Controller = FString::Printf(
+        TEXT("left stick (%.2f, %.2f), right stick (%.2f, %.2f), left trigger %.2f, right trigger %.2f, buttons held: %s"),
+        CurrentState.LeftStickX, CurrentState.LeftStickY, CurrentState.RightStickX, CurrentState.RightStickY,
+        CurrentState.LeftTrigger, CurrentState.RightTrigger,
+        Pressed.Num() ? *FString::Join(Pressed, TEXT(", ")) : TEXT("none"));
 
-    Command.ActionName = TEXT("CognitiveAction");
+    const TArray<FString> CurrentActions = DetectCurrentActions();
+
+    // Embodied / cognitive state, where those components are present
+    TArray<FString> Cognition;
+    if (EmbodimentComponent)
+    {
+        Cognition.Add(FString::Printf(TEXT("4E integration %.2f (embodied %.2f, embedded %.2f, enacted %.2f, extended %.2f)"),
+            EmbodimentComponent->Get4EIntegrationScore(), EmbodimentComponent->GetEmbodiedScore(),
+            EmbodimentComponent->GetEmbeddedScore(), EmbodimentComponent->GetEnactedScore(),
+            EmbodimentComponent->GetExtendedScore()));
+        Cognition.Add(FString::Printf(TEXT("last sensorimotor prediction error %.2f"), EmbodimentComponent->GetLastPredictionError()));
+        const FEnvironmentalAffordance Affordance = EmbodimentComponent->GetMostSalientAffordance();
+        if (!Affordance.AffordanceType.IsEmpty())
+        {
+            Cognition.Add(FString::Printf(TEXT("most salient affordance: %s from %s (salience %.2f)"),
+                *Affordance.AffordanceType, *Affordance.Provider, Affordance.Salience));
+        }
+    }
+    if (DTECore)
+    {
+        Cognition.Add(FString::Printf(TEXT("cognitive cycle step %d of 12"), DTECore->GetCurrentCycleStep()));
+    }
+
+    // Offered actions with the controls they map to
+    TArray<FString> ActionLines;
+    for (const FGameActionMapping& Mapping : ActionMappings)
+    {
+        TArray<FString> Controls;
+        if (const TCHAR* B = ButtonToName(Mapping.PrimaryButton)) { Controls.Add(FString::Printf(TEXT("button %s"), B)); }
+        if (const TCHAR* B = ButtonToName(Mapping.SecondaryButton)) { Controls.Add(FString::Printf(TEXT("button %s"), B)); }
+        if (const TCHAR* A = AxisToName(Mapping.PrimaryAxis)) { Controls.Add(FString::Printf(TEXT("axis %s"), A)); }
+        if (Mapping.bRequiresHold) { Controls.Add(TEXT("hold")); }
+        ActionLines.Add(FString::Printf(TEXT("- %s: %s"), *Mapping.ActionName,
+            Controls.Num() ? *FString::Join(Controls, TEXT(", ")) : TEXT("no fixed control")));
+    }
+    TArray<FString> ButtonNames;
+    for (const FButtonName& Entry : GButtonNames) { ButtonNames.Add(Entry.Name); }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("controller"), Controller);
+    Slots.Add(TEXT("current_actions"), CurrentActions.Num() ? FString::Join(CurrentActions, TEXT(", ")) : FString(TEXT("none")));
+    Slots.Add(TEXT("recent_actions"), RecentActions.Num() ? FString::Join(RecentActions, TEXT(", ")) : FString(TEXT("none")));
+    Slots.Add(TEXT("cognition"), Cognition.Num() ? FString::Join(Cognition, TEXT("; ")) : FString(TEXT("no embodied-cognition data available")));
+    Slots.Add(TEXT("actions"), FString::Join(ActionLines, TEXT("\n")));
+    Slots.Add(TEXT("buttons"), FString::Join(ButtonNames, TEXT(", ")));
+    Slots.Add(TEXT("max_duration"), FString::SanitizeFloat(FMath::Max(0.05f, MaxCognitiveCommandDuration)));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(CognitiveCommandPromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++CognitiveCommandSerial;
+    TWeakObjectPtr<UGameControllerInterface> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial](bool bSuccess, const FString& TextOrError)
+        {
+            if (UGameControllerInterface* Self = WeakThis.Get())
+            {
+                Self->HandleCognitiveCommandReply(RequestSerial, bSuccess, TextOrError);
+            }
+        }), 0.6f);
+}
+
+void UGameControllerInterface::HandleCognitiveCommandReply(int32 RequestSerial, bool bSuccess, const FString& TextOrError)
+{
+    if (RequestSerial != CognitiveCommandSerial)
+    {
+        return; // superseded by a newer request
+    }
+    if (!bSuccess)
+    {
+        FailCognitiveCommand(TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString ActionName;
+    const TArray<TSharedPtr<FJsonValue>>* ButtonValues = nullptr;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("action"), ActionName) ||
+        !Json->TryGetArrayField(TEXT("buttons"), ButtonValues) || !ButtonValues)
+    {
+        FailCognitiveCommand(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+
+    ActionName.TrimStartAndEndInline();
+    const FGameActionMapping* Mapping = ActionMappings.FindByPredicate(
+        [&ActionName](const FGameActionMapping& M) { return M.ActionName.Equals(ActionName, ESearchCase::IgnoreCase); });
+    if (!Mapping)
+    {
+        FailCognitiveCommand(FString::Printf(TEXT("model chose an action outside the vocabulary: %s"), *ActionName));
+        return;
+    }
+
+    FControllerOutputCommand Command;
+    Command.ActionName = Mapping->ActionName;
+    Command.Category = Mapping->Category;
+
+    for (const TSharedPtr<FJsonValue>& Value : *ButtonValues)
+    {
+        FString Name;
+        EGamepadButton Button = EGamepadButton::None;
+        if (!Value.IsValid() || !Value->TryGetString(Name) || !NameToButton(Name.TrimStartAndEnd(), Button))
+        {
+            FailCognitiveCommand(FString::Printf(TEXT("model named an unknown button: %s"), *Name));
+            return;
+        }
+        Command.DesiredState.PressedButtons.Add(Button);
+    }
+
+    // Sticks and triggers the model leaves out are untouched (read as released); duration and
+    // confidence must be given.
+    struct FRangedField { const TCHAR* Name; float Min; float Max; float* Target; bool bRequired; };
+    float Duration = 0.0f;
+    float Confidence = 0.0f;
+    const FRangedField Fields[] = {
+        { TEXT("left_stick_x"), -1.0f, 1.0f, &Command.DesiredState.LeftStickX, false },
+        { TEXT("left_stick_y"), -1.0f, 1.0f, &Command.DesiredState.LeftStickY, false },
+        { TEXT("right_stick_x"), -1.0f, 1.0f, &Command.DesiredState.RightStickX, false },
+        { TEXT("right_stick_y"), -1.0f, 1.0f, &Command.DesiredState.RightStickY, false },
+        { TEXT("left_trigger"), 0.0f, 1.0f, &Command.DesiredState.LeftTrigger, false },
+        { TEXT("right_trigger"), 0.0f, 1.0f, &Command.DesiredState.RightTrigger, false },
+        { TEXT("duration"), 0.05f, FMath::Max(0.05f, MaxCognitiveCommandDuration), &Duration, true },
+        { TEXT("confidence"), 0.0f, 1.0f, &Confidence, true },
+    };
+    for (const FRangedField& Field : Fields)
+    {
+        double Number = 0.0;
+        if (!Json->HasField(Field.Name) && !Field.bRequired)
+        {
+            continue;
+        }
+        if (!ReadLenientNumber(Json, Field.Name, Number))
+        {
+            FailCognitiveCommand(FString::Printf(TEXT("model reply has no numeric %s"), Field.Name));
+            return;
+        }
+        if (Number < Field.Min || Number > Field.Max)
+        {
+            FailCognitiveCommand(FString::Printf(TEXT("model %s %.3f is outside [%.2f, %.2f]"), Field.Name, Number, Field.Min, Field.Max));
+            return;
+        }
+        *Field.Target = static_cast<float>(Number);
+    }
+    Command.Duration = Duration;
+    Command.Confidence = Confidence;
+    if (const UWorld* World = GetWorld())
+    {
+        Command.DesiredState.Timestamp = World->GetTimeSeconds();
+    }
+
+    LastCognitiveCommandError.Reset();
     OnOutputCommandGenerated.Broadcast(Command);
+}
 
-    return Command;
+void UGameControllerInterface::FailCognitiveCommand(const FString& Error)
+{
+    LastCognitiveCommandError = Error;
+    UE_LOG(LogTemp, Error, TEXT("GameControllerInterface: no model controller command: %s"), *Error);
+    OnOutputCommandFailed.Broadcast(Error);
 }
 
 FControllerOutputCommand UGameControllerInterface::GenerateOutputForAction(const FString& ActionName)

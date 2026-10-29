@@ -370,8 +370,12 @@ void UnrealAvatar::send_perception_to_cognitive() {
 }
 
 void UnrealAvatar::receive_action_from_cognitive() {
-    Vector output = cognitive_system_->get_output();
-    distribute_actions(output);
+    // Actions come only from the trained readout of the cognitive state; the raw
+    // (randomly weighted) reservoir state never drives movement or expression.
+    if (!cognitive_system_ || !has_trained_action_readout()) return;
+    Vector state = cognitive_system_->get_output();
+    if (state.size() != action_readout_->input_size()) return;
+    distribute_actions(action_readout_->apply(state));
 }
 
 Vector UnrealAvatar::aggregate_perception() const {

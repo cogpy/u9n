@@ -5,11 +5,61 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Math/UnrealMathUtility.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+
+/** One channel's validated model expression (local to this file) */
+struct FSys6ChosenExpression { int32 Index; float Intensity; float Valence; float Arousal; };
+
+namespace
+{
+    const TCHAR* ExpressionChannelName(EAvatarExpressionChannel Channel)
+    {
+        switch (Channel)
+        {
+        case EAvatarExpressionChannel::Facial:    return TEXT("facial");
+        case EAvatarExpressionChannel::Body:      return TEXT("body");
+        case EAvatarExpressionChannel::Gesture:   return TEXT("gesture");
+        case EAvatarExpressionChannel::Gaze:      return TEXT("gaze");
+        case EAvatarExpressionChannel::Posture:   return TEXT("posture");
+        case EAvatarExpressionChannel::Breathing: return TEXT("breathing");
+        case EAvatarExpressionChannel::Voice:     return TEXT("voice");
+        case EAvatarExpressionChannel::Aura:      return TEXT("aura");
+        default:                                  return TEXT("unknown");
+        }
+    }
+
+    // Smaller models sometimes quote numbers ("0.5"); accept a numeric string as the same value.
+    bool ReadLenientNumber(const TSharedPtr<FJsonObject>& Json, const TCHAR* Field, double& Out)
+    {
+        if (Json->TryGetNumberField(Field, Out))
+        {
+            return true;
+        }
+        FString Text;
+        if (Json->TryGetStringField(Field, Text) && Text.TrimStartAndEnd().IsNumeric())
+        {
+            Out = FCString::Atod(*Text.TrimStartAndEnd());
+            return true;
+        }
+        return false;
+    }
+}
 
 USys6AvatarIntegration::USys6AvatarIntegration()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    ExpressionPromptTemplate = TEXT(
+        "You are Deep Tree Echo, an embodied avatar. Decide how your body expresses your current state.\n"
+        "What is happening: {context}\n"
+        "Cognitive cycle: {sys6}. Active 4E dimension: {dimension}. Coherence {coherence}, purposefulness {entelechy}.\n"
+        "Sensorimotor coupling strengths: {couplings}.\n"
+        "Current expression per channel: {current}.\n"
+        "For each of these channels: {channels} - choose intensity (0 to 1), valence (-1 negative to 1 positive) and arousal (0 calm to 1 excited).\n"
+        "Reply with only a JSON object mapping each channel name to its values, for example "
+        "{\"facial\": {\"intensity\": 0.4, \"valence\": 0.2, \"arousal\": 0.3}, ...}");
 }
 
 void USys6AvatarIntegration::BeginPlay()
@@ -28,6 +78,8 @@ void USys6AvatarIntegration::TickComponent(float DeltaTime, ELevelTick TickType,
     {
         return;
     }
+
+    SecondsSinceExpressionRequest += DeltaTime;
 
     // Update expression states
     ExpressionTimer += DeltaTime;
@@ -124,9 +176,11 @@ void USys6AvatarIntegration::InitializeExpressionStates()
     {
         FSys6ExpressionState State;
         State.Channel = Channel;
-        State.Intensity = 0.5f;
+        // Neutral until the model chooses this channel's expression
+        State.Intensity = 0.0f;
         State.Valence = 0.0f;
-        State.Arousal = 0.5f;
+        State.Arousal = 0.0f;
+        State.bModelChosen = false;
         State.DyadicInfluence = 0.0f;
         State.TriadicInfluence = 0.0f;
         State.StageInfluence = 0.0f;
@@ -271,42 +325,201 @@ void USys6AvatarIntegration::InitializeSensorimotorCouplings()
 
 void USys6AvatarIntegration::UpdateExpressionStates(float DeltaTime)
 {
-    if (!Sys6Engine)
+    // Clock influences: measured sys6 state, kept as model input only
+    if (Sys6Engine)
     {
+        const FSys6FullState Sys6State = Sys6Engine->GetFullState();
+        const float DyadicInfluence = MapDyadicToExpression(Sys6State.DyadicPhase);
+        const float TriadicInfluence = MapTriadicToExpression(Sys6State.TriadicPhase);
+        const float StageInfluence = static_cast<float>(static_cast<int32>(Sys6State.PentadicStage)) / 4.0f;
+        for (FSys6ExpressionState& ExprState : CognitiveState.ExpressionStates)
+        {
+            ExprState.DyadicInfluence = FMath::Lerp(ExprState.DyadicInfluence, DyadicInfluence, ExpressionSmoothing);
+            ExprState.TriadicInfluence = FMath::Lerp(ExprState.TriadicInfluence, TriadicInfluence, ExpressionSmoothing);
+            ExprState.StageInfluence = FMath::Lerp(ExprState.StageInfluence, StageInfluence, ExpressionSmoothing);
+        }
+    }
+
+    // The expression itself: ease each channel toward the model's choice. Channels the model has
+    // not chosen stay neutral and broadcast nothing.
+    for (FSys6ExpressionState& ExprState : CognitiveState.ExpressionStates)
+    {
+        if (!ExprState.bModelChosen)
+        {
+            continue;
+        }
+        const float OldIntensity = ExprState.Intensity;
+        const float OldValence = ExprState.Valence;
+        const float OldArousal = ExprState.Arousal;
+        ExprState.Intensity = FMath::Lerp(ExprState.Intensity, ExprState.TargetIntensity, ExpressionSmoothing);
+        ExprState.Valence = FMath::Lerp(ExprState.Valence, ExprState.TargetValence, ExpressionSmoothing);
+        ExprState.Arousal = FMath::Lerp(ExprState.Arousal, ExprState.TargetArousal, ExpressionSmoothing);
+        if (FMath::Abs(ExprState.Intensity - OldIntensity) > KINDA_SMALL_NUMBER
+            || FMath::Abs(ExprState.Valence - OldValence) > KINDA_SMALL_NUMBER
+            || FMath::Abs(ExprState.Arousal - OldArousal) > KINDA_SMALL_NUMBER)
+        {
+            OnExpressionChanged.Broadcast(ExprState.Channel, ExprState.Intensity);
+        }
+    }
+}
+
+bool USys6AvatarIntegration::HasModelExpression() const
+{
+    for (const FSys6ExpressionState& ExprState : CognitiveState.ExpressionStates)
+    {
+        if (ExprState.bModelChosen) { return true; }
+    }
+    return false;
+}
+
+bool USys6AvatarIntegration::RequestModelExpression()
+{
+    if (CognitiveState.ExpressionStates.Num() == 0)
+    {
+        FailExpressionRequest(TEXT("no expression channels (InitializeIntegration has not run)"));
+        return false;
+    }
+    if (ExpressionPromptTemplate.IsEmpty())
+    {
+        FailExpressionRequest(TEXT("ExpressionPromptTemplate is empty"));
+        return false;
+    }
+    if (bExpressionRequestInFlight)
+    {
+        return false; // the previous request will answer
+    }
+
+    FString Sys6Text = FString::Printf(TEXT("step %d, cognitive step %d"), CognitiveState.Sys6Step, CognitiveState.CognitiveStep);
+    if (Sys6Engine)
+    {
+        const FSys6FullState Sys6State = Sys6Engine->GetFullState();
+        Sys6Text += FString::Printf(TEXT(", dyadic phase %s, triadic phase %d, stage %d"),
+            Sys6State.DyadicPhase == EDyadicPhase::A ? TEXT("A") : TEXT("B"),
+            static_cast<int32>(Sys6State.TriadicPhase) + 1, static_cast<int32>(Sys6State.PentadicStage) + 1);
+    }
+
+    static const TCHAR* DimensionNames[] = { TEXT("embodied"), TEXT("embedded"), TEXT("enacted"), TEXT("extended") };
+    const int32 DimIndex = FMath::Clamp(static_cast<int32>(CognitiveState.ActiveDimension), 0, 3);
+
+    FString Couplings;
+    for (const FAvatarSensorimotorCoupling& Coupling : SensorimotorCouplings)
+    {
+        Couplings += FString::Printf(TEXT("%s%s->%s %.2f"), Couplings.IsEmpty() ? TEXT("") : TEXT(", "),
+            *Coupling.SensoryChannel, *Coupling.MotorChannel, Coupling.CouplingStrength);
+    }
+
+    TArray<FString> Channels;
+    FString Current;
+    for (const FSys6ExpressionState& ExprState : CognitiveState.ExpressionStates)
+    {
+        const FString Name = ExpressionChannelName(ExprState.Channel);
+        Channels.Add(Name);
+        Current += ExprState.bModelChosen
+            ? FString::Printf(TEXT("%s%s intensity %.2f valence %+.2f arousal %.2f"), Current.IsEmpty() ? TEXT("") : TEXT("; "),
+                *Name, ExprState.Intensity, ExprState.Valence, ExprState.Arousal)
+            : FString::Printf(TEXT("%s%s neutral"), Current.IsEmpty() ? TEXT("") : TEXT("; "), *Name);
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("context"), ExpressionContext.IsEmpty() ? FString(TEXT("(nothing reported by the game)")) : ExpressionContext);
+    Slots.Add(TEXT("sys6"), Sys6Text);
+    Slots.Add(TEXT("dimension"), DimensionNames[DimIndex]);
+    Slots.Add(TEXT("coherence"), FString::Printf(TEXT("%.2f"), CognitiveState.Coherence));
+    Slots.Add(TEXT("entelechy"), FString::Printf(TEXT("%.2f"), CognitiveState.EntelechyLevel));
+    Slots.Add(TEXT("couplings"), Couplings.IsEmpty() ? FString(TEXT("(none)")) : Couplings);
+    Slots.Add(TEXT("current"), Current);
+    Slots.Add(TEXT("channels"), FString::Join(Channels, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(ExpressionPromptTemplate, Slots)));
+
+    bExpressionRequestInFlight = true;
+    SecondsSinceExpressionRequest = 0.0f;
+    TWeakObjectPtr<USys6AvatarIntegration> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (USys6AvatarIntegration* Self = WeakThis.Get())
+            {
+                Self->HandleExpressionReply(bSuccess, TextOrError);
+            }
+        }), 0.6f);
+    return true;
+}
+
+void USys6AvatarIntegration::HandleExpressionReply(bool bSuccess, const FString& TextOrError)
+{
+    bExpressionRequestInFlight = false;
+    if (!bSuccess)
+    {
+        FailExpressionRequest(TextOrError);
         return;
     }
 
-    // Get sys6 state
-    FSys6FullState Sys6State = Sys6Engine->GetFullState();
-
-    // Map sys6 phases to expression influences
-    float DyadicInfluence = MapDyadicToExpression(Sys6State.DyadicPhase);
-    float TriadicInfluence = MapTriadicToExpression(Sys6State.TriadicPhase);
-    float StageInfluence = static_cast<float>(static_cast<int32>(Sys6State.PentadicStage)) / 4.0f;
-
-    // Update each expression channel
-    for (FSys6ExpressionState& ExprState : CognitiveState.ExpressionStates)
+    TSharedPtr<FJsonObject> Json;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json.IsValid())
     {
-        // Smooth transition
-        ExprState.DyadicInfluence = FMath::Lerp(ExprState.DyadicInfluence, DyadicInfluence, ExpressionSmoothing);
-        ExprState.TriadicInfluence = FMath::Lerp(ExprState.TriadicInfluence, TriadicInfluence, ExpressionSmoothing);
-        ExprState.StageInfluence = FMath::Lerp(ExprState.StageInfluence, StageInfluence, ExpressionSmoothing);
-
-        // Compute intensity from influences
-        float TargetIntensity = (ExprState.DyadicInfluence + ExprState.TriadicInfluence + ExprState.StageInfluence) / 3.0f;
-        ExprState.Intensity = FMath::Lerp(ExprState.Intensity, TargetIntensity, ExpressionSmoothing);
-
-        // Compute valence from dyadic phase (A = positive, B = negative)
-        float TargetValence = (Sys6State.DyadicPhase == EDyadicPhase::A) ? 0.3f : -0.3f;
-        ExprState.Valence = FMath::Lerp(ExprState.Valence, TargetValence, ExpressionSmoothing * 0.5f);
-
-        // Compute arousal from triadic phase
-        float TargetArousal = 0.3f + (static_cast<float>(static_cast<int32>(Sys6State.TriadicPhase)) * 0.2f);
-        ExprState.Arousal = FMath::Lerp(ExprState.Arousal, TargetArousal, ExpressionSmoothing);
-
-        // Fire event
-        OnExpressionChanged.Broadcast(ExprState.Channel, ExprState.Intensity);
+        FailExpressionRequest(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
     }
+
+    // Validate every channel first; apply only the channels the model answered validly
+    TArray<FSys6ChosenExpression> Chosen;
+    TArray<FString> Rejected;
+    for (int32 i = 0; i < CognitiveState.ExpressionStates.Num(); ++i)
+    {
+        const FString Name = ExpressionChannelName(CognitiveState.ExpressionStates[i].Channel);
+        const TSharedPtr<FJsonObject>* ChannelJson = nullptr;
+        for (const auto& Field : Json->Values)
+        {
+            if (Field.Key.Equals(Name, ESearchCase::IgnoreCase) && Field.Value.IsValid())
+            {
+                Field.Value->TryGetObject(ChannelJson);
+                break;
+            }
+        }
+        if (!ChannelJson || !ChannelJson->IsValid())
+        {
+            continue;
+        }
+        double Intensity = 0.0, Valence = 0.0, Arousal = 0.0;
+        if (!ReadLenientNumber(*ChannelJson, TEXT("intensity"), Intensity)
+            || !ReadLenientNumber(*ChannelJson, TEXT("valence"), Valence)
+            || !ReadLenientNumber(*ChannelJson, TEXT("arousal"), Arousal)
+            || Intensity < 0.0 || Intensity > 1.0 || Valence < -1.0 || Valence > 1.0 || Arousal < 0.0 || Arousal > 1.0)
+        {
+            Rejected.Add(Name);
+            continue;
+        }
+        Chosen.Add({ i, static_cast<float>(Intensity), static_cast<float>(Valence), static_cast<float>(Arousal) });
+    }
+
+    if (Chosen.Num() == 0)
+    {
+        FailExpressionRequest(FString::Printf(TEXT("model reply chose no valid channel expression: %s"), *TextOrError.Left(200)));
+        return;
+    }
+    if (Rejected.Num() > 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Sys6AvatarIntegration: model values out of range or missing for: %s"), *FString::Join(Rejected, TEXT(", ")));
+    }
+
+    LastExpressionError.Reset();
+    for (const FSys6ChosenExpression& C : Chosen)
+    {
+        FSys6ExpressionState& ExprState = CognitiveState.ExpressionStates[C.Index];
+        ExprState.bModelChosen = true;
+        ExprState.TargetIntensity = C.Intensity;
+        ExprState.TargetValence = C.Valence;
+        ExprState.TargetArousal = C.Arousal;
+    }
+}
+
+void USys6AvatarIntegration::FailExpressionRequest(const FString& Error)
+{
+    LastExpressionError = Error;
+    UE_LOG(LogTemp, Error, TEXT("Sys6AvatarIntegration: no model expression (unchanged): %s"), *Error);
+    OnExpressionRequestFailed.Broadcast(Error);
 }
 
 void USys6AvatarIntegration::Update4EDimension(float DeltaTime)
@@ -520,7 +733,7 @@ void USys6AvatarIntegration::SetExpressionValence(EAvatarExpressionChannel Chann
 
 void USys6AvatarIntegration::ApplySys6ToExpression()
 {
-    // Force update expression states from current sys6 state
+    // Refresh clock influences and ease toward the model's chosen expression
     UpdateExpressionStates(1.0f / ExpressionUpdateRate);
 }
 
@@ -624,6 +837,12 @@ void USys6AvatarIntegration::HandleSys6StepAdvanced(int32 OldStep, int32 NewStep
 {
     CognitiveState.Sys6Step = NewStep;
     ApplySys6ToExpression();
+
+    // The clock schedules when to ask; the model chooses what the expression is
+    if (!bExpressionRequestInFlight && SecondsSinceExpressionRequest >= ExpressionRequestInterval)
+    {
+        RequestModelExpression();
+    }
 }
 
 void USys6AvatarIntegration::HandleSys6StageChanged(EPentadicStage OldStage, EPentadicStage NewStage)
@@ -638,20 +857,10 @@ void USys6AvatarIntegration::HandleSys6StageChanged(EPentadicStage OldStage, EPe
 
 void USys6AvatarIntegration::HandleSys6DyadChanged(EDyadicPhase OldPhase, EDyadicPhase NewPhase)
 {
-    // Update expression valence based on dyadic phase
-    float NewValence = (NewPhase == EDyadicPhase::A) ? 0.3f : -0.3f;
-    for (FSys6ExpressionState& State : CognitiveState.ExpressionStates)
-    {
-        State.Valence = FMath::Lerp(State.Valence, NewValence, 0.5f);
-    }
+    // The dyadic phase is clock state (model input via UpdateExpressionStates); it sets no expression
 }
 
 void USys6AvatarIntegration::HandleSys6TriadChanged(ETriadicPhase OldPhase, ETriadicPhase NewPhase)
 {
-    // Update expression arousal based on triadic phase
-    float NewArousal = MapTriadicToExpression(NewPhase);
-    for (FSys6ExpressionState& State : CognitiveState.ExpressionStates)
-    {
-        State.Arousal = FMath::Lerp(State.Arousal, NewArousal, 0.5f);
-    }
+    // The triadic phase is clock state (model input via UpdateExpressionStates); it sets no expression
 }

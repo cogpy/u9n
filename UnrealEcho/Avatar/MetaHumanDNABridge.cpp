@@ -7,6 +7,8 @@
 #include "../Neurochemical/NeurochemicalSimulationComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMetaHumanDNA, Log, All);
 
@@ -18,6 +20,33 @@ UMetaHumanDNABridge::UMetaHumanDNABridge()
     : bDNALoaded(false)
     , DNAVersion(EDNAVersion::Unknown)
 {
+    // Render map: label -> blend shapes at full intensity (the model chooses the label)
+    auto AddRender = [this](const TCHAR* Label, std::initializer_list<TPair<const TCHAR*, float>> Shapes)
+    {
+        FDNAExpressionRender Render;
+        for (const TPair<const TCHAR*, float>& Shape : Shapes)
+        {
+            Render.BlendShapeWeights.Add(Shape.Key, Shape.Value);
+        }
+        ExpressionRenderMap.Add(Label, Render);
+    };
+    AddRender(TEXT("neutral"), {});
+    AddRender(TEXT("joy"), { {TEXT("Smile_L"), 1.0f}, {TEXT("Smile_R"), 1.0f}, {TEXT("EyeWarmth_L"), 0.5f}, {TEXT("EyeWarmth_R"), 0.5f} });
+    AddRender(TEXT("contentment"), { {TEXT("Smile_L"), 0.5f}, {TEXT("Smile_R"), 0.5f}, {TEXT("EyeWarmth_L"), 0.4f}, {TEXT("EyeWarmth_R"), 0.4f} });
+    AddRender(TEXT("warmth"), { {TEXT("EyeWarmth_L"), 1.0f}, {TEXT("EyeWarmth_R"), 1.0f}, {TEXT("Smile_L"), 0.4f}, {TEXT("Smile_R"), 0.4f} });
+    AddRender(TEXT("stress"), { {TEXT("BrowTension_L"), 1.0f}, {TEXT("BrowTension_R"), 1.0f} });
+    AddRender(TEXT("alertness"), { {TEXT("EyeOpen_L"), 1.0f}, {TEXT("EyeOpen_R"), 1.0f} });
+    AddRender(TEXT("sadness"), { {TEXT("Frown_L"), 0.8f}, {TEXT("Frown_R"), 0.8f}, {TEXT("BrowTension_L"), 0.3f}, {TEXT("BrowTension_R"), 0.3f} });
+    AddRender(TEXT("anger"), { {TEXT("BrowTension_L"), 1.0f}, {TEXT("BrowTension_R"), 1.0f}, {TEXT("Frown_L"), 0.5f}, {TEXT("Frown_R"), 0.5f} });
+    AddRender(TEXT("fear"), { {TEXT("EyeOpen_L"), 1.0f}, {TEXT("EyeOpen_R"), 1.0f}, {TEXT("BrowTension_L"), 0.6f}, {TEXT("BrowTension_R"), 0.6f} });
+    AddRender(TEXT("surprise"), { {TEXT("EyeOpen_L"), 1.0f}, {TEXT("EyeOpen_R"), 1.0f}, {TEXT("BrowRaise_L"), 1.0f}, {TEXT("BrowRaise_R"), 1.0f} });
+
+    FacialExpressionPromptTemplate = TEXT(
+        "You are Deep Tree Echo. Your body's current neurochemical levels (0 = depleted, 1 = very high) are: {neurochemicals}.\n"
+        "Your face currently shows: {current}.\n"
+        "Choose the facial expression you show now as exactly one of: {expressions}; and its intensity between 0 and 1.\n"
+        "Reply with only a JSON object: {\"expression\": \"<expression>\", \"intensity\": <number>}");
+
     UE_LOG(LogMetaHumanDNA, Log, TEXT("MetaHumanDNABridge initialized"));
 }
 
@@ -55,18 +84,18 @@ bool UMetaHumanDNABridge::LoadDNAFile(const FString& DNAPath)
     // Load DNA using Python wrapper
     if (!PythonWrapper->LoadDNA(DNAPath))
     {
-        UE_LOG(LogMetaHumanDNA, Error, TEXT("Failed to load DNA file: %s"), *DNAPath);
+        UE_LOG(LogMetaHumanDNA, Error, TEXT("Failed to load DNA file: %s (%s)"), *DNAPath, *PythonWrapper->GetLastError());
         return false;
     }
 
     LoadedDNAPath = DNAPath;
     bDNALoaded = true;
 
-    // Parse DNA version
+    // Parse DNA version (as the DNA reports it; never assumed)
     if (!ParseDNAVersion())
     {
-        UE_LOG(LogMetaHumanDNA, Warning, TEXT("Could not determine DNA version, assuming DHI"));
-        DNAVersion = EDNAVersion::DHI;
+        UE_LOG(LogMetaHumanDNA, Warning, TEXT("DNA reports an unrecognised rig definition '%s'; version Unknown"),
+            *PythonWrapper->GetDNADatabaseName());
     }
 
     // Load DNA data into cache
@@ -344,7 +373,7 @@ bool UMetaHumanDNABridge::ApplyDNAToSkeleton(USkeletalMeshComponent* SkeletalMes
         return false;
     }
 
-    USkeletalMesh* Mesh = SkeletalMesh->SkeletalMesh;
+    USkeletalMesh* Mesh = SkeletalMesh->GetSkeletalMeshAsset();
     if (!Mesh)
     {
         UE_LOG(LogMetaHumanDNA, Error, TEXT("Skeletal mesh component has no mesh"));
@@ -360,7 +389,7 @@ bool UMetaHumanDNABridge::ApplyDNAToSkeleton(USkeletalMeshComponent* SkeletalMes
 
     // Map DNA joints to Unreal skeleton
     TArray<FString> DNAJoints = GetJointNames();
-    const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+    const FReferenceSkeleton& RefSkeleton = Mesh->GetRefSkeleton();
 
     int32 MappedJoints = 0;
     for (const FString& DNAJointName : DNAJoints)
@@ -383,7 +412,130 @@ bool UMetaHumanDNABridge::ApplyDNAToSkeleton(USkeletalMeshComponent* SkeletalMes
 
 void UMetaHumanDNABridge::SyncNeurochemicalStateToBlendShapes(const FNeurochemicalState& State, TMap<FString, float>& OutBlendShapeWeights)
 {
-    MapNeurochemicalToBlendShapes(State, OutBlendShapeWeights);
+    // The model chooses the expression; until it has, there is nothing to render
+    RequestFacialExpressionFromNeurochemicals(State);
+    OutBlendShapeWeights = ModelExpressionWeights;
+}
+
+bool UMetaHumanDNABridge::RequestFacialExpressionFromNeurochemicals(const FNeurochemicalState& State)
+{
+    TArray<FString> Offered;
+    for (const auto& Pair : ExpressionRenderMap)
+    {
+        if (!Pair.Key.IsEmpty()) { Offered.Add(Pair.Key); }
+    }
+    if (Offered.Num() == 0)
+    {
+        FailFacialExpressionRequest(TEXT("ExpressionRenderMap is empty; no expressions to offer"));
+        return false;
+    }
+    if (FacialExpressionPromptTemplate.IsEmpty())
+    {
+        FailFacialExpressionRequest(TEXT("FacialExpressionPromptTemplate is empty"));
+        return false;
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("neurochemicals"), FString::Printf(
+        TEXT("dopamine %.2f, serotonin %.2f, norepinephrine %.2f, oxytocin %.2f, cortisol %.2f, endorphins %.2f, GABA %.2f, glutamate %.2f, acetylcholine %.2f"),
+        State.DopamineLevel, State.SerotoninLevel, State.NorepinephrineLevel, State.OxytocinLevel, State.CortisolLevel,
+        State.EndorphinsLevel, State.GABALevel, State.GlutamateLevel, State.AcetylcholineLevel));
+    Slots.Add(TEXT("current"), ModelFacialExpression.IsEmpty()
+        ? FString(TEXT("no expression yet"))
+        : FString::Printf(TEXT("%s at intensity %.2f"), *ModelFacialExpression, ModelFacialExpressionIntensity));
+    Slots.Add(TEXT("expressions"), FString::Join(Offered, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(FacialExpressionPromptTemplate, Slots)));
+
+    const int32 Serial = ++FacialExpressionRequestSerial;
+    TWeakObjectPtr<UMetaHumanDNABridge> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, Serial](bool bSuccess, const FString& TextOrError)
+        {
+            if (UMetaHumanDNABridge* Self = WeakThis.Get())
+            {
+                Self->HandleFacialExpressionReply(Serial, bSuccess, TextOrError);
+            }
+        }), 0.5f);
+    return true;
+}
+
+void UMetaHumanDNABridge::HandleFacialExpressionReply(int32 Serial, bool bSuccess, const FString& TextOrError)
+{
+    if (Serial != FacialExpressionRequestSerial)
+    {
+        return; // superseded by a newer request
+    }
+    if (!bSuccess)
+    {
+        FailFacialExpressionRequest(TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Expression;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("expression"), Expression))
+    {
+        FailFacialExpressionRequest(FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+    Expression.TrimStartAndEndInline();
+    const FDNAExpressionRender* Render = nullptr;
+    FString Label;
+    for (const auto& Pair : ExpressionRenderMap)
+    {
+        if (Pair.Key.Equals(Expression, ESearchCase::IgnoreCase))
+        {
+            Render = &Pair.Value;
+            Label = Pair.Key;
+            break;
+        }
+    }
+    if (!Render)
+    {
+        FailFacialExpressionRequest(FString::Printf(TEXT("model chose an expression outside the vocabulary: %s"), *Expression));
+        return;
+    }
+
+    // Smaller models sometimes quote numbers; accept a numeric string as the same value
+    double Intensity = 0.0;
+    FString IntensityText;
+    if (!Json->TryGetNumberField(TEXT("intensity"), Intensity))
+    {
+        if (Json->TryGetStringField(TEXT("intensity"), IntensityText) && IntensityText.TrimStartAndEnd().IsNumeric())
+        {
+            Intensity = FCString::Atod(*IntensityText.TrimStartAndEnd());
+        }
+        else
+        {
+            FailFacialExpressionRequest(TEXT("model reply has no numeric intensity"));
+            return;
+        }
+    }
+    if (Intensity < 0.0 || Intensity > 1.0)
+    {
+        FailFacialExpressionRequest(FString::Printf(TEXT("model intensity %.3f is outside [0,1]"), Intensity));
+        return;
+    }
+
+    // Render the model's expression
+    LastFacialExpressionError.Reset();
+    ModelFacialExpression = Label;
+    ModelFacialExpressionIntensity = static_cast<float>(Intensity);
+    ModelExpressionWeights.Empty();
+    for (const auto& Shape : Render->BlendShapeWeights)
+    {
+        ModelExpressionWeights.Add(Shape.Key, FMath::Clamp(Shape.Value * ModelFacialExpressionIntensity, 0.0f, 1.0f));
+    }
+    OnFacialExpressionChosen.Broadcast(ModelFacialExpression, ModelFacialExpressionIntensity);
+}
+
+void UMetaHumanDNABridge::FailFacialExpressionRequest(const FString& Error)
+{
+    LastFacialExpressionError = Error;
+    UE_LOG(LogMetaHumanDNA, Error, TEXT("No model facial expression (unchanged): %s"), *Error);
+    OnFacialExpressionFailed.Broadcast(Error);
 }
 
 void UMetaHumanDNABridge::SyncEmotionalStateToFacialRig(const FEmotionalState& Emotion, TMap<FString, float>& OutBlendShapeWeights)
@@ -529,8 +681,13 @@ bool UMetaHumanDNABridge::LoadDNAData()
 
     ClearCache();
 
-    // Load joint data
+    // Load joint data (read from the DNA by the DNACalib bindings)
     TArray<FString> JointNames = PythonWrapper->GetJointNames();
+    if (JointNames.Num() == 0)
+    {
+        UE_LOG(LogMetaHumanDNA, Error, TEXT("DNACalib returned no joints: %s"), *PythonWrapper->GetLastError());
+        return false;
+    }
     for (int32 i = 0; i < JointNames.Num(); ++i)
     {
         FDNAJointInfo JointInfo;
@@ -557,7 +714,15 @@ bool UMetaHumanDNABridge::LoadDNAData()
         BlendShapeInfoCache.Add(BlendShapeInfo);
     }
 
-    // TODO: Load mesh data from Python wrapper
+    // Load mesh data
+    TArray<FString> MeshNames = PythonWrapper->GetMeshNames();
+    for (int32 i = 0; i < MeshNames.Num(); ++i)
+    {
+        FDNAMeshInfo MeshInfo;
+        MeshInfo.MeshName = MeshNames[i];
+        MeshInfo.MeshIndex = i;
+        MeshInfoCache.Add(MeshInfo);
+    }
 
     return true;
 }
@@ -569,10 +734,20 @@ bool UMetaHumanDNABridge::ParseDNAVersion()
         return false;
     }
 
-    // TODO: Get DNA version from Python wrapper
-    // For now, assume DHI
-    DNAVersion = EDNAVersion::DHI;
-    return true;
+    // The rig definition the DNA itself reports (reader.getDBName())
+    const FString DBName = PythonWrapper->GetDNADatabaseName();
+    if (DBName.Equals(TEXT("MH.4"), ESearchCase::IgnoreCase))
+    {
+        DNAVersion = EDNAVersion::MH4;
+        return true;
+    }
+    if (DBName.Equals(TEXT("DHI"), ESearchCase::IgnoreCase))
+    {
+        DNAVersion = EDNAVersion::DHI;
+        return true;
+    }
+    DNAVersion = EDNAVersion::Unknown;
+    return false;
 }
 
 void UMetaHumanDNABridge::InitializeBlendShapeWeights()
@@ -584,36 +759,6 @@ void UMetaHumanDNABridge::InitializeBlendShapeWeights()
     {
         CurrentBlendShapeWeights.Add(BlendShapeInfo.BlendShapeName, 0.0f);
     }
-}
-
-void UMetaHumanDNABridge::MapNeurochemicalToBlendShapes(const FNeurochemicalState& State, TMap<FString, float>& OutWeights)
-{
-    // Example mapping: Dopamine -> Smile intensity
-    // This is a simplified example; real mapping would be more complex
-    
-    OutWeights.Empty();
-
-    // Map dopamine to smile/happiness blend shapes
-    float SmileIntensity = State.Dopamine * 0.8f + State.Serotonin * 0.5f;
-    OutWeights.Add(TEXT("Smile_L"), SmileIntensity);
-    OutWeights.Add(TEXT("Smile_R"), SmileIntensity);
-
-    // Map cortisol to stress/tension blend shapes
-    float StressIntensity = State.Cortisol * 0.7f;
-    OutWeights.Add(TEXT("BrowTension_L"), StressIntensity);
-    OutWeights.Add(TEXT("BrowTension_R"), StressIntensity);
-
-    // Map oxytocin to warmth/openness blend shapes
-    float WarmthIntensity = State.Oxytocin * 0.6f;
-    OutWeights.Add(TEXT("EyeWarmth_L"), WarmthIntensity);
-    OutWeights.Add(TEXT("EyeWarmth_R"), WarmthIntensity);
-
-    // Map norepinephrine to alertness blend shapes
-    float AlertnessIntensity = State.Norepinephrine * 0.5f;
-    OutWeights.Add(TEXT("EyeOpen_L"), AlertnessIntensity);
-    OutWeights.Add(TEXT("EyeOpen_R"), AlertnessIntensity);
-
-    // TODO: Add more sophisticated mappings based on DNA version
 }
 
 void UMetaHumanDNABridge::MapEmotionalStateToBlendShapes(const FEmotionalState& Emotion, TMap<FString, float>& OutWeights)

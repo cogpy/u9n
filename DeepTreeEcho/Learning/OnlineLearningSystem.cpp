@@ -197,38 +197,43 @@ FString UOnlineLearningSystem::SelectAction(const FString& State, const TArray<F
         return TEXT("");
     }
 
-    // Epsilon-greedy policy
-    if (FMath::FRand() < ExplorationRate)
+    // Explicit, labelled training mode only: epsilon-greedy exploration (random actions)
+    if (bExplorationTrainingMode)
     {
-        // Explore: random action
-        int32 RandomIndex = FMath::RandRange(0, AvailableActions.Num() - 1);
-        return AvailableActions[RandomIndex];
+        if (FMath::FRand() < ExplorationRate)
+        {
+            return AvailableActions[FMath::RandRange(0, AvailableActions.Num() - 1)];
+        }
     }
-    else
+
+    // Exploit: the best action whose Q-value has actually been learned for this state
+    FString BestAction;
+    float BestQ = -FLT_MAX;
+    for (const FString& Action : AvailableActions)
     {
-        // Exploit: best known action
-        FString BestAction = TEXT("");
-        float BestQ = -FLT_MAX;
-
-        for (const FString& Action : AvailableActions)
+        const FQValueEntry* Entry = QTable.Find(MakeQKey(State, Action));
+        if (!Entry || Entry->VisitCount < FMath::Max(1, MinVisitsForLearnedAction))
         {
-            float Q = GetQValue(State, Action);
-            if (Q > BestQ)
-            {
-                BestQ = Q;
-                BestAction = Action;
-            }
+            continue; // untrained for this state
         }
-
-        // If no Q-values exist, choose randomly
-        if (BestAction.IsEmpty())
+        if (Entry->QValue > BestQ)
         {
-            int32 RandomIndex = FMath::RandRange(0, AvailableActions.Num() - 1);
-            return AvailableActions[RandomIndex];
+            BestQ = Entry->QValue;
+            BestAction = Action;
         }
-
-        return BestAction;
     }
+
+    if (BestAction.IsEmpty())
+    {
+        if (bExplorationTrainingMode)
+        {
+            // Training: nothing learned here yet, so explore
+            return AvailableActions[FMath::RandRange(0, AvailableActions.Num() - 1)];
+        }
+        // Untrained for this state: no action (never a random stand-in)
+        UE_LOG(LogTemp, Verbose, TEXT("OnlineLearningSystem: no learned action for state '%s'"), *State);
+    }
+    return BestAction;
 }
 
 void UOnlineLearningSystem::ProvideReward(float Reward, const FString& Context)

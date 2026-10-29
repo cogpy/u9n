@@ -210,6 +210,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInputStateChanged, const FControl
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActionDetected, const FString&, ActionName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnComboDetected, const FString&, ComboName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOutputCommandGenerated, const FControllerOutputCommand&, Command);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOutputCommandFailed, const FString&, Error);
 
 /**
  * Game Controller Interface Component
@@ -262,6 +263,18 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     TArray<FGameActionMapping> ActionMappings;
 
+    /**
+     * Instructions to the model for choosing the controller command in AI mode. Slots:
+     * {controller}, {current_actions}, {recent_actions}, {cognition}, {actions}, {buttons},
+     * {max_duration}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Model", meta = (MultiLine = true))
+    FString CognitiveCommandPromptTemplate;
+
+    /** Longest command duration (seconds) accepted from the model. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Model", meta = (ClampMin = "0.05"))
+    float MaxCognitiveCommandDuration = 2.0f;
+
     // ========================================
     // EVENTS
     // ========================================
@@ -286,6 +299,10 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnOutputCommandGenerated OnOutputCommandGenerated;
+
+    /** The model could not produce a valid command; nothing was generated */
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnOutputCommandFailed OnOutputCommandFailed;
 
     // ========================================
     // INPUT PROCESSING
@@ -351,9 +368,17 @@ public:
     // OUTPUT GENERATION (AI MODE)
     // ========================================
 
-    /** Generate output from cognitive state */
+    /**
+     * Ask the model for the next controller command given the current controller, action and
+     * embodied-cognition state. The validated command arrives on OnOutputCommandGenerated;
+     * on failure OnOutputCommandFailed fires and no command is generated.
+     */
     UFUNCTION(BlueprintCallable, Category = "Output")
-    FControllerOutputCommand GenerateOutputFromCognition();
+    void GenerateOutputFromCognition();
+
+    /** Why the last cognitive command request failed, or empty */
+    UFUNCTION(BlueprintPure, Category = "Output")
+    FString GetLastCognitiveCommandError() const { return LastCognitiveCommandError; }
 
     /** Generate output from action name */
     UFUNCTION(BlueprintCallable, Category = "Output")
@@ -474,4 +499,10 @@ protected:
 
     void ProcessOutputQueue(float DeltaTime);
     void BroadcastCognitiveState();
+
+    void HandleCognitiveCommandReply(int32 RequestSerial, bool bSuccess, const FString& TextOrError);
+    void FailCognitiveCommand(const FString& Error);
+
+    int32 CognitiveCommandSerial = 0;
+    FString LastCognitiveCommandError;
 };

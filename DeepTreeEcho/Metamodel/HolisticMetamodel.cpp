@@ -469,45 +469,45 @@ FDynamicStreamState UHolisticMetamodel::GetStreamState(EDynamicStream StreamType
 }
 
 // ========================================
-// HOLISTIC INSIGHTS
+// THRESHOLD MEASUREMENTS (telemetry; character insights come only from the model)
 // ========================================
 
-TArray<FString> UHolisticMetamodel::GenerateHolisticInsights() const
+TArray<FString> UHolisticMetamodel::GetThresholdMeasurements() const
 {
     // Threshold crossings reported as measurements (diagnostics, not the character's voice)
-    TArray<FString> Insights;
+    TArray<FString> Measurements;
 
     if (CurrentState.Monad.Coherence > 0.8f)
     {
-        Insights.Add(FString::Printf(TEXT("monad coherence %.2f > 0.80"), CurrentState.Monad.Coherence));
+        Measurements.Add(FString::Printf(TEXT("monad coherence %.2f > 0.80"), CurrentState.Monad.Coherence));
     }
 
     if (CurrentState.TriadicSystem.Equilibrium > 0.9f)
     {
-        Insights.Add(FString::Printf(TEXT("triadic equilibrium %.2f > 0.90"), CurrentState.TriadicSystem.Equilibrium));
+        Measurements.Add(FString::Printf(TEXT("triadic equilibrium %.2f > 0.90"), CurrentState.TriadicSystem.Equilibrium));
     }
 
     for (const FDynamicStreamState& Stream : CurrentState.DynamicStreams)
     {
         if (Stream.Energy > 0.7f)
         {
-            Insights.Add(FString::Printf(TEXT("%s stream energy %.2f > 0.70"),
+            Measurements.Add(FString::Printf(TEXT("%s stream energy %.2f > 0.70"),
                 *UEnum::GetDisplayValueAsText(Stream.StreamType).ToString(), Stream.Energy));
         }
     }
 
     if (CurrentState.MetamodelCoherence > 0.85f)
     {
-        Insights.Add(FString::Printf(TEXT("metamodel coherence %.2f > 0.85"), CurrentState.MetamodelCoherence));
+        Measurements.Add(FString::Printf(TEXT("metamodel coherence %.2f > 0.85"), CurrentState.MetamodelCoherence));
     }
 
     if (CurrentState.EvolutionaryHelix.Momentum > 1.0f)
     {
-        Insights.Add(FString::Printf(TEXT("evolutionary momentum %.2f > 1.00 at spiral level %d"),
+        Measurements.Add(FString::Printf(TEXT("evolutionary momentum %.2f > 1.00 at spiral level %d"),
             CurrentState.EvolutionaryHelix.Momentum, CurrentState.EvolutionaryHelix.SpiralLevel));
     }
 
-    return Insights;
+    return Measurements;
 }
 
 float UHolisticMetamodel::AssessSelfAwareness() const

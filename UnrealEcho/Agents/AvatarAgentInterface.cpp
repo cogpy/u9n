@@ -343,19 +343,51 @@ void UAvatarAgentInterface::BroadcastPerception(const FAgentPerception& Percepti
 
 void UAvatarAgentInterface::ShareKnowledge(const FKnowledgeGraph& Graph)
 {
-    // Store in AtomSpace
+    // The graph is structural data, not something the character wrote: it is stored as atoms
+    // (topic, member concepts, labelled relations), never as an entry in the character's insight store.
     if (AtomSpaceClient)
     {
-        FInsight Insight;
-        Insight.InsightId = Graph.GraphId;
-        Insight.Content = FString::Printf(TEXT("Knowledge graph on topic: %s (%d nodes)"),
-            *Graph.Topic, Graph.NodeIds.Num());
-        Insight.Category = TEXT("shared_knowledge");
-        Insight.Confidence = Graph.Confidence;
-        AtomSpaceClient->StoreInsight(Insight);
+        const FTruthValue TV(Graph.Confidence, Graph.Confidence);
+        const FAtomHandle TopicNode = AtomSpaceClient->CreateNode(EAtomType::ConceptNode, Graph.Topic, TV);
+
+        TMap<FString, FAtomHandle> NodeHandles;
+        for (const FString& NodeId : Graph.NodeIds)
+        {
+            const FString* Label = Graph.NodeLabels.Find(NodeId);
+            const FAtomHandle Node = AtomSpaceClient->CreateNode(EAtomType::ConceptNode,
+                (Label && !Label->IsEmpty()) ? *Label : NodeId, TV);
+            NodeHandles.Add(NodeId, Node);
+            if (TopicNode.bIsValid && Node.bIsValid)
+            {
+                AtomSpaceClient->CreateLink(EAtomType::MemberLink, { Node, TopicNode }, TV);
+            }
+        }
+
+        // Edges are "node1->node2:relation"
+        for (const FString& Edge : Graph.EdgeDescriptions)
+        {
+            FString Pair, Relation, From, To;
+            if (!Edge.Split(TEXT(":"), &Pair, &Relation) || !Pair.Split(TEXT("->"), &From, &To))
+            {
+                continue;
+            }
+            const FAtomHandle* FromNode = NodeHandles.Find(From.TrimStartAndEnd());
+            const FAtomHandle* ToNode = NodeHandles.Find(To.TrimStartAndEnd());
+            if (!FromNode || !ToNode || !FromNode->bIsValid || !ToNode->bIsValid)
+            {
+                continue;
+            }
+            const FAtomHandle Predicate = AtomSpaceClient->CreateNode(EAtomType::PredicateNode, Relation.TrimStartAndEnd(), TV);
+            const FAtomHandle Args = AtomSpaceClient->CreateLink(EAtomType::ListLink, { *FromNode, *ToNode }, TV);
+            if (Predicate.bIsValid && Args.bIsValid)
+            {
+                AtomSpaceClient->CreateLink(EAtomType::EvaluationLink, { Predicate, Args }, TV);
+            }
+        }
     }
 
-    UE_LOG(LogAgentInterface, Log, TEXT("Shared knowledge graph: %s"), *Graph.Topic);
+    UE_LOG(LogAgentInterface, Log, TEXT("Shared knowledge graph: %s (%d nodes, %d edges)"),
+        *Graph.Topic, Graph.NodeIds.Num(), Graph.EdgeDescriptions.Num());
 }
 
 void UAvatarAgentInterface::VisualizeSharedKnowledge(const FKnowledgeGraph& Graph)

@@ -360,19 +360,43 @@ public:
     UFUNCTION(BlueprintCallable, Category = "PatternLanguage|Development")
     FPattern GetNextDevelopmentalPattern();
 
+    /** Asks the character model to write a diary entry about the current quality metrics; stored only on success. */
     UFUNCTION(BlueprintCallable, Category = "PatternLanguage|Development")
     void TrackDevelopmentalProgress();
 
     // ===== AtomSpace Integration =====
 
+    /** Asks the character model to write an insight for each articulated pattern; each is stored only on success. */
     UFUNCTION(BlueprintCallable, Category = "PatternLanguage|AtomSpace")
     void StorePatternsInAtomSpace();
 
     UFUNCTION(BlueprintCallable, Category = "PatternLanguage|AtomSpace")
     void LoadPatternsFromAtomSpace();
 
+    /** Asks the character model to write the insight it shares about Pattern; stored only on success. */
     UFUNCTION(BlueprintCallable, Category = "PatternLanguage|AtomSpace")
     void SharePatternWithAgents(const FPattern& Pattern);
+
+    // ===== Model Prompts =====
+    // The pattern catalog is internal design data. Anything placed in the character's diary or
+    // insight stores is written by the character model (UEchoModelClient) from these
+    // instructions; when no model answers, nothing is stored and the error is logged.
+
+    /** Slots: {character}, {pattern}, {purpose}. Must ask for JSON {"content": "...", "confidence": 0..1}. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PatternLanguage|Model", meta = (MultiLine = "true"))
+    FString PatternInsightPromptTemplate;
+
+    /** Slots: {character}, {sequence}, {support}, {recent_behaviour}. Must ask for JSON {"problem", "solution", "insight", "confidence"}. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PatternLanguage|Model", meta = (MultiLine = "true"))
+    FString MinedPatternPromptTemplate;
+
+    /** Slots: {character}, {metrics}. Must ask for JSON {"content": "...", "valence": -1..1, "arousal": 0..1}. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PatternLanguage|Model", meta = (MultiLine = "true"))
+    FString ProgressDiaryPromptTemplate;
+
+    /** Last model failure (empty after a successful model write). */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PatternLanguage|Model")
+    FString LastModelError;
 
     // ===== Events =====
 
@@ -391,6 +415,13 @@ protected:
     void InitializeCorePatterns();
     float CalculateMorphologicalProperty(EMorphologicalProperty Property);
     TArray<FString> FindFrequentSequences(const TArray<FBehaviorHistoryEntry>& History, int32 MinSupport);
+
+    FString GetCharacterName() const;
+    static FString DescribePattern(const FPattern& Pattern);
+    void ReportModelFailure(const FString& What, const FString& Error);
+    void RequestPatternInsight(const FPattern& Pattern, const FString& InsightCategory, const FString& Purpose);
+    void RequestMinedPatternArticulation(const FString& PatternId, const FString& Sequence, int32 Support);
+    void HandleMinedPatternReply(const FString& PatternId, bool bSuccess, const FString& TextOrError);
 
 private:
     // ===== Component References =====

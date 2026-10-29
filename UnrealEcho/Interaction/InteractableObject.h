@@ -151,6 +151,8 @@ public:
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInteractionBegin, AActor*, Interactor, EInteractionType, Type);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnInteractionEnd, AActor*, Interactor, EInteractionType, Type, bool, bSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInteractionAvailable, AActor*, Interactor);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNPCGreeting, AActor*, Partner, const FText&, Greeting);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNPCGreetingFailed, AActor*, Partner, const FString&, Error);
 
 /**
  * AInteractableObject
@@ -351,10 +353,38 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NPC")
 	bool IsInConversation() const { return bInConversation; }
 
+	/** Fired when the model has written this NPC's greeting to the conversation partner. */
+	UPROPERTY(BlueprintAssignable, Category = "NPC|Events")
+	FOnNPCGreeting OnGreeting;
+
+	/** Fired when no greeting could be obtained from the model; the NPC then says nothing. */
+	UPROPERTY(BlueprintAssignable, Category = "NPC|Events")
+	FOnNPCGreetingFailed OnGreetingFailed;
+
+	/** The model's most recent greeting for the current conversation (empty until it replies). */
+	UPROPERTY(BlueprintReadOnly, Category = "NPC")
+	FText LastGreeting;
+
+	/** Why the last greeting request failed, or empty. */
+	UPROPERTY(BlueprintReadOnly, Category = "NPC")
+	FString LastGreetingError;
+
+	/**
+	 * Instructions to the model for writing the greeting. Slots: {name}, {relationship},
+	 * {partner}, {style_examples}, {max_chars}. Never shown as the NPC's words.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NPC|Model", meta = (MultiLine = true))
+	FString GreetingPromptTemplate;
+
+	/** Longest greeting accepted from the model. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NPC|Model", meta = (ClampMin = "20"))
+	int32 MaxGreetingChars = 240;
+
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NPC")
 	FText NPCName;
 
+	/** Style examples for the model only (it is told not to copy them); never spoken as-is. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NPC")
 	TArray<FText> GreetingLines;
 
@@ -366,6 +396,11 @@ protected:
 
 	UPROPERTY()
 	TWeakObjectPtr<AActor> ConversationPartner;
+
+	void RequestGreeting(AActor* Partner);
+	void HandleGreetingReply(int32 RequestSerial, TWeakObjectPtr<AActor> Partner, bool bSuccess, const FString& TextOrError);
+
+	int32 GreetingRequestSerial = 0;
 
 	virtual void OnInteractionStarted(AActor* Interactor, EInteractionType Type) override;
 	virtual void OnInteractionCompleted(AActor* Interactor, EInteractionType Type, bool bSuccess) override;

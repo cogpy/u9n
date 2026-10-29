@@ -54,19 +54,33 @@ struct FSys6ExpressionState
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     EAvatarExpressionChannel Channel = EAvatarExpressionChannel::Facial;
 
-    /** Intensity (0-1) */
+    /** Intensity (0-1); neutral (0) until the model has chosen this channel's expression */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Intensity = 0.5f;
+    float Intensity = 0.0f;
 
     /** Valence (-1 to 1, negative to positive) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Valence = 0.0f;
 
-    /** Arousal (0-1, calm to excited) */
+    /** Arousal (0-1, calm to excited); neutral (0) until the model has chosen */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Arousal = 0.5f;
+    float Arousal = 0.0f;
 
-    /** Dyadic phase influence */
+    /** True once the model has chosen this channel's expression */
+    UPROPERTY(BlueprintReadOnly)
+    bool bModelChosen = false;
+
+    /** The model's chosen intensity / valence / arousal (the channel eases toward these) */
+    UPROPERTY(BlueprintReadOnly)
+    float TargetIntensity = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly)
+    float TargetValence = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly)
+    float TargetArousal = 0.0f;
+
+    /** Dyadic phase influence (clock state; model input only) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float DyadicInfluence = 0.0f;
 
@@ -180,6 +194,7 @@ struct FSys6AvatarCognitiveState
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAvatarExpressionChanged, EAvatarExpressionChannel, Channel, float, Intensity);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAvatar4EDimensionChanged, E4EAvatarDimension, OldDimension, E4EAvatarDimension, NewDimension);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAvatarSys6Sync, int32, Sys6Step);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAvatarExpressionRequestFailed, const FString&, Error);
 
 /**
  * Sys6 Avatar Integration Component
@@ -236,8 +251,28 @@ public:
     // EVENTS
     // ========================================
 
+    /** Minimum seconds between model expression requests (the sys6 clock schedules when to ask) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sys6 Avatar|Model", meta = (ClampMin = "0.1"))
+    float ExpressionRequestInterval = 2.0f;
+
+    /**
+     * Instructions to the model for choosing the avatar's expression on each channel. Slots:
+     * {context}, {sys6}, {dimension}, {coherence}, {entelechy}, {couplings}, {current}, {channels}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sys6 Avatar|Model", meta = (MultiLine = true))
+    FString ExpressionPromptTemplate;
+
+    /** What is happening to the character (set by the game; model input) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sys6 Avatar|Model", meta = (MultiLine = true))
+    FString ExpressionContext;
+
+    /** A channel's expression changed toward the model's choice (never fires before the model answers) */
     UPROPERTY(BlueprintAssignable, Category = "Sys6 Avatar|Events")
     FOnAvatarExpressionChanged OnExpressionChanged;
+
+    /** A model expression request failed; no expression changed */
+    UPROPERTY(BlueprintAssignable, Category = "Sys6 Avatar|Events")
+    FOnAvatarExpressionRequestFailed OnExpressionRequestFailed;
 
     UPROPERTY(BlueprintAssignable, Category = "Sys6 Avatar|Events")
     FOnAvatar4EDimensionChanged On4EDimensionChanged;
@@ -309,9 +344,28 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Sys6 Avatar|Expression")
     void SetExpressionValence(EAvatarExpressionChannel Channel, float Valence);
 
-    /** Apply sys6 state to expression */
+    /**
+     * Refreshes the sys6 clock influences and eases each channel toward the model's chosen
+     * expression. Channels the model has not chosen stay neutral and do not broadcast.
+     */
     UFUNCTION(BlueprintCallable, Category = "Sys6 Avatar|Expression")
     void ApplySys6ToExpression();
+
+    /**
+     * Asks the model to choose intensity [0,1], valence [-1,1] and arousal [0,1] for each
+     * expression channel (ExpressionPromptTemplate). Returns false when nothing was requested.
+     * Failures: Error log, GetLastExpressionError, OnExpressionRequestFailed, no change.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Sys6 Avatar|Expression")
+    bool RequestModelExpression();
+
+    /** Why the last expression request failed, or empty */
+    UFUNCTION(BlueprintPure, Category = "Sys6 Avatar|Expression")
+    FString GetLastExpressionError() const { return LastExpressionError; }
+
+    /** True once the model has chosen at least one channel's expression */
+    UFUNCTION(BlueprintPure, Category = "Sys6 Avatar|Expression")
+    bool HasModelExpression() const;
 
     // ========================================
     // PUBLIC API - 4E COGNITION
@@ -345,11 +399,11 @@ public:
     // PUBLIC API - SYS6 MAPPING
     // ========================================
 
-    /** Map sys6 dyadic phase to expression */
+    /** Clock influence of the sys6 dyadic phase (model input; not an expression) */
     UFUNCTION(BlueprintPure, Category = "Sys6 Avatar|Mapping")
     float MapDyadicToExpression(EDyadicPhase Phase) const;
 
-    /** Map sys6 triadic phase to expression */
+    /** Clock influence of the sys6 triadic phase (model input; not an expression) */
     UFUNCTION(BlueprintPure, Category = "Sys6 Avatar|Mapping")
     float MapTriadicToExpression(ETriadicPhase Phase) const;
 
@@ -391,6 +445,14 @@ protected:
 
     /** 4E dimension timer */
     float DimensionTimer = 0.0f;
+
+    /** Seconds since the last model expression request */
+    float SecondsSinceExpressionRequest = 0.0f;
+    bool bExpressionRequestInFlight = false;
+    FString LastExpressionError;
+
+    void HandleExpressionReply(bool bSuccess, const FString& TextOrError);
+    void FailExpressionRequest(const FString& Error);
 
     // Internal methods
     void FindComponentReferences();

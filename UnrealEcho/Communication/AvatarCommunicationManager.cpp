@@ -568,13 +568,13 @@ void UAvatarCommunicationManager::HandleModelReply(bool bSuccess, const FString&
     {
         Reply.bDelivered = SendEmailResponse(Info.ReplyTarget, Reply);
         AppendHistory(Info.ParticipantId, FString::Printf(TEXT("%s: %s"), *CharacterName, *Reply.Content));
-        LogEmailToNarrativeSystem(Info.Email, Reply);
+        RecordEmailExchange(Info.Email, Reply);
     }
     else
     {
         Reply.bDelivered = SendDeltaChatResponse(Info.ReplyTarget, Reply);
         AppendHistory(Info.ParticipantId, FString::Printf(TEXT("%s: %s"), *CharacterName, *Reply.Content));
-        LogToNarrativeSystem(Info.ChatMessage, Reply);
+        RecordChatExchange(Info.ChatMessage, Reply);
     }
 
     OnReplyGenerated.Broadcast(Info.MessageId, Reply);
@@ -693,53 +693,45 @@ float UAvatarCommunicationManager::CalculateResponseDelay(const FConversationCon
     return FMath::Clamp(Delay, MinResponseDelay, MaxResponseDelay);
 }
 
-// ===== Narrative Integration =====
+// ===== Communication Log =====
+// Exchanges are system records, kept apart from the character's diary (which holds only what
+// the model writes as the character).
 
-void UAvatarCommunicationManager::LogToNarrativeSystem(const FDeltaChatMessage& Message, const FCommunicationReply& Reply)
+void UAvatarCommunicationManager::AddCommunicationLogRecord(FCommunicationLogRecord&& Record)
 {
-    if (!AtomSpaceClient)
+    UE_LOG(LogTemp, Log, TEXT("AvatarCommunicationManager: %s exchange with %s, reply %s"),
+        *Record.Channel, *Record.Sender, Record.bDelivered ? TEXT("delivered") : TEXT("NOT delivered (no transport)"));
+    CommunicationLog.Add(MoveTemp(Record));
+    const int32 Excess = CommunicationLog.Num() - FMath::Max(1, MaxCommunicationLogRecords);
+    if (Excess > 0)
     {
-        return;
+        CommunicationLog.RemoveAt(0, Excess);
     }
-
-    // Records the incoming message and the model's reply verbatim, with its real delivery status.
-    FDiaryEntry Entry;
-    Entry.EntryId = FGuid::NewGuid().ToString();
-    Entry.Content = FString::Printf(TEXT("[DeltaChat] From %s: %s\n\n%s: %s"),
-        *Message.SenderName, *Message.Content,
-        Reply.bDelivered ? TEXT("Reply sent") : TEXT("Reply composed but NOT delivered (no transport)"),
-        *Reply.Content);
-    Entry.Timestamp = FDateTime::Now();
-    Entry.EmotionalValence = Reply.EmotionalValence;
-    Entry.EmotionalArousal = Reply.EmotionalArousal;
-    Entry.Tags.Add(TEXT("deltachat"));
-    Entry.Tags.Add(TEXT("conversation"));
-    Entry.Tags.Add(Reply.bDelivered ? TEXT("delivered") : TEXT("undelivered"));
-
-    AtomSpaceClient->StoreDiaryEntry(Entry);
 }
 
-void UAvatarCommunicationManager::LogEmailToNarrativeSystem(const FDovecotEmail& Email, const FCommunicationReply& Reply)
+void UAvatarCommunicationManager::RecordChatExchange(const FDeltaChatMessage& Message, const FCommunicationReply& Reply)
 {
-    if (!AtomSpaceClient)
-    {
-        return;
-    }
+    FCommunicationLogRecord Record;
+    Record.Channel = TEXT("deltachat");
+    Record.Sender = Message.SenderName;
+    Record.IncomingContent = Message.Content;
+    Record.ReplyContent = Reply.Content;
+    Record.bDelivered = Reply.bDelivered;
+    Record.Timestamp = FDateTime::Now();
+    AddCommunicationLogRecord(MoveTemp(Record));
+}
 
-    FDiaryEntry Entry;
-    Entry.EntryId = FGuid::NewGuid().ToString();
-    Entry.Content = FString::Printf(TEXT("[Email] From %s: %s\n\nSubject: %s\n\n%s: %s"),
-        *Email.From, *Email.BodyText.Left(500), *Email.Subject,
-        Reply.bDelivered ? TEXT("Reply sent") : TEXT("Reply composed but NOT delivered (no transport)"),
-        *Reply.Content);
-    Entry.Timestamp = FDateTime::Now();
-    Entry.EmotionalValence = Reply.EmotionalValence;
-    Entry.EmotionalArousal = Reply.EmotionalArousal;
-    Entry.Tags.Add(TEXT("email"));
-    Entry.Tags.Add(TEXT("correspondence"));
-    Entry.Tags.Add(Reply.bDelivered ? TEXT("delivered") : TEXT("undelivered"));
-
-    AtomSpaceClient->StoreDiaryEntry(Entry);
+void UAvatarCommunicationManager::RecordEmailExchange(const FDovecotEmail& Email, const FCommunicationReply& Reply)
+{
+    FCommunicationLogRecord Record;
+    Record.Channel = TEXT("email");
+    Record.Sender = Email.From;
+    Record.Subject = Email.Subject;
+    Record.IncomingContent = Email.BodyText;
+    Record.ReplyContent = Reply.Content;
+    Record.bDelivered = Reply.bDelivered;
+    Record.Timestamp = FDateTime::Now();
+    AddCommunicationLogRecord(MoveTemp(Record));
 }
 
 void UAvatarCommunicationManager::RequestConversationInsight(const FConversationContext& Context)

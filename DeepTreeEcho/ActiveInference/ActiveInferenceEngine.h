@@ -524,11 +524,32 @@ public:
      * Run active inference: select an action from the best policy and execute it through the
      * environment executor. Returns the selected action index; whether it was actually executed is
      * reported on OnActionExecuted (real observed outcome) or OnActionFailed (not executed).
+     * While the generative model is untrained (IsGenerativeModelTrained) no policy is selected,
+     * nothing is executed, GetLastError says why and INDEX_NONE is returned.
      */
     UFUNCTION(BlueprintCallable, Category = "Inference")
     int32 RunActiveInference();
 
-    /** Run planning as inference */
+    /**
+     * Learning updates from real executed outcomes (LearnModelStructure) needed before the
+     * generative model's policy scores are used to choose anything.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Model", meta = (ClampMin = "1"))
+    int32 MinLearningUpdatesForTrainedModel = 20;
+
+    /** True once the generative model has learned from enough real executed outcomes */
+    UFUNCTION(BlueprintPure, Category = "Model")
+    bool IsGenerativeModelTrained() const { return ModelLearningUpdates >= MinLearningUpdatesForTrainedModel; }
+
+    /** Learning updates applied from real executed outcomes */
+    UFUNCTION(BlueprintPure, Category = "Model")
+    int32 GetModelLearningUpdates() const { return ModelLearningUpdates; }
+
+    /** Why the last policy selection / planning chose nothing, or empty */
+    UFUNCTION(BlueprintPure, Category = "Inference")
+    FString GetLastError() const { return LastError; }
+
+    /** Run planning as inference (empty policy while the generative model is untrained) */
     UFUNCTION(BlueprintCallable, Category = "Inference")
     FPolicy RunPlanningInference(int32 Horizon);
 
@@ -576,7 +597,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Policy")
     TArray<FPolicy> EvaluatePolicies();
 
-    /** Select policy (softmax over expected free energy) */
+    /**
+     * Select the most probable policy (softmax over expected free energy). Returns an empty
+     * policy (no PolicyID, no actions) with GetLastError set when the generative model is
+     * untrained or there are no policies; never a random or default policy.
+     */
     UFUNCTION(BlueprintCallable, Category = "Policy")
     FPolicy SelectPolicy();
 
@@ -681,7 +706,7 @@ public:
     UFUNCTION(BlueprintPure, Category = "Niche")
     float GetNicheModificationPotential(int32 ActionIndex) const;
 
-    /** Plan niche construction action */
+    /** Plan niche construction action (empty policy while the generative model is untrained) */
     UFUNCTION(BlueprintCallable, Category = "Niche")
     FPolicy PlanNicheConstruction(int32 Horizon);
 
@@ -730,6 +755,14 @@ protected:
     float CurrentVFE = 0.0f;
     float CurrentEFE = 0.0f;
     int32 NextActionIndex = 0;
+
+    /** Learning updates from real executed outcomes */
+    int32 ModelLearningUpdates = 0;
+
+    FString LastError;
+
+    /** Records why nothing was chosen (Error log) and returns false */
+    bool RefuseUntrained(const TCHAR* What);
 
     // Internal methods
     void FindComponentReferences();
