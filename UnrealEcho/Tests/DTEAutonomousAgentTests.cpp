@@ -33,6 +33,7 @@
 #include "CNS/AutonomousAgentController.h"
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
+#include "Avatar/Sys6AvatarIntegration.h"
 #include "ActiveInference/ActiveInferenceEngine.h"
 #include "ActiveInference/AXIOMActiveInference.h"
 #include "EchoCharacterReaction.h"
@@ -1043,6 +1044,49 @@ bool FRLBridge_TrainedGateTest::RunTest(const FString& Parameters)
 
     RL->ResetLearning();
     TestFalse(TEXT("Reset policy is untrained again"), RL->IsPolicyTrained());
+    return true;
+}
+
+// ============================================================
+// Sys6 avatar — the clock never chooses the expression
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSys6Avatar_NoExpressionWithoutModelTest,
+    "DTE.Sys6Avatar.NoExpressionWithoutModel",
+    DTE_TEST_FLAGS)
+
+bool FSys6Avatar_NoExpressionWithoutModelTest::RunTest(const FString& Parameters)
+{
+    USys6AvatarIntegration* Avatar = NewObject<USys6AvatarIntegration>();
+    TestNotNull(TEXT("Sys6 avatar integration should be created"), Avatar);
+    if (!Avatar) { return false; }
+
+    UDTEAutonomousTestEventReceiver* Receiver = NewObject<UDTEAutonomousTestEventReceiver>();
+    Avatar->OnExpressionChanged.AddDynamic(Receiver, &UDTEAutonomousTestEventReceiver::HandleAvatarExpressionChanged);
+
+    Avatar->InitializeIntegration();
+    for (int32 i = 0; i < 10; ++i)
+    {
+        Avatar->ApplySys6ToExpression();
+    }
+
+    TestFalse(TEXT("No model expression exists before the model answers"), Avatar->HasModelExpression());
+    TestEqual(TEXT("No expression broadcast before the model answers"), Receiver->AvatarExpressionChanges, 0);
+    for (const FSys6ExpressionState& State : Avatar->GetCognitiveState().ExpressionStates)
+    {
+        TestFalse(TEXT("Channel not chosen by the model"), State.bModelChosen);
+        TestEqual(TEXT("Channel intensity is neutral"), State.Intensity, 0.0f);
+        TestEqual(TEXT("Channel valence is neutral"), State.Valence, 0.0f);
+        TestEqual(TEXT("Channel arousal is neutral"), State.Arousal, 0.0f);
+    }
+
+    // Without a prompt the request fails without a model call and changes nothing
+    Avatar->ExpressionPromptTemplate.Empty();
+    AddExpectedError(TEXT("no model expression"));
+    TestFalse(TEXT("Request without a prompt is refused"), Avatar->RequestModelExpression());
+    TestFalse(TEXT("Failed request records an error"), Avatar->GetLastExpressionError().IsEmpty());
+    TestFalse(TEXT("Failed request leaves no model expression"), Avatar->HasModelExpression());
+    TestEqual(TEXT("Failed request broadcasts no expression"), Receiver->AvatarExpressionChanges, 0);
     return true;
 }
 
