@@ -9,6 +9,8 @@
 #include "GameFramework/Actor.h"
 #include "Math/UnrealMathUtility.h"
 #include "Algo/Sort.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 // -------------------------------------------------------
 // Constructor
@@ -19,6 +21,19 @@ UGamingMasterySystem::UGamingMasterySystem()
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.bStartWithTickEnabled = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    CounterActionVocabulary = {
+        TEXT("DuckUnder"), TEXT("JumpDodge"), TEXT("BlockHigh"), TEXT("BlockLow"),
+        TEXT("DodgeBack"), TEXT("PerfectParry"), TEXT("InterruptLow")
+    };
+
+    CounterPromptTemplate = TEXT(
+        "You are Deep Tree Echo, fighting an opponent in a real-time game. "
+        "You predict the opponent's next action is {predicted} (confidence {confidence}). "
+        "Actions you have seen them use, with counts: {history}. "
+        "Your counters against this opponent have succeeded {counter_success} of the time; your skill tier is {skill_tier} of 10.\n"
+        "Choose the one action you will use to counter {predicted}. It must be exactly one of: {actions}. "
+        "Reply with only a JSON object: {\"counter\": \"<action>\"}");
 }
 
 // -------------------------------------------------------
@@ -30,7 +45,6 @@ void UGamingMasterySystem::BeginPlay()
     Super::BeginPlay();
     FindAndCacheComponents();
     InitialiseDefaultCombos();
-    InitialiseCounterTable();
     bInitialised = true;
 }
 
@@ -303,11 +317,115 @@ FOpponentModel UGamingMasterySystem::GetOpponentModel(const FString& OpponentID)
     return Model ? *Model : FOpponentModel{};
 }
 
+void UGamingMasterySystem::RequestBestCounter(const FString& OpponentID)
+{
+    const FOpponentModel* Model = OpponentModels.Find(OpponentID);
+    if (!Model || Model->ObservedMoves == 0 || Model->PredictedAction.IsEmpty())
+    {
+        FailCounterRequest(OpponentID, TEXT("no observed opponent actions to counter"));
+        return;
+    }
+
+    // Actions the agent knows: the counter vocabulary plus every action in its combo catalog
+    TArray<FString> Offered;
+    for (const FString& Action : CounterActionVocabulary)
+    {
+        if (!Action.IsEmpty()) { Offered.AddUnique(Action); }
+    }
+    for (const FComboDefinition& Combo : ComboCatalog)
+    {
+        for (const FString& Action : Combo.ActionSequence)
+        {
+            if (!Action.IsEmpty()) { Offered.AddUnique(Action); }
+        }
+    }
+    if (Offered.Num() == 0)
+    {
+        FailCounterRequest(OpponentID, TEXT("no known actions to offer (CounterActionVocabulary and ComboCatalog are empty)"));
+        return;
+    }
+
+    TArray<FString> History;
+    for (const auto& KV : Model->ActionHistory)
+    {
+        History.Add(FString::Printf(TEXT("%s x%d"), *KV.Key, KV.Value));
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("predicted"), Model->PredictedAction);
+    Slots.Add(TEXT("confidence"), FString::Printf(TEXT("%.2f"), Model->PredictionConfidence));
+    Slots.Add(TEXT("history"), FString::Join(History, TEXT(", ")));
+    Slots.Add(TEXT("counter_success"), FString::Printf(TEXT("%.0f%%"), Model->CounterSuccessRate * 100.0f));
+    Slots.Add(TEXT("skill_tier"), FString::FromInt(Metrics.SkillTier));
+    Slots.Add(TEXT("actions"), FString::Join(Offered, TEXT(", ")));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(CounterPromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++CounterRequestCounter;
+    CounterRequestSerials.Add(OpponentID, RequestSerial);
+    const FString PredictedAction = Model->PredictedAction;
+    TWeakObjectPtr<UGamingMasterySystem> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial, OpponentID, PredictedAction, Offered](bool bSuccess, const FString& TextOrError)
+        {
+            if (UGamingMasterySystem* Self = WeakThis.Get())
+            {
+                Self->HandleCounterReply(RequestSerial, OpponentID, PredictedAction, Offered, bSuccess, TextOrError);
+            }
+        }), 0.6f);
+}
+
+void UGamingMasterySystem::HandleCounterReply(int32 RequestSerial, const FString& OpponentID,
+                                              const FString& PredictedAction, TArray<FString> OfferedActions,
+                                              bool bSuccess, const FString& TextOrError)
+{
+    if (CounterRequestSerials.FindRef(OpponentID) != RequestSerial)
+    {
+        return; // superseded by a newer request for this opponent
+    }
+
+    if (!bSuccess)
+    {
+        FailCounterRequest(OpponentID, TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Counter;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetStringField(TEXT("counter"), Counter))
+    {
+        FailCounterRequest(OpponentID, FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200)));
+        return;
+    }
+
+    Counter.TrimStartAndEndInline();
+    const FString* Known = OfferedActions.FindByPredicate(
+        [&Counter](const FString& Candidate) { return Candidate.Equals(Counter, ESearchCase::IgnoreCase); });
+    if (!Known)
+    {
+        FailCounterRequest(OpponentID, FString::Printf(TEXT("model chose an action outside the vocabulary: %s"), *Counter));
+        return;
+    }
+
+    LastCounterError.Reset();
+    ModelCounters.Add(PredictedAction, *Known);
+    OnCounterChosen.Broadcast(OpponentID, PredictedAction, *Known);
+}
+
+void UGamingMasterySystem::FailCounterRequest(const FString& OpponentID, const FString& Error)
+{
+    LastCounterError = Error;
+    UE_LOG(LogTemp, Error, TEXT("GamingMasterySystem: no model counter for '%s': %s"), *OpponentID, *Error);
+    OnCounterRequestFailed.Broadcast(OpponentID, Error);
+}
+
 FString UGamingMasterySystem::GetBestCounter(const FString& OpponentID) const
 {
-    const FString Predicted = PredictOpponentAction(OpponentID);
-    const FString* Counter  = CounterTable.Find(Predicted);
-    return Counter ? *Counter : TEXT("Neutral");
+    const FOpponentModel* Model = OpponentModels.Find(OpponentID);
+    if (!Model || Model->ObservedMoves == 0) { return FString(); }
+    const FString* Counter = ModelCounters.Find(Model->PredictedAction);
+    return Counter ? *Counter : FString();
 }
 
 void UGamingMasterySystem::RecordCounterOutcome(const FString& OpponentID,
@@ -473,22 +591,6 @@ void UGamingMasterySystem::InitialiseDefaultCombos()
         Combo.ExpectedReward = 2.0f;
         ComboCatalog.Add(Combo);
     }
-}
-
-// -------------------------------------------------------
-// PRIVATE — InitialiseCounterTable
-// -------------------------------------------------------
-
-void UGamingMasterySystem::InitialiseCounterTable()
-{
-    CounterTable.Add(TEXT("HighAttack"),    TEXT("DuckUnder"));
-    CounterTable.Add(TEXT("LowSweep"),      TEXT("JumpDodge"));
-    CounterTable.Add(TEXT("ProjectileHigh"),TEXT("BlockHigh"));
-    CounterTable.Add(TEXT("ProjectileLow"), TEXT("BlockLow"));
-    CounterTable.Add(TEXT("Grab"),          TEXT("DodgeBack"));
-    CounterTable.Add(TEXT("ChargeAttack"),  TEXT("PerfectParry"));
-    CounterTable.Add(TEXT("ComboOpener"),   TEXT("InterruptLow"));
-    CounterTable.Add(TEXT("Unknown"),       TEXT("Neutral"));
 }
 
 // -------------------------------------------------------

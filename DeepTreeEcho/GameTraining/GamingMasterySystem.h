@@ -244,6 +244,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSkillTierAdvanced,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMasteryMetricsUpdated,
     const FMasteryMetrics&, Metrics);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCounterChosen,
+    const FString&, OpponentID, const FString&, PredictedAction, const FString&, Counter);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCounterRequestFailed,
+    const FString&, OpponentID, const FString&, Error);
+
 // ============================================================
 // UGamingMasterySystem
 // ============================================================
@@ -327,6 +333,20 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Mastery|Config")
     TArray<FComboDefinition> ComboCatalog;
 
+    /**
+     * Actions the model may choose as a counter. Combo catalog actions are offered as well;
+     * a reply naming anything else is rejected.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Mastery|Model")
+    TArray<FString> CounterActionVocabulary;
+
+    /**
+     * Instructions to the model for choosing a counter. Slots: {predicted}, {confidence},
+     * {history}, {counter_success}, {skill_tier}, {actions}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Mastery|Model", meta=(MultiLine=true))
+    FString CounterPromptTemplate;
+
     // ====================================================
     // EVENTS
     // ====================================================
@@ -345,6 +365,14 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category="Mastery|Events")
     FOnMasteryMetricsUpdated OnMasteryMetricsUpdated;
+
+    /** The model chose a counter to an opponent's predicted action */
+    UPROPERTY(BlueprintAssignable, Category="Mastery|Events")
+    FOnCounterChosen OnCounterChosen;
+
+    /** No counter could be obtained from the model; nothing was chosen */
+    UPROPERTY(BlueprintAssignable, Category="Mastery|Events")
+    FOnCounterRequestFailed OnCounterRequestFailed;
 
     // ====================================================
     // LIGHTNING REFLEX ENGINE
@@ -410,9 +438,20 @@ public:
     UFUNCTION(BlueprintPure, Category="Mastery|Opponent")
     FOpponentModel GetOpponentModel(const FString& OpponentID) const;
 
-    /** Get the best counter to the predicted opponent action */
+    /**
+     * Ask the model to choose a counter to the opponent's predicted action. The answer arrives
+     * on OnCounterChosen (or OnCounterRequestFailed) and is then returned by GetBestCounter.
+     */
+    UFUNCTION(BlueprintCallable, Category="Mastery|Opponent")
+    void RequestBestCounter(const FString& OpponentID);
+
+    /** The model's last counter for the opponent's predicted action, or empty if it has none */
     UFUNCTION(BlueprintCallable, Category="Mastery|Opponent")
     FString GetBestCounter(const FString& OpponentID) const;
+
+    /** Why the last counter request failed, or empty */
+    UFUNCTION(BlueprintPure, Category="Mastery|Opponent")
+    FString GetLastCounterError() const { return LastCounterError; }
 
     /** Record whether a counter was successful */
     UFUNCTION(BlueprintCallable, Category="Mastery|Opponent")
@@ -504,8 +543,14 @@ protected:
     /** Metrics update timer */
     float MetricsTimer = 0.0f;
 
-    /** Counter-action lookup table (predicted action → best counter) */
-    TMap<FString, FString> CounterTable;
+    /** The model's last counter for each predicted attack (attack → counter) */
+    TMap<FString, FString> ModelCounters;
+
+    /** Latest counter request per opponent (older replies are ignored) */
+    TMap<FString, int32> CounterRequestSerials;
+    int32 CounterRequestCounter = 0;
+
+    FString LastCounterError;
 
     /** System initialised */
     bool bInitialised = false;
@@ -516,7 +561,9 @@ protected:
 
     void FindAndCacheComponents();
     void InitialiseDefaultCombos();
-    void InitialiseCounterTable();
+    void HandleCounterReply(int32 RequestSerial, const FString& OpponentID, const FString& PredictedAction,
+                            TArray<FString> OfferedActions, bool bSuccess, const FString& TextOrError);
+    void FailCounterRequest(const FString& OpponentID, const FString& Error);
 
     void UpdateTimingWindows(float DeltaTime);
     void UpdateComboStateMachine(float DeltaTime);

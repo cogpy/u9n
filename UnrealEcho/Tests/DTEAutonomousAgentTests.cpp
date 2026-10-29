@@ -626,10 +626,19 @@ bool FGaming_OpponentModelTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("HighAttack should be predicted as most frequent"),
               Predicted, TEXT("HighAttack"));
 
-    // Counter to HighAttack should be DuckUnder
-    const FString Counter = GMS->GetBestCounter(OppID);
-    TestEqual(TEXT("Counter to HighAttack should be DuckUnder"),
-              Counter, TEXT("DuckUnder"));
+    // Counters are chosen by the model only: none exists before it has answered
+    TestTrue(TEXT("No counter should exist before the model has chosen one"),
+             GMS->GetBestCounter(OppID).IsEmpty());
+
+    // With nothing to offer, the request fails without a model call and chooses nothing
+    GMS->CounterActionVocabulary.Empty();
+    GMS->ComboCatalog.Empty();
+    AddExpectedError(TEXT("no model counter"));
+    GMS->RequestBestCounter(OppID);
+    TestFalse(TEXT("Counter request with no known actions should record an error"),
+              GMS->GetLastCounterError().IsEmpty());
+    TestTrue(TEXT("Failed counter request should leave no counter"),
+             GMS->GetBestCounter(OppID).IsEmpty());
 
     // Test model completeness
     const FOpponentModel Model = GMS->GetOpponentModel(OppID);
