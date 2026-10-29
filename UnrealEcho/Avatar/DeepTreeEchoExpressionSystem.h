@@ -4,6 +4,8 @@
 #include "Components/ActorComponent.h"
 #include "DeepTreeEchoExpressionSystem.generated.h"
 
+struct FEchoCharacterReaction;
+
 /**
  * Deep-Tree-Echo Expression System
  * 
@@ -17,10 +19,14 @@
  * 4. Contemplative (WONDER_02/03) - Represents "thinking"
  * 5. Broad Smile/Laugh (JOY_01/02) - Peak positive emotion
  * 
- * Top 3 Priority Microexpressions:
- * 1. Procedural Blinking
- * 2. Saccadic Eye Movement
- * 3. Wonder-to-Joy Transition
+ * Procedural physiology (not reactions): blinking, breathing, saccadic eye movement.
+ *
+ * Which expression the face shows is chosen by the character model only. The component
+ * subscribes to FEchoReactionBus and renders each model reaction (expression preset at the
+ * model's intensity, micro-expressions named by the model, and visemes for the model's
+ * utterance). Cognitive state changes are recorded and, when enabled, ask the model how the
+ * character reacts (ReactionPromptTemplate); the reply is validated against the expression
+ * vocabulary and broadcast on the bus. No table maps cognition or clock steps to a face.
  */
 
 // Forward declarations
@@ -242,8 +248,7 @@ struct FProceduralAnimSettings
 };
 
 /**
- * Echobeats cognitive loop step data
- * Maps the 12-step cognitive cycle to expression hints
+ * Echobeats cognitive loop step record (cadence only; it never selects an expression)
  */
 USTRUCT(BlueprintType)
 struct FEchobeatsStep
@@ -254,10 +259,7 @@ struct FEchobeatsStep
     int32 StepNumber = 0;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats")
-    FString CognitivePhase;  // Perception, Action, Simulation, Pivotal
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats")
-    EExpressionState ExpressionHint;
+    FString CognitivePhase;  // Pivotal / Affordance / Salience / Integration
 };
 
 /**
@@ -273,13 +275,14 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     // ========== Core Expression Control ==========
 
-    /** Set expression state with transition */
+    /** Renderer: transition to an expression preset at full strength. Reactions arrive via the bus. */
     UFUNCTION(BlueprintCallable, Category = "Expression")
     void SetExpressionState(EExpressionState NewState, float TransitionTime = 0.3f);
 
@@ -287,9 +290,29 @@ public:
     UFUNCTION(BlueprintPure, Category = "Expression")
     EExpressionState GetCurrentExpressionState() const { return CurrentExpressionState; }
 
-    /** Set cognitive state (maps to expression automatically) */
+    /**
+     * Records the cognitive state. It does not set an expression. When bRequestReactionOnCognitiveStateChange
+     * is set, a change of state asks the model (throttled) how the character reacts; the face changes
+     * only if the model's validated reply arrives on the reaction bus.
+     */
     UFUNCTION(BlueprintCallable, Category = "Cognitive")
     void SetCognitiveState(ECognitiveState NewState);
+
+    /** Intensity [0,1] of the model reaction currently shown (0 before any reaction). */
+    UFUNCTION(BlueprintPure, Category = "Expression")
+    float GetReactionIntensity() const { return ReactionIntensity; }
+
+    /** Asks the model for a reaction to the current cognitive state. False if a request is already pending. */
+    UFUNCTION(BlueprintCallable, Category = "Reaction")
+    bool RequestModelReaction();
+
+    /** Last model/validation error for reaction requests (system status, never shown as the character). */
+    UFUNCTION(BlueprintPure, Category = "Reaction")
+    FString GetLastReactionError() const { return LastReactionError; }
+
+    /** Names the model may choose from: expression presets and micro-expressions. */
+    UFUNCTION(BlueprintPure, Category = "Reaction")
+    static TArray<FString> GetReactionVocabulary();
 
     /** Get current cognitive state */
     UFUNCTION(BlueprintPure, Category = "Cognitive")
@@ -300,10 +323,6 @@ public:
     /** Trigger a microexpression */
     UFUNCTION(BlueprintCallable, Category = "Microexpression")
     void TriggerMicroExpression(EMicroExpression MicroExp, float Duration = 0.2f);
-
-    /** Trigger the Wonder-to-Joy transition pattern */
-    UFUNCTION(BlueprintCallable, Category = "Microexpression")
-    void TriggerWonderToJoyTransition(float Duration = 1.5f);
 
     // ========== Procedural Animation Control ==========
 
@@ -335,6 +354,17 @@ public:
 
     // ========== Speech/Lip Sync ==========
 
+    /** Drive visemes from text being spoken (the model's utterance) for its playback duration. */
+    UFUNCTION(BlueprintCallable, Category = "Speech")
+    void StartTextLipSync(const FString& Text, float CharactersPerSecond = 14.0f);
+
+    /** Stop text-driven visemes and relax the mouth. */
+    UFUNCTION(BlueprintCallable, Category = "Speech")
+    void StopLipSync();
+
+    UFUNCTION(BlueprintPure, Category = "Speech")
+    bool IsLipSyncing() const { return bTextLipSyncActive; }
+
     /** Set speaking state with audio amplitude */
     UFUNCTION(BlueprintCallable, Category = "Speech")
     void SetSpeakingAmplitude(float Amplitude);
@@ -355,9 +385,38 @@ public:
 
     // ========== Echobeats Integration ==========
 
-    /** Update expression based on echobeats step */
+    /** Records the echobeats step (cadence only; does not change the expression) */
     UFUNCTION(BlueprintCallable, Category = "Echobeats")
     void OnEchobeatsStep(int32 StepNumber);
+
+    UFUNCTION(BlueprintPure, Category = "Echobeats")
+    FEchobeatsStep GetCurrentEchobeatsStep() const { return CurrentEchobeatsStep; }
+
+    // ========== Model Reaction Configuration ==========
+
+    /** Only reactions for this character are rendered; empty = the owning actor's name, and all reactions are accepted. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction")
+    FString ReactionCharacterName;
+
+    /** Ask the model for a reaction when the recorded cognitive state changes. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction")
+    bool bRequestReactionOnCognitiveStateChange = true;
+
+    /** Minimum seconds between reaction requests. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction", meta = (ClampMin = "0.0"))
+    float MinSecondsBetweenReactionRequests = 4.0f;
+
+    /** Drive visemes from the utterance of each model reaction. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction")
+    bool bDriveVisemesFromUtterance = true;
+
+    /**
+     * Prompt template (model input). Slots: {character}, {previous_state}, {state}, {echobeats_step},
+     * {echobeats_phase}, {speaking}, {current_expression}, {expressions}. The model's JSON reply is validated
+     * against {expressions} and broadcast on the reaction bus.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reaction", meta = (MultiLine = "true"))
+    FString ReactionPromptTemplate;
 
     // ========== Output ==========
 
@@ -377,8 +436,6 @@ protected:
     // ========== Internal Update Functions ==========
 
     void InitializeExpressionPresets();
-    void InitializeEchobeatsMapping();
-    void InitializeCognitiveMapping();
 
     void UpdateExpressionTransition(float DeltaTime);
     void UpdateProceduralBlinking(float DeltaTime);
@@ -386,9 +443,16 @@ protected:
     void UpdateProceduralSaccades(float DeltaTime);
     void UpdateMicroExpression(float DeltaTime);
     void UpdateEmissivePulse(float DeltaTime);
-    void UpdateWonderToJoyTransition(float DeltaTime);
+    void UpdateTextLipSync(float DeltaTime);
 
-    EExpressionState MapCognitiveToExpression(ECognitiveState CogState);
+    // ========== Model Reactions ==========
+
+    FString GetReactionCharacterNameResolved() const;
+    FString BuildReactionPrompt() const;
+    void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+    void ApplyReactionExpression(EExpressionState NewState, float Intensity, float TransitionTime);
+    static FString GetEchobeatsPhaseName(int32 StepNumber);
 
     // ========== State Variables ==========
 
@@ -402,30 +466,43 @@ protected:
     ECognitiveState CurrentCognitiveState;
 
     UPROPERTY()
+    ECognitiveState PreviousCognitiveState;
+
+    UPROPERTY()
     FDeepTreeEchoMorphTargets CurrentMorphTargets;
 
     UPROPERTY()
     FDeepTreeEchoMorphTargets TargetMorphTargets;
 
+    /** Physiological layer (blink, breathing, micro-expressions); rebuilt each tick. */
     UPROPERTY()
     FDeepTreeEchoMorphTargets ProceduralMorphTargets;
+
+    /** Expression layer (model-chosen preset, interpolated). */
+    UPROPERTY()
+    FDeepTreeEchoMorphTargets ExpressionMorphTargets;
+
+    /** Expression layer at the start of the current transition. */
+    UPROPERTY()
+    FDeepTreeEchoMorphTargets TransitionStartMorphTargets;
+
+    /** Speech layer (audio amplitude / visemes / text lip sync). */
+    UPROPERTY()
+    FDeepTreeEchoMorphTargets SpeechMorphTargets;
 
     // Expression presets
     UPROPERTY()
     TMap<EExpressionState, FExpressionPreset> ExpressionPresets;
 
-    // Cognitive to expression mapping
+    // Last recorded echobeats step (cadence only)
     UPROPERTY()
-    TMap<ECognitiveState, EExpressionState> CognitiveMapping;
-
-    // Echobeats step mapping
-    UPROPERTY()
-    TArray<FEchobeatsStep> EchobeatsSteps;
+    FEchobeatsStep CurrentEchobeatsStep;
 
     // ========== Transition State ==========
 
     float ExpressionTransitionProgress;
     float ExpressionTransitionDuration;
+    float TransitionStartEmissive;
 
     // ========== Procedural Animation State ==========
 
@@ -460,12 +537,6 @@ protected:
     float MicroExpressionTimer;
     float MicroExpressionDuration;
 
-    // ========== Wonder-to-Joy Transition State ==========
-
-    bool bWonderToJoyActive;
-    float WonderToJoyProgress;
-    float WonderToJoyDuration;
-
     // ========== Emissive State ==========
 
     float CurrentEmissiveIntensity;
@@ -478,4 +549,17 @@ protected:
     // ========== Speech State ==========
 
     float CurrentSpeakingAmplitude;
+
+    bool bTextLipSyncActive = false;
+    FString LipSyncText;
+    float LipSyncTime = 0.0f;
+    float LipSyncCharsPerSecond = 14.0f;
+
+    // ========== Model Reaction State ==========
+
+    float ReactionIntensity = 0.0f;
+    bool bReactionRequestPending = false;
+    double LastReactionRequestTime = -1.0e9;
+    FString LastReactionError;
+    FDelegateHandle ReactionHandle;
 };

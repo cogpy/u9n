@@ -17,7 +17,7 @@ class UOnlineLearningSystem;
  * Goal status enumeration
  */
 UENUM(BlueprintType)
-enum class EGoalStatus : uint8
+enum class EPlanningGoalStatus : uint8
 {
     Pending     UMETA(DisplayName = "Pending"),
     Active      UMETA(DisplayName = "Active"),
@@ -31,7 +31,7 @@ enum class EGoalStatus : uint8
  * Goal priority
  */
 UENUM(BlueprintType)
-enum class EGoalPriority : uint8
+enum class EPlanningGoalPriority : uint8
 {
     Low         UMETA(DisplayName = "Low"),
     Medium      UMETA(DisplayName = "Medium"),
@@ -71,7 +71,7 @@ enum class EActionStatus : uint8
  * Goal structure
  */
 USTRUCT(BlueprintType)
-struct FGoal
+struct FPlanningGoal
 {
     GENERATED_BODY()
 
@@ -85,10 +85,10 @@ struct FGoal
     FString Description;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EGoalStatus Status = EGoalStatus::Pending;
+    EPlanningGoalStatus Status = EPlanningGoalStatus::Pending;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EGoalPriority Priority = EGoalPriority::Medium;
+    EPlanningGoalPriority Priority = EPlanningGoalPriority::Medium;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FString> Preconditions;
@@ -206,7 +206,7 @@ struct FPlan
  * World state
  */
 USTRUCT(BlueprintType)
-struct FWorldState
+struct FPlanningWorldState
 {
     GENERATED_BODY()
 
@@ -253,8 +253,8 @@ struct FActionTemplate
 /**
  * Delegate declarations
  */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGoalCreated, const FGoal&, Goal);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGoalStatusChanged, const FString&, GoalID, EGoalStatus, NewStatus);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGoalCreated, const FPlanningGoal&, Goal);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGoalStatusChanged, const FString&, GoalID, EPlanningGoalStatus, NewStatus);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPlanCreated, const FPlan&, Plan);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPlanStatusChanged, const FString&, PlanID, EPlanStatus, NewStatus);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActionStarted, const FPlannedAction&, Action);
@@ -326,12 +326,12 @@ public:
 
     /** Create a new goal */
     UFUNCTION(BlueprintCallable, Category = "Goals")
-    FGoal CreateGoal(const FString& Name, const FString& Description, EGoalPriority Priority,
+    FPlanningGoal CreateGoal(const FString& Name, const FString& Description, EPlanningGoalPriority Priority,
                       const TArray<FString>& SuccessConditions);
 
     /** Create a subgoal */
     UFUNCTION(BlueprintCallable, Category = "Goals")
-    FGoal CreateSubGoal(const FString& ParentGoalID, const FString& Name, 
+    FPlanningGoal CreateSubGoal(const FString& ParentGoalID, const FString& Name, 
                          const TArray<FString>& SuccessConditions);
 
     /** Activate goal */
@@ -348,19 +348,19 @@ public:
 
     /** Get goal by ID */
     UFUNCTION(BlueprintPure, Category = "Goals")
-    FGoal GetGoal(const FString& GoalID) const;
+    FPlanningGoal GetGoal(const FString& GoalID) const;
 
     /** Get all goals */
     UFUNCTION(BlueprintPure, Category = "Goals")
-    TArray<FGoal> GetAllGoals() const;
+    TArray<FPlanningGoal> GetAllGoals() const;
 
     /** Get active goals */
     UFUNCTION(BlueprintPure, Category = "Goals")
-    TArray<FGoal> GetActiveGoals() const;
+    TArray<FPlanningGoal> GetActiveGoals() const;
 
     /** Get highest priority goal */
     UFUNCTION(BlueprintPure, Category = "Goals")
-    FGoal GetHighestPriorityGoal() const;
+    FPlanningGoal GetHighestPriorityGoal() const;
 
     /** Check if goal is achieved */
     UFUNCTION(BlueprintPure, Category = "Goals")
@@ -465,7 +465,7 @@ public:
 
     /** Get current world state */
     UFUNCTION(BlueprintPure, Category = "World State")
-    FWorldState GetWorldState() const;
+    FPlanningWorldState GetWorldState() const;
 
     /** Check if condition is satisfied */
     UFUNCTION(BlueprintPure, Category = "World State")
@@ -483,10 +483,10 @@ protected:
     UOnlineLearningSystem* LearningComponent;
 
     // Internal state
-    TArray<FGoal> Goals;
+    TArray<FPlanningGoal> Goals;
     TArray<FPlan> Plans;
     TArray<FActionTemplate> ActionTemplates;
-    FWorldState WorldState;
+    FPlanningWorldState WorldState;
 
     FString CurrentPlanID;
     float CurrentActionStartTime = 0.0f;
@@ -504,11 +504,11 @@ protected:
     void UpdatePlanExecution(float DeltaTime);
     void CheckGoalConditions();
 
-    TArray<FPlannedAction> GenerateActionSequence(const FGoal& Goal);
+    TArray<FPlannedAction> GenerateActionSequence(const FPlanningGoal& Goal);
     bool CanApplyAction(const FActionTemplate& Action) const;
     void ApplyActionEffects(const FPlannedAction& Action);
 
-    float ComputeGoalUtility(const FGoal& Goal) const;
+    float ComputeGoalUtility(const FPlanningGoal& Goal) const;
     void PrioritizeGoals();
 
     FString GenerateGoalID();

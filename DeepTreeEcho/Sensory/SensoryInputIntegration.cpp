@@ -138,7 +138,7 @@ FSensoryInputData USensoryInputIntegration::GetSensoryInput(int32 InputID) const
     return FSensoryInputData();
 }
 
-TArray<FSensoryInputData> USensoryInputIntegration::GetInputsByModality(ESensoryModality Modality) const
+TArray<FSensoryInputData> USensoryInputIntegration::GetInputsByModality(ESensoryInputModality Modality) const
 {
     TArray<FSensoryInputData> Result;
     for (const FSensoryInputData& Input : State.ActiveInputs)
@@ -154,7 +154,7 @@ TArray<FSensoryInputData> USensoryInputIntegration::GetInputsByModality(ESensory
 void USensoryInputIntegration::ProcessInputsToPercepts()
 {
     // Group inputs by modality and process
-    TMap<ESensoryModality, TArray<FSensoryInputData>> ModalityGroups;
+    TMap<ESensoryInputModality, TArray<FSensoryInputData>> ModalityGroups;
 
     for (const FSensoryInputData& Input : State.ActiveInputs)
     {
@@ -263,10 +263,10 @@ float USensoryInputIntegration::ComputeGoalRelevance(const FSensoryInputData& In
     // Modality-based relevance
     switch (Input.Modality)
     {
-    case ESensoryModality::Social:
+    case ESensoryInputModality::Social:
         Relevance += 0.2f; // Social stimuli often goal-relevant
         break;
-    case ESensoryModality::Semantic:
+    case ESensoryInputModality::Semantic:
         Relevance += 0.15f;
         break;
     default:
@@ -286,13 +286,13 @@ float USensoryInputIntegration::ComputeAffordancePotential(const FSensoryInputDa
     // Modality-based affordance
     switch (Input.Modality)
     {
-    case ESensoryModality::Visual:
+    case ESensoryInputModality::Visual:
         Affordance += 0.2f;
         break;
-    case ESensoryModality::Tactile:
+    case ESensoryInputModality::Tactile:
         Affordance += 0.3f; // Tactile = direct interaction
         break;
-    case ESensoryModality::Proprioceptive:
+    case ESensoryInputModality::Proprioceptive:
         Affordance += 0.25f;
         break;
     default:
@@ -336,7 +336,7 @@ TArray<FSensoryPercept> USensoryInputIntegration::GetMostSalientPercepts(int32 C
     return SortedPercepts;
 }
 
-TArray<FSensoryPercept> USensoryInputIntegration::GetPerceptsByModality(ESensoryModality Modality) const
+TArray<FSensoryPercept> USensoryInputIntegration::GetPerceptsByModality(ESensoryInputModality Modality) const
 {
     TArray<FSensoryPercept> Result;
     for (const FSensoryPercept& Percept : State.Percepts)

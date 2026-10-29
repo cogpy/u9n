@@ -55,28 +55,28 @@ void UPlanningSystem::InitializeDefaultActions()
     RegisterActionTemplate(TEXT("Think"), {}, {TEXT("HasThought")}, 0.5f, 0.5f);
 }
 
-FGoal UPlanningSystem::CreateGoal(const FString& Name, const FString& Description, EGoalPriority Priority,
+FPlanningGoal UPlanningSystem::CreateGoal(const FString& Name, const FString& Description, EPlanningGoalPriority Priority,
                                    const TArray<FString>& SuccessConditions)
 {
-    FGoal Goal;
+    FPlanningGoal Goal;
     Goal.GoalID = GenerateGoalID();
     Goal.GoalName = Name;
     Goal.Description = Description;
     Goal.Priority = Priority;
     Goal.SuccessConditions = SuccessConditions;
-    Goal.Status = EGoalStatus::Pending;
+    Goal.Status = EPlanningGoalStatus::Pending;
     Goal.CreationTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
     Goals.Add(Goal);
     OnGoalCreated.Broadcast(Goal);
     return Goal;
 }
 
-FGoal UPlanningSystem::CreateSubGoal(const FString& ParentGoalID, const FString& Name, 
+FPlanningGoal UPlanningSystem::CreateSubGoal(const FString& ParentGoalID, const FString& Name, 
                                       const TArray<FString>& SuccessConditions)
 {
     int32 ParentIndex = FindGoalIndex(ParentGoalID);
-    if (ParentIndex < 0) return FGoal();
-    FGoal SubGoal = CreateGoal(Name, TEXT("Subgoal"), Goals[ParentIndex].Priority, SuccessConditions);
+    if (ParentIndex < 0) return FPlanningGoal();
+    FPlanningGoal SubGoal = CreateGoal(Name, TEXT("Subgoal"), Goals[ParentIndex].Priority, SuccessConditions);
     SubGoal.ParentGoalID = ParentGoalID;
     Goals[ParentIndex].SubGoals.Add(SubGoal.GoalID);
     return SubGoal;
@@ -87,8 +87,8 @@ void UPlanningSystem::ActivateGoal(const FString& GoalID)
     int32 Index = FindGoalIndex(GoalID);
     if (Index >= 0)
     {
-        Goals[Index].Status = EGoalStatus::Active;
-        OnGoalStatusChanged.Broadcast(GoalID, EGoalStatus::Active);
+        Goals[Index].Status = EPlanningGoalStatus::Active;
+        OnGoalStatusChanged.Broadcast(GoalID, EPlanningGoalStatus::Active);
         CreatePlan(GoalID);
     }
 }
@@ -98,8 +98,8 @@ void UPlanningSystem::SuspendGoal(const FString& GoalID)
     int32 Index = FindGoalIndex(GoalID);
     if (Index >= 0)
     {
-        Goals[Index].Status = EGoalStatus::Suspended;
-        OnGoalStatusChanged.Broadcast(GoalID, EGoalStatus::Suspended);
+        Goals[Index].Status = EPlanningGoalStatus::Suspended;
+        OnGoalStatusChanged.Broadcast(GoalID, EPlanningGoalStatus::Suspended);
     }
 }
 
@@ -108,31 +108,31 @@ void UPlanningSystem::AbandonGoal(const FString& GoalID)
     int32 Index = FindGoalIndex(GoalID);
     if (Index >= 0)
     {
-        Goals[Index].Status = EGoalStatus::Abandoned;
-        OnGoalStatusChanged.Broadcast(GoalID, EGoalStatus::Abandoned);
+        Goals[Index].Status = EPlanningGoalStatus::Abandoned;
+        OnGoalStatusChanged.Broadcast(GoalID, EPlanningGoalStatus::Abandoned);
     }
 }
 
-FGoal UPlanningSystem::GetGoal(const FString& GoalID) const
+FPlanningGoal UPlanningSystem::GetGoal(const FString& GoalID) const
 {
     int32 Index = FindGoalIndex(GoalID);
-    return Index >= 0 ? Goals[Index] : FGoal();
+    return Index >= 0 ? Goals[Index] : FPlanningGoal();
 }
 
-TArray<FGoal> UPlanningSystem::GetAllGoals() const { return Goals; }
+TArray<FPlanningGoal> UPlanningSystem::GetAllGoals() const { return Goals; }
 
-TArray<FGoal> UPlanningSystem::GetActiveGoals() const
+TArray<FPlanningGoal> UPlanningSystem::GetActiveGoals() const
 {
-    TArray<FGoal> Active;
-    for (const FGoal& G : Goals) if (G.Status == EGoalStatus::Active) Active.Add(G);
+    TArray<FPlanningGoal> Active;
+    for (const FPlanningGoal& G : Goals) if (G.Status == EPlanningGoalStatus::Active) Active.Add(G);
     return Active;
 }
 
-FGoal UPlanningSystem::GetHighestPriorityGoal() const
+FPlanningGoal UPlanningSystem::GetHighestPriorityGoal() const
 {
-    FGoal Highest;
+    FPlanningGoal Highest;
     float Best = -1;
-    for (const FGoal& G : Goals)
+    for (const FPlanningGoal& G : Goals)
     {
         float U = ComputeGoalUtility(G);
         if (U > Best) { Best = U; Highest = G; }
@@ -263,7 +263,7 @@ void UPlanningSystem::SetNumericFact(const FString& FactName, float Value) { Wor
 float UPlanningSystem::GetNumericFact(const FString& FactName) const { return WorldState.NumericFacts.Contains(FactName) ? WorldState.NumericFacts[FactName] : 0.0f; }
 void UPlanningSystem::SetStringFact(const FString& FactName, const FString& Value) { WorldState.StringFacts.Add(FactName, Value); }
 FString UPlanningSystem::GetStringFact(const FString& FactName) const { return WorldState.StringFacts.Contains(FactName) ? WorldState.StringFacts[FactName] : TEXT(""); }
-FWorldState UPlanningSystem::GetWorldState() const { return WorldState; }
+FPlanningWorldState UPlanningSystem::GetWorldState() const { return WorldState; }
 
 bool UPlanningSystem::IsConditionSatisfied(const FString& Condition) const
 {
@@ -274,9 +274,9 @@ bool UPlanningSystem::IsConditionSatisfied(const FString& Condition) const
 
 void UPlanningSystem::UpdateGoalProgress(float DeltaTime)
 {
-    for (FGoal& G : Goals)
+    for (FPlanningGoal& G : Goals)
     {
-        if (G.Status == EGoalStatus::Active)
+        if (G.Status == EPlanningGoalStatus::Active)
         {
             int32 Sat = 0;
             for (const FString& C : G.SuccessConditions) if (IsConditionSatisfied(C)) Sat++;
@@ -367,15 +367,15 @@ void UPlanningSystem::UpdatePlanExecution(float DeltaTime)
 }
 void UPlanningSystem::CheckGoalConditions()
 {
-    for (FGoal& G : Goals)
-        if (G.Status == EGoalStatus::Active && IsGoalAchieved(G.GoalID))
+    for (FPlanningGoal& G : Goals)
+        if (G.Status == EPlanningGoalStatus::Active && IsGoalAchieved(G.GoalID))
         {
-            G.Status = EGoalStatus::Achieved;
-            OnGoalStatusChanged.Broadcast(G.GoalID, EGoalStatus::Achieved);
+            G.Status = EPlanningGoalStatus::Achieved;
+            OnGoalStatusChanged.Broadcast(G.GoalID, EPlanningGoalStatus::Achieved);
         }
 }
 
-TArray<FPlannedAction> UPlanningSystem::GenerateActionSequence(const FGoal& Goal)
+TArray<FPlannedAction> UPlanningSystem::GenerateActionSequence(const FPlanningGoal& Goal)
 {
     TArray<FPlannedAction> Actions;
     int32 Seq = 0;
@@ -413,14 +413,14 @@ void UPlanningSystem::ApplyActionEffects(const FPlannedAction& Action)
     for (const FString& E : Action.Effects) SetBooleanFact(E, true);
 }
 
-float UPlanningSystem::ComputeGoalUtility(const FGoal& Goal) const
+float UPlanningSystem::ComputeGoalUtility(const FPlanningGoal& Goal) const
 {
     return float(uint8(Goal.Priority)) * 0.5f + Goal.Urgency * 0.3f + Goal.Importance * 0.2f;
 }
 
 void UPlanningSystem::PrioritizeGoals()
 {
-    Goals.Sort([this](const FGoal& A, const FGoal& B) { return ComputeGoalUtility(A) > ComputeGoalUtility(B); });
+    Goals.Sort([this](const FPlanningGoal& A, const FPlanningGoal& B) { return ComputeGoalUtility(A) > ComputeGoalUtility(B); });
 }
 
 FString UPlanningSystem::GenerateGoalID() { return FString::Printf(TEXT("GOAL_%d"), ++GoalIDCounter); }

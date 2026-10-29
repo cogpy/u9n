@@ -592,7 +592,7 @@ void USys6AvatarIntegration::MapConvolutionToSensorimotor(const FTriadicConvolut
 }
 
 // State queries
-FAvatarCognitiveState USys6AvatarIntegration::GetCognitiveState() const
+FSys6AvatarCognitiveState USys6AvatarIntegration::GetCognitiveState() const
 {
     return CognitiveState;
 }

@@ -614,7 +614,7 @@ int64 UReservoirMemoryIntegration::EncodeEpisodeWithContext(const FString& Label
     // Capture all stream states
     for (int32 i = 1; i <= 3; ++i)
     {
-        FCognitiveStreamState StreamState = Reservoir->GetStreamState(i);
+        FReservoirStreamState StreamState = Reservoir->GetStreamState(i);
         Context.StreamStates.Add(StreamState.ReservoirState.ActivationState);
     }
 
@@ -852,7 +852,7 @@ void UReservoirMemoryIntegration::RunConsolidationCycle()
                 FString::Printf(TEXT("ConsolidatedPattern_%s"), *Pattern.PatternID));
 
             // Log consolidation event
-            FConsolidationEvent Event;
+            FReservoirConsolidationEvent Event;
             Event.TargetNodeID = ConceptID;
             Event.ConsolidationType = TEXT("PatternToAttractor");
             Event.PatternStrength = Pattern.Strength;
@@ -917,7 +917,7 @@ int64 UReservoirMemoryIntegration::ConsolidateWorkingMemoryPattern(const TArray<
     }
 
     // Log event
-    FConsolidationEvent Event;
+    FReservoirConsolidationEvent Event;
     Event.SourceNodes = SourceNodes;
     Event.TargetNodeID = ConsolidatedID;
     Event.ConsolidationType = TEXT("WorkingMemoryConsolidation");
@@ -930,9 +930,9 @@ int64 UReservoirMemoryIntegration::ConsolidateWorkingMemoryPattern(const TArray<
     return ConsolidatedID;
 }
 
-TArray<FConsolidationEvent> UReservoirMemoryIntegration::GetRecentConsolidations(int32 Count) const
+TArray<FReservoirConsolidationEvent> UReservoirMemoryIntegration::GetRecentConsolidations(int32 Count) const
 {
-    TArray<FConsolidationEvent> Recent;
+    TArray<FReservoirConsolidationEvent> Recent;
 
     int32 StartIndex = FMath::Max(0, ConsolidationHistory.Num() - Count);
     for (int32 i = StartIndex; i < ConsolidationHistory.Num(); ++i)
@@ -1081,7 +1081,7 @@ TArray<float> UReservoirMemoryIntegration::GetCurrentReservoirState(int32 Stream
     }
     else if (StreamID >= 1 && StreamID <= 3)
     {
-        FCognitiveStreamState StreamState = Reservoir->GetStreamState(StreamID);
+        FReservoirStreamState StreamState = Reservoir->GetStreamState(StreamID);
         return StreamState.ReservoirState.ActivationState;
     }
 

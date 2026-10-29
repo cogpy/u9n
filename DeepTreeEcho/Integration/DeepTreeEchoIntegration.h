@@ -172,7 +172,7 @@ public:
 
     /** Cognitive Cycle Manager component */
     UPROPERTY(BlueprintReadOnly, Category = "Integration|Subsystems")
-    UCognitiveCycleManager* CognitiveCycleManager;
+    UCognitiveStreamCycleManager* CognitiveCycleManager;
 
     /** Entelechy Framework component */
     UPROPERTY(BlueprintReadOnly, Category = "Integration|Subsystems")

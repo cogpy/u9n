@@ -4,6 +4,7 @@
 #include "../9P/Avatar9PServer.h"
 #include "../AtomSpace/AvatarAtomSpaceClient.h"
 #include "../Communication/AvatarCommunicationManager.h"
+#include "EchoCharacterReaction.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAgentInterface, Log, All);
 
@@ -54,6 +55,24 @@ void UAvatarAgentInterface::BeginPlay()
         CommunicationManager = Owner->FindComponentByClass<UAvatarCommunicationManager>();
     }
 
+    // Track the emotion the character model chose for this agent's character
+    TWeakObjectPtr<UAvatarAgentInterface> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        UAvatarAgentInterface* Self = WeakThis.Get();
+        if (!Self || Reaction.Expression.IsEmpty())
+        {
+            return;
+        }
+        if (!Reaction.CharacterName.IsEmpty() &&
+            !Reaction.CharacterName.Equals(Self->AgentInfo.AgentName, ESearchCase::IgnoreCase))
+        {
+            return;
+        }
+        Self->LastReactionExpression = Reaction.Expression;
+        Self->LastReactionIntensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+    });
+
     // Register 9P namespace
     Register9PNamespace();
 
@@ -69,6 +88,12 @@ void UAvatarAgentInterface::BeginPlay()
 
 void UAvatarAgentInterface::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
     // Notify swarm of departure
     AgentInfo.bIsOnline = false;
 
@@ -155,12 +180,6 @@ void UAvatarAgentInterface::ReceiveTask(const FAgentTask& Task)
     OnTaskReceived.Broadcast(Task);
 
     UE_LOG(LogAgentInterface, Log, TEXT("Received task: %s from %s"), *Task.Description, *Task.AssignedBy);
-
-    // Trigger animation if avatar capabilities are available
-    if (AgentInfo.Capabilities.Contains(EAgentCapability::Motion))
-    {
-        AnimateForTask(Task);
-    }
 }
 
 void UAvatarAgentInterface::UpdateTaskProgress(const FString& TaskId, float Progress)
@@ -386,9 +405,6 @@ void UAvatarAgentInterface::ExpressEmotionalState(const FEmotionalContext& Conte
             NeurochemicalSystem->ModifyNeurochemical(ENeurochemicalType::Norepinephrine, 0.2f);
         }
     }
-
-    // Display visual response
-    DisplayEmotionalResponse(Context);
 }
 
 FEmotionalContext UAvatarAgentInterface::GetCurrentEmotionalContext()
@@ -403,34 +419,20 @@ FEmotionalContext UAvatarAgentInterface::GetCurrentEmotionalContext()
         Context.Valence = Chemistry.Happiness - Chemistry.Anxiety;
         Context.Arousal = Chemistry.Excitement;
         Context.Dominance = 0.5f; // Default
+    }
 
-        // Determine primary emotion
-        if (Chemistry.Happiness > 0.7f)
-        {
-            Context.PrimaryEmotion = TEXT("happy");
-        }
-        else if (Chemistry.Anxiety > 0.7f)
-        {
-            Context.PrimaryEmotion = TEXT("anxious");
-        }
-        else if (Chemistry.Excitement > 0.7f)
-        {
-            Context.PrimaryEmotion = TEXT("excited");
-        }
-        else if (Chemistry.Calmness > 0.7f)
-        {
-            Context.PrimaryEmotion = TEXT("calm");
-        }
-        else if (Chemistry.Affection > 0.7f)
-        {
-            Context.PrimaryEmotion = TEXT("affectionate");
-        }
-        else
-        {
-            Context.PrimaryEmotion = TEXT("neutral");
-        }
-
-        Context.Intensity = FMath::Max3(Chemistry.Happiness, Chemistry.Excitement, Chemistry.Anxiety);
+    // The emotion label is the character model's choice, never derived from thresholds.
+    // Neutral means the model has not expressed anything.
+    if (!LastReactionExpression.IsEmpty())
+    {
+        Context.PrimaryEmotion = LastReactionExpression;
+        Context.Intensity = LastReactionIntensity;
+        Context.Cause = TEXT("model");
+    }
+    else
+    {
+        Context.PrimaryEmotion = TEXT("neutral");
+        Context.Intensity = 0.0f;
     }
 
     return Context;
@@ -715,27 +717,6 @@ bool UAvatarAgentInterface::Handle9PWrite(const FString& Path, const FString& Da
     }
 
     return false;
-}
-
-// ===== Avatar-Specific Capabilities =====
-
-void UAvatarAgentInterface::VisualizeAgentInteraction(const FString& OtherAgentId)
-{
-    // In full implementation, would display visual representation of interaction
-    UE_LOG(LogAgentInterface, Log, TEXT("Visualizing interaction with agent: %s"), *OtherAgentId);
-}
-
-void UAvatarAgentInterface::AnimateForTask(const FAgentTask& Task)
-{
-    // In full implementation, would trigger appropriate animation based on task type
-    UE_LOG(LogAgentInterface, Log, TEXT("Animating for task: %s"), *Task.Description);
-}
-
-void UAvatarAgentInterface::DisplayEmotionalResponse(const FEmotionalContext& Context)
-{
-    // In full implementation, would trigger facial expressions and body language
-    UE_LOG(LogAgentInterface, Log, TEXT("Displaying emotion: %s (intensity: %.2f)"),
-        *Context.PrimaryEmotion, Context.Intensity);
 }
 
 // ===== Internal Methods =====

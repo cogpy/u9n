@@ -15,7 +15,9 @@
 #include "Personality/PersonalityTraitSystem.h"
 #include "Cognitive/CognitiveStateComponent.h"
 #include "Neurochemical/NeurochemicalSimulationComponent.h"
-#include "Avatar/Avatar3DComponent.h"
+#include "Avatar/Avatar3DComponentEnhanced.h"
+#include "Character/DeepTreeEchoMovementComponent.h"
+#include "Animation/AnimInstance.h"
 #include "Audio/AudioManagerComponent.h"
 #include "Interaction/DeepTreeEchoInteractionComponent.h"
 #include "Cosmetics/DeepTreeEchoCosmeticsComponent.h"
@@ -70,7 +72,7 @@ ADeepTreeEchoCharacter::ADeepTreeEchoCharacter(const FObjectInitializer& ObjectI
 	NeurochemicalSystem = CreateDefaultSubobject<UNeurochemicalSimulationComponent>(TEXT("NeurochemicalSystem"));
 
 	// Create avatar 3D component
-	AvatarComponent = CreateDefaultSubobject<UAvatar3DComponent>(TEXT("AvatarComponent"));
+	AvatarComponent = CreateDefaultSubobject<UAvatar3DComponentEnhanced>(TEXT("AvatarComponent"));
 
 	// Create interaction component
 	InteractionComponent = CreateDefaultSubobject<UDeepTreeEchoInteractionComponent>(TEXT("InteractionComponent"));
@@ -106,12 +108,6 @@ void ADeepTreeEchoCharacter::PossessedBy(AController* NewController)
 	// Initialize ability system for server
 	InitializeAbilitySystem();
 
-	// Bind to personality events
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->OnPersonalityShift.AddDynamic(this, &ADeepTreeEchoCharacter::OnPersonalityShift);
-	}
-
 	// Bind to cognitive events
 	if (CognitiveState)
 	{
@@ -122,11 +118,6 @@ void ADeepTreeEchoCharacter::PossessedBy(AController* NewController)
 void ADeepTreeEchoCharacter::UnPossessed()
 {
 	// Unbind events
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->OnPersonalityShift.RemoveDynamic(this, &ADeepTreeEchoCharacter::OnPersonalityShift);
-	}
-
 	if (CognitiveState)
 	{
 		CognitiveState->OnCognitiveLoadChanged.RemoveDynamic(this, &ADeepTreeEchoCharacter::OnCognitiveLoadChanged);
@@ -142,11 +133,8 @@ void ADeepTreeEchoCharacter::BeginPlay()
 	// Initialize all components
 	InitializeComponents();
 
-	// Start with default emotional state
-	if (AvatarComponent)
-	{
-		AvatarComponent->SetEmotionalState(FEmotionalState(0.5f, 0.5f, 0.5f));
-	}
+	// No emotional state is pushed to the avatar here: the avatar, expression and audio
+	// components subscribe to FEchoReactionBus themselves and show only model-chosen reactions.
 }
 
 void ADeepTreeEchoCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -160,9 +148,6 @@ void ADeepTreeEchoCharacter::Tick(float DeltaTime)
 
 	// Update component synchronization
 	UpdateComponentSynchronization();
-
-	// Update emotional effects
-	UpdateEmotionalEffects();
 
 	// Update cognitive visualization
 	UpdateCognitiveVisualization();
@@ -191,7 +176,7 @@ float ADeepTreeEchoCharacter::GetEmotionalValence() const
 {
 	if (PersonalitySystem)
 	{
-		return PersonalitySystem->GetCurrentEmotionalState().Valence;
+		return PersonalitySystem->GetEmotionalTendency().X;
 	}
 	return 0.5f;
 }
@@ -200,16 +185,7 @@ float ADeepTreeEchoCharacter::GetEmotionalArousal() const
 {
 	if (PersonalitySystem)
 	{
-		return PersonalitySystem->GetCurrentEmotionalState().Arousal;
-	}
-	return 0.5f;
-}
-
-float ADeepTreeEchoCharacter::GetEmotionalDominance() const
-{
-	if (PersonalitySystem)
-	{
-		return PersonalitySystem->GetCurrentEmotionalState().Dominance;
+		return PersonalitySystem->GetEmotionalTendency().Y;
 	}
 	return 0.5f;
 }
@@ -242,7 +218,14 @@ float ADeepTreeEchoCharacter::GetPersonalityTrait(FName TraitName) const
 {
 	if (PersonalitySystem)
 	{
-		return PersonalitySystem->GetTraitValue(TraitName);
+		if (const UEnum* TraitEnum = StaticEnum<EPersonalityTraitType>())
+		{
+			const int64 TraitValue = TraitEnum->GetValueByName(TraitName);
+			if (TraitValue != INDEX_NONE)
+			{
+				return PersonalitySystem->GetTraitIntensity(static_cast<EPersonalityTraitType>(TraitValue));
+			}
+		}
 	}
 	return 0.5f;
 }
@@ -252,15 +235,10 @@ float ADeepTreeEchoCharacter::GetPersonalityTrait(FName TraitName) const
 
 void ADeepTreeEchoCharacter::TriggerEmergentBehavior(FName BehaviorName)
 {
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->TriggerEmergentBehavior(BehaviorName);
-	}
-
 	// Trigger corresponding animation or effect
 	if (AvatarComponent)
 	{
-		AvatarComponent->PlayGesture(BehaviorName);
+		AvatarComponent->PlayGesture(BehaviorName.ToString());
 	}
 
 	// Play audio feedback
@@ -272,15 +250,13 @@ void ADeepTreeEchoCharacter::TriggerEmergentBehavior(FName BehaviorName)
 
 void ADeepTreeEchoCharacter::InterruptCurrentBehavior()
 {
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->InterruptCurrentBehavior();
-	}
-
 	// Stop current animations
 	if (AvatarComponent)
 	{
-		AvatarComponent->StopAllMontages();
+		if (UAnimInstance* AnimInstance = AvatarComponent->GetAnimInstance())
+		{
+			AnimInstance->Montage_Stop(0.2f);
+		}
 	}
 }
 
@@ -296,18 +272,6 @@ void ADeepTreeEchoCharacter::InteractWithObject(AActor* TargetObject)
 
 	// Delegate to interaction component
 	InteractionComponent->InteractWith(TargetObject);
-
-	// Record interaction in memory
-	if (CognitiveState)
-	{
-		CognitiveState->RecordInteraction(TargetObject);
-	}
-
-	// Update personality based on interaction
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->ProcessInteractionFeedback(TargetObject);
-	}
 }
 
 TArray<AActor*> ADeepTreeEchoCharacter::GetNearbyInteractableObjects(float Radius) const
@@ -322,12 +286,6 @@ TArray<AActor*> ADeepTreeEchoCharacter::GetNearbyInteractableObjects(float Radiu
 	// Query interaction component for nearby objects
 	InteractableObjects = InteractionComponent->FindInteractableObjects(Radius);
 
-	// Filter based on cognitive state (attention, priorities)
-	if (CognitiveState)
-	{
-		InteractableObjects = CognitiveState->FilterByAttention(InteractableObjects);
-	}
-
 	return InteractableObjects;
 }
 
@@ -338,16 +296,7 @@ void ADeepTreeEchoCharacter::SetEmotionalAuraColor(FLinearColor Color, float Int
 {
 	if (AvatarComponent)
 	{
-		AvatarComponent->SetEmotionalAuraColor(Color);
-		AvatarComponent->SetEmotionalAuraIntensity(Intensity);
-	}
-}
-
-void ADeepTreeEchoCharacter::TriggerCognitiveVisualization(FName VisualizationType)
-{
-	if (AvatarComponent)
-	{
-		AvatarComponent->TriggerCognitiveEffect(VisualizationType);
+		AvatarComponent->SetEmotionalAuraColor(Color, Intensity);
 	}
 }
 
@@ -361,79 +310,31 @@ void ADeepTreeEchoCharacter::UpdateReplicatedState()
 		return;
 	}
 
-	// Update emotional state
-	FEmotionalState EmotionalState = PersonalitySystem ? PersonalitySystem->GetCurrentEmotionalState() : FEmotionalState();
-	ReplicatedState.Valence = FMath::Clamp(FMath::RoundToInt(EmotionalState.Valence * 255.0f), 0, 255);
-	ReplicatedState.Arousal = FMath::Clamp(FMath::RoundToInt(EmotionalState.Arousal * 255.0f), 0, 255);
-	ReplicatedState.Dominance = FMath::Clamp(FMath::RoundToInt(EmotionalState.Dominance * 255.0f), 0, 255);
+	// Update emotional tendency (valence, arousal) from the personality system
+	if (PersonalitySystem)
+	{
+		const FVector2D Tendency = PersonalitySystem->GetEmotionalTendency();
+		ReplicatedState.Valence = FMath::Clamp(FMath::RoundToInt(Tendency.X * 255.0f), 0, 255);
+		ReplicatedState.Arousal = FMath::Clamp(FMath::RoundToInt(Tendency.Y * 255.0f), 0, 255);
+	}
 
 	// Update cognitive load
 	float CogLoad = CognitiveState ? CognitiveState->GetCurrentCognitiveLoad() : 0.0f;
 	ReplicatedState.CognitiveLoad = FMath::Clamp(FMath::RoundToInt(CogLoad * 255.0f), 0, 255);
 
-	// Update personality traits
-	if (PersonalitySystem)
-	{
-		ReplicatedState.Openness = FMath::Clamp(FMath::RoundToInt(PersonalitySystem->GetTraitValue(TEXT("Openness")) * 255.0f), 0, 255);
-		ReplicatedState.Conscientiousness = FMath::Clamp(FMath::RoundToInt(PersonalitySystem->GetTraitValue(TEXT("Conscientiousness")) * 255.0f), 0, 255);
-		ReplicatedState.Extraversion = FMath::Clamp(FMath::RoundToInt(PersonalitySystem->GetTraitValue(TEXT("Extraversion")) * 255.0f), 0, 255);
-		ReplicatedState.Agreeableness = FMath::Clamp(FMath::RoundToInt(PersonalitySystem->GetTraitValue(TEXT("Agreeableness")) * 255.0f), 0, 255);
-		ReplicatedState.Neuroticism = FMath::Clamp(FMath::RoundToInt(PersonalitySystem->GetTraitValue(TEXT("Neuroticism")) * 255.0f), 0, 255);
-	}
 }
 
 void ADeepTreeEchoCharacter::UpdateComponentSynchronization()
 {
-	// Synchronize neurochemical effects with personality
-	if (NeurochemicalSystem && PersonalitySystem)
-	{
-		FNeurochemicalState Neurochem = NeurochemicalSystem->GetCurrentState();
-		PersonalitySystem->ApplyNeurochemicalInfluence(Neurochem);
-	}
-
 	// Synchronize cognitive state with avatar visuals
 	if (CognitiveState && AvatarComponent)
 	{
 		float CogLoad = CognitiveState->GetCurrentCognitiveLoad();
-		AvatarComponent->SetCognitiveLoadVisualization(CogLoad);
+		AvatarComponent->ApplyCognitiveLoadVisualization(CogLoad);
 	}
 
-	// Synchronize personality with movement
-	if (PersonalitySystem && GetCharacterMovement())
-	{
-		UDeepTreeEchoMovementComponent* DTEMovement = Cast<UDeepTreeEchoMovementComponent>(GetCharacterMovement());
-		if (DTEMovement)
-		{
-			FEmotionalState EmotionalState = PersonalitySystem->GetCurrentEmotionalState();
-			DTEMovement->SetEmotionalState(EmotionalState);
-		}
-	}
-}
-
-void ADeepTreeEchoCharacter::UpdateEmotionalEffects()
-{
-	if (!AvatarComponent || !PersonalitySystem)
-	{
-		return;
-	}
-
-	// Get current emotional state
-	FEmotionalState EmotionalState = PersonalitySystem->GetCurrentEmotionalState();
-
-	// Update avatar visuals based on emotion
-	AvatarComponent->SetEmotionalState(EmotionalState);
-
-	// Update audio based on emotion
-	if (AudioManager)
-	{
-		AudioManager->SetEmotionalState(EmotionalState);
-	}
-
-	// Update cosmetics based on emotion
-	if (CosmeticsComponent)
-	{
-		CosmeticsComponent->ApplyEmotionalEffects(EmotionalState);
-	}
+	// The personality system's emotional state is internal persona data (model input); it is not
+	// pushed to movement, avatar, cosmetics or audio as the character's displayed reaction.
 }
 
 void ADeepTreeEchoCharacter::UpdateCognitiveVisualization()
@@ -454,7 +355,7 @@ void ADeepTreeEchoCharacter::UpdateCognitiveVisualization()
 
 	// Update cognitive visualization effects
 	float CogLoad = CognitiveState->GetCurrentCognitiveLoad();
-	AvatarComponent->UpdateCognitiveVisualization(CogLoad);
+	AvatarComponent->ApplyCognitiveLoadVisualization(CogLoad);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -472,30 +373,6 @@ void ADeepTreeEchoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 
 void ADeepTreeEchoCharacter::InitializeComponents()
 {
-	// Initialize personality system
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->Initialize();
-	}
-
-	// Initialize cognitive state
-	if (CognitiveState)
-	{
-		CognitiveState->Initialize();
-	}
-
-	// Initialize neurochemical simulation
-	if (NeurochemicalSystem)
-	{
-		NeurochemicalSystem->Initialize();
-	}
-
-	// Initialize avatar component
-	if (AvatarComponent)
-	{
-		AvatarComponent->Initialize(GetMesh());
-	}
-
 	// Initialize interaction component
 	if (InteractionComponent)
 	{
@@ -506,12 +383,6 @@ void ADeepTreeEchoCharacter::InitializeComponents()
 	if (CosmeticsComponent)
 	{
 		CosmeticsComponent->Initialize(GetMesh());
-	}
-
-	// Initialize audio manager
-	if (AudioManager)
-	{
-		AudioManager->Initialize();
 	}
 }
 
@@ -524,55 +395,10 @@ void ADeepTreeEchoCharacter::InitializeAbilitySystem()
 
 	// Initialize ability system component
 	AbilitySystemComponent->InitAbilityActorInfo(this, this);
-
-	// Grant default abilities (personality traits as abilities)
-	if (PersonalitySystem)
-	{
-		PersonalitySystem->GrantAbilities(AbilitySystemComponent);
-	}
 }
 
 //////////////////////////////////////////////////////////////////////////
 // Event Handlers
-
-void ADeepTreeEchoCharacter::OnPersonalityShift(const FPersonalityState& OldState, const FPersonalityState& NewState)
-{
-	// Update visuals based on personality shift
-	if (AvatarComponent)
-	{
-		AvatarComponent->OnPersonalityChanged(NewState);
-	}
-
-	// Update cosmetics
-	if (CosmeticsComponent)
-	{
-		CosmeticsComponent->ApplyPersonalityOutfit(NewState);
-	}
-
-	// Play audio feedback
-	if (AudioManager)
-	{
-		AudioManager->OnPersonalityShift(OldState, NewState);
-	}
-
-	// Broadcast to blueprints
-	OnPersonalityShiftEvent.Broadcast(OldState, NewState);
-}
-
-void ADeepTreeEchoCharacter::OnEmotionalStateChanged(const FEmotionalState& NewState)
-{
-	// Update avatar visuals
-	if (AvatarComponent)
-	{
-		AvatarComponent->SetEmotionalState(NewState);
-	}
-
-	// Update audio
-	if (AudioManager)
-	{
-		AudioManager->SetEmotionalState(NewState);
-	}
-}
 
 void ADeepTreeEchoCharacter::OnCognitiveLoadChanged(float NewLoad)
 {
@@ -581,7 +407,7 @@ void ADeepTreeEchoCharacter::OnCognitiveLoadChanged(float NewLoad)
 	// Update visualization
 	if (AvatarComponent)
 	{
-		AvatarComponent->SetCognitiveLoadVisualization(NewLoad);
+		AvatarComponent->ApplyCognitiveLoadVisualization(NewLoad);
 	}
 
 	// Affect movement speed

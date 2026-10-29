@@ -149,7 +149,7 @@ struct FInsightEntry
  * Avatar Expression State - Current avatar emotional/cognitive expression
  */
 USTRUCT(BlueprintType)
-struct FAvatarExpressionState
+struct FUnrealIntegrationExpressionState
 {
     GENERATED_BODY()
 
@@ -330,9 +330,34 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Insights")
     void AnalyzeForInsights();
 
-    /** Generate insight from pattern detection */
+    /**
+     * Computes the statistics of a recurring pattern (supporting entities, confidence, wisdom
+     * weight). InsightText is left empty: the wording is requested from the echo model by
+     * AnalyzeForInsights and the insight is only stored/broadcast if the model answers.
+     */
     UFUNCTION(BlueprintCallable, Category = "Insights")
-    FInsightEntry GenerateInsightFromPatterns(const TArray<FDiaryEntry>& RelevantEntries);
+    FInsightEntry ComputeInsightPattern(const TArray<FDiaryEntry>& RelevantEntries) const;
+
+    /** Character name used in the insight prompt (model input). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Insights")
+    FString InsightCharacterName = TEXT("Deep Tree Echo");
+
+    /**
+     * Insight prompt templates: "entity_pattern" (entities recur in at least half of the
+     * entries) and "emotional_pattern" (no recurring entity; the shared valence is the pattern).
+     * Slots: {valence}, {entities}, {entry_count}, {entries}, {confidence}. The model writes the
+     * insight text.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Insights", meta = (MultiLine = true))
+    TMap<FString, FString> InsightPromptTemplates;
+
+    /**
+     * Blueprint-compatible: computes the pattern of RelevantEntries and asks the model to word
+     * the insight. Returns false (nothing requested) when the entries show no confident pattern;
+     * the insight arrives via OnInsightDiscovered or OnInsightFailed.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Insights")
+    bool GenerateInsightFromPatterns(const TArray<FDiaryEntry>& RelevantEntries);
 
     /** Cultivate wisdom from insights */
     UFUNCTION(BlueprintCallable, Category = "Wisdom")
@@ -344,7 +369,7 @@ public:
 
     /** Current avatar expression state */
     UPROPERTY(BlueprintReadOnly, Category = "Avatar")
-    FAvatarExpressionState CurrentExpressionState;
+    FUnrealIntegrationExpressionState CurrentExpressionState;
 
     /** Update avatar expression from cognitive state */
     UFUNCTION(BlueprintCallable, Category = "Avatar")
@@ -356,7 +381,7 @@ public:
 
     /** Blend to target expression over time */
     UFUNCTION(BlueprintCallable, Category = "Avatar")
-    void BlendToExpression(const FAvatarExpressionState& TargetState, float BlendTime);
+    void BlendToExpression(const FUnrealIntegrationExpressionState& TargetState, float BlendTime);
 
     /** Get eye gaze direction based on attention */
     UFUNCTION(BlueprintCallable, Category = "Avatar")
@@ -454,7 +479,19 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnWisdomChanged OnWisdomChanged;
 
+    /** Called when the model could not provide an insight (Error is system text, not the character's). */
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInsightFailed, const FString&, Error);
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnInsightFailed OnInsightFailed;
+
 private:
+    /** Asks the echo model to word an insight from a detected pattern. */
+    void RequestInsightText(const FInsightEntry& Pattern, const TArray<FDiaryEntry>& RelevantEntries, const FString& GroupKey, int32 GroupSize);
+    void HandleInsightText(bool bSuccess, const FString& TextOrError, FInsightEntry Pattern, FString GroupKey, int32 GroupSize);
+
+    /** Group size last sent to the model per valence group, so unchanged groups are not re-requested. */
+    TMap<FString, int32> RequestedInsightGroupSizes;
+
     /** Initialize consciousness streams */
     void InitializeConsciousnessStreams();
 

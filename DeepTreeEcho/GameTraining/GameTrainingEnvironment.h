@@ -324,7 +324,7 @@ struct FRewardShaping
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEpisodeStarted, int32, EpisodeNumber);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEpisodeEnded, const FTrainingEpisode&, Episode);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnStepCompleted, const FGameStateObservation&, State, float, Reward);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRewardReceived, const FRewardBreakdown&, Reward);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTrainingRewardReceived, const FRewardBreakdown&, Reward);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnStateObserved, const FGameStateObservation&, State);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTrainingModeChanged, ETrainingMode, NewMode);
 
@@ -401,7 +401,7 @@ public:
     FOnStepCompleted OnStepCompleted;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
-    FOnRewardReceived OnRewardReceived;
+    FOnTrainingRewardReceived OnRewardReceived;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnStateObserved OnStateObserved;

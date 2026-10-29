@@ -186,23 +186,3 @@ void UAnimNotify_TriggerMicroExpression::Notify(USkeletalMeshComponent* MeshComp
     }
 }
 
-void UAnimNotifyState_WonderToJoy::NotifyBegin(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, float TotalDuration, const FAnimNotifyEventReference& EventReference)
-{
-    if (!MeshComp)
-        return;
-
-    AActor* Owner = MeshComp->GetOwner();
-    if (!Owner)
-        return;
-
-    UDeepTreeEchoExpressionSystem* ExpressionSystem = Owner->FindComponentByClass<UDeepTreeEchoExpressionSystem>();
-    if (ExpressionSystem)
-    {
-        ExpressionSystem->TriggerWonderToJoyTransition(TotalDuration);
-    }
-}
-
-void UAnimNotifyState_WonderToJoy::NotifyEnd(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
-{
-    // The expression system handles the completion internally
-}

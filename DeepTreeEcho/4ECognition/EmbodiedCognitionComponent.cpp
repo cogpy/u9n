@@ -97,7 +97,7 @@ void UEmbodiedCognitionComponent::UpdateBodySchema(const TMap<FString, FVector>&
 
 void UEmbodiedCognitionComponent::AddSomaticMarker(const FString& Stimulus, const FString& BodyRegion, float Valence, float Arousal)
 {
-    FSomaticMarker Marker;
+    FEmbodiedSomaticMarker Marker;
     Marker.MarkerID = GenerateMarkerID();
     Marker.AssociatedStimulus = Stimulus;
     Marker.BodyRegion = BodyRegion;
@@ -106,7 +106,7 @@ void UEmbodiedCognitionComponent::AddSomaticMarker(const FString& Stimulus, cons
     Marker.Strength = 1.0f;
 
     // Check if marker for this stimulus already exists
-    for (FSomaticMarker& ExistingMarker : ActiveSomaticMarkers)
+    for (FEmbodiedSomaticMarker& ExistingMarker : ActiveSomaticMarkers)
     {
         if (ExistingMarker.AssociatedStimulus == Stimulus)
         {
@@ -121,16 +121,16 @@ void UEmbodiedCognitionComponent::AddSomaticMarker(const FString& Stimulus, cons
     ActiveSomaticMarkers.Add(Marker);
 }
 
-FSomaticMarker UEmbodiedCognitionComponent::GetSomaticMarkerForStimulus(const FString& Stimulus) const
+FEmbodiedSomaticMarker UEmbodiedCognitionComponent::GetSomaticMarkerForStimulus(const FString& Stimulus) const
 {
-    for (const FSomaticMarker& Marker : ActiveSomaticMarkers)
+    for (const FEmbodiedSomaticMarker& Marker : ActiveSomaticMarkers)
     {
         if (Marker.AssociatedStimulus == Stimulus)
         {
             return Marker;
         }
     }
-    return FSomaticMarker();
+    return FEmbodiedSomaticMarker();
 }
 
 bool UEmbodiedCognitionComponent::IsInPeripersonalSpace(const FVector& Position) const
@@ -257,7 +257,7 @@ void UEmbodiedCognitionComponent::SetCurrentNiche(const FString& Niche)
 void UEmbodiedCognitionComponent::LearnContingency(const FString& Action, const FString& ExpectedOutcome, const FString& ActualOutcome)
 {
     // Check if contingency already exists
-    for (FSensorimotorContingency& Contingency : LearnedContingencies)
+    for (FEmbodiedCognitionContingency& Contingency : LearnedContingencies)
     {
         if (Contingency.TriggeringAction == Action)
         {
@@ -283,7 +283,7 @@ void UEmbodiedCognitionComponent::LearnContingency(const FString& Action, const 
     }
 
     // Create new contingency
-    FSensorimotorContingency NewContingency;
+    FEmbodiedCognitionContingency NewContingency;
     NewContingency.ContingencyID = GenerateContingencyID();
     NewContingency.TriggeringAction = Action;
     NewContingency.ExpectedOutcome = ExpectedOutcome;
@@ -298,7 +298,7 @@ void UEmbodiedCognitionComponent::LearnContingency(const FString& Action, const 
 
 FString UEmbodiedCognitionComponent::PredictOutcome(const FString& Action) const
 {
-    for (const FSensorimotorContingency& Contingency : LearnedContingencies)
+    for (const FEmbodiedCognitionContingency& Contingency : LearnedContingencies)
     {
         if (Contingency.TriggeringAction == Action)
         {
@@ -429,7 +429,7 @@ float UEmbodiedCognitionComponent::GetEnactedScore() const
     }
 
     float TotalStrength = 0.0f;
-    for (const FSensorimotorContingency& Contingency : LearnedContingencies)
+    for (const FEmbodiedCognitionContingency& Contingency : LearnedContingencies)
     {
         TotalStrength += Contingency.Strength;
     }
@@ -506,7 +506,7 @@ void UEmbodiedCognitionComponent::UpdateContingencyStrengths(float DeltaTime)
 {
     const float DecayRate = 0.01f;
     
-    for (FSensorimotorContingency& Contingency : LearnedContingencies)
+    for (FEmbodiedCognitionContingency& Contingency : LearnedContingencies)
     {
         // Slow decay of unused contingencies
         Contingency.Strength = FMath::Max(0.1f, Contingency.Strength - DecayRate * DeltaTime);

@@ -1,6 +1,7 @@
 #ifndef RESERVOIRCPP_TYPE_MAPPEDDATA_HPP
 #define RESERVOIRCPP_TYPE_MAPPEDDATA_HPP
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 #include <cstddef>

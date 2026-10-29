@@ -11,7 +11,7 @@
 // CONSTRUCTOR
 // ========================================
 
-USensorimotorIntegration::USensorimotorIntegration()
+USensorimotorLoopIntegration::USensorimotorLoopIntegration()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickInterval = 0.0f;
@@ -21,13 +21,13 @@ USensorimotorIntegration::USensorimotorIntegration()
 // LIFECYCLE
 // ========================================
 
-void USensorimotorIntegration::BeginPlay()
+void USensorimotorLoopIntegration::BeginPlay()
 {
     Super::BeginPlay();
     Initialize();
 }
 
-void USensorimotorIntegration::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+void USensorimotorLoopIntegration::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
     
@@ -87,7 +87,7 @@ void USensorimotorIntegration::TickComponent(float DeltaTime, ELevelTick TickTyp
 // INITIALIZATION
 // ========================================
 
-void USensorimotorIntegration::Initialize()
+void USensorimotorLoopIntegration::Initialize()
 {
     // Initialize body schema with default values
     CurrentState.BodySchema.State = EBodySchemaState::Calibrating;
@@ -107,7 +107,7 @@ void USensorimotorIntegration::Initialize()
     UE_LOG(LogTemp, Log, TEXT("Sensorimotor Integration initialized"));
 }
 
-void USensorimotorIntegration::Reset()
+void USensorimotorLoopIntegration::Reset()
 {
     CurrentState = FSensorimotorState();
     PreviousState = FSensorimotorState();
@@ -123,7 +123,7 @@ void USensorimotorIntegration::Reset()
 // SENSORY INPUT
 // ========================================
 
-void USensorimotorIntegration::RegisterSensoryChannel(FName ChannelID, ESensoryModality Modality, int32 DataDimension)
+void USensorimotorLoopIntegration::RegisterSensoryChannel(FName ChannelID, ESensorimotorLoopModality Modality, int32 DataDimension)
 {
     FSensoryChannel NewChannel;
     NewChannel.ChannelID = ChannelID;
@@ -138,7 +138,7 @@ void USensorimotorIntegration::RegisterSensoryChannel(FName ChannelID, ESensoryM
     UE_LOG(LogTemp, Log, TEXT("Registered sensory channel: %s"), *ChannelID.ToString());
 }
 
-void USensorimotorIntegration::UpdateSensoryChannel(FName ChannelID, const TArray<float>& RawData)
+void USensorimotorLoopIntegration::UpdateSensoryChannel(FName ChannelID, const TArray<float>& RawData)
 {
     for (FSensoryChannel& Channel : CurrentState.SensoryChannels)
     {
@@ -177,7 +177,7 @@ void USensorimotorIntegration::UpdateSensoryChannel(FName ChannelID, const TArra
     }
 }
 
-void USensorimotorIntegration::SetChannelAttention(FName ChannelID, float AttentionWeight)
+void USensorimotorLoopIntegration::SetChannelAttention(FName ChannelID, float AttentionWeight)
 {
     for (FSensoryChannel& Channel : CurrentState.SensoryChannels)
     {
@@ -189,7 +189,7 @@ void USensorimotorIntegration::SetChannelAttention(FName ChannelID, float Attent
     }
 }
 
-TArray<float> USensorimotorIntegration::GetIntegratedSensoryFeatures() const
+TArray<float> USensorimotorLoopIntegration::GetIntegratedSensoryFeatures() const
 {
     TArray<float> Integrated;
     float TotalWeight = 0.0f;
@@ -225,7 +225,7 @@ TArray<float> USensorimotorIntegration::GetIntegratedSensoryFeatures() const
     return Integrated;
 }
 
-float USensorimotorIntegration::ComputeSensoryPredictionError(FName ChannelID) const
+float USensorimotorLoopIntegration::ComputeSensoryPredictionError(FName ChannelID) const
 {
     for (const FSensoryChannel& Channel : CurrentState.SensoryChannels)
     {
@@ -241,7 +241,7 @@ float USensorimotorIntegration::ComputeSensoryPredictionError(FName ChannelID) c
 // MOTOR OUTPUT
 // ========================================
 
-void USensorimotorIntegration::RegisterMotorChannel(FName ChannelID, EMotorEffector Effector, int32 CommandDimension)
+void USensorimotorLoopIntegration::RegisterMotorChannel(FName ChannelID, EMotorEffector Effector, int32 CommandDimension)
 {
     FMotorChannel NewChannel;
     NewChannel.ChannelID = ChannelID;
@@ -256,7 +256,7 @@ void USensorimotorIntegration::RegisterMotorChannel(FName ChannelID, EMotorEffec
     UE_LOG(LogTemp, Log, TEXT("Registered motor channel: %s"), *ChannelID.ToString());
 }
 
-void USensorimotorIntegration::SetMotorCommand(FName ChannelID, const TArray<float>& Command, float Gain)
+void USensorimotorLoopIntegration::SetMotorCommand(FName ChannelID, const TArray<float>& Command, float Gain)
 {
     for (FMotorChannel& Channel : CurrentState.MotorChannels)
     {
@@ -271,7 +271,7 @@ void USensorimotorIntegration::SetMotorCommand(FName ChannelID, const TArray<flo
     }
 }
 
-void USensorimotorIntegration::UpdateMotorFeedback(FName ChannelID, const TArray<float>& CurrentStateData)
+void USensorimotorLoopIntegration::UpdateMotorFeedback(FName ChannelID, const TArray<float>& CurrentStateData)
 {
     for (FMotorChannel& Channel : CurrentState.MotorChannels)
     {
@@ -307,7 +307,7 @@ void USensorimotorIntegration::UpdateMotorFeedback(FName ChannelID, const TArray
     }
 }
 
-TMap<FName, TArray<float>> USensorimotorIntegration::GetAllMotorCommands() const
+TMap<FName, TArray<float>> USensorimotorLoopIntegration::GetAllMotorCommands() const
 {
     TMap<FName, TArray<float>> Commands;
     for (const FMotorChannel& Channel : CurrentState.MotorChannels)
@@ -326,7 +326,7 @@ TMap<FName, TArray<float>> USensorimotorIntegration::GetAllMotorCommands() const
     return Commands;
 }
 
-void USensorimotorIntegration::ExecuteWithPrediction(FName ChannelID)
+void USensorimotorLoopIntegration::ExecuteWithPrediction(FName ChannelID)
 {
     for (FMotorChannel& Channel : CurrentState.MotorChannels)
     {
@@ -351,14 +351,14 @@ void USensorimotorIntegration::ExecuteWithPrediction(FName ChannelID)
 // CONTINGENCY LEARNING
 // ========================================
 
-int32 USensorimotorIntegration::LearnContingency(const TArray<float>& ActionPattern, const TArray<float>& SensoryChange)
+int32 USensorimotorLoopIntegration::LearnContingency(const TArray<float>& ActionPattern, const TArray<float>& SensoryChange)
 {
     // Check if similar contingency exists
     int32 ExistingID = FindMatchingContingency(ActionPattern);
     if (ExistingID >= 0)
     {
         // Update existing contingency
-        FSensorimotorContingency& Existing = Contingencies[ExistingID];
+        FSensorimotorLoopContingency& Existing = Contingencies[ExistingID];
         
         // Blend sensory change with existing
         float Alpha = Config.ContingencyLearningRate;
@@ -390,7 +390,7 @@ int32 USensorimotorIntegration::LearnContingency(const TArray<float>& ActionPatt
         Contingencies.RemoveAt(WeakestIdx);
     }
     
-    FSensorimotorContingency NewContingency;
+    FSensorimotorLoopContingency NewContingency;
     NewContingency.ContingencyID = Contingencies.Num();
     NewContingency.ActionPattern = ActionPattern;
     NewContingency.ExpectedSensoryChange = SensoryChange;
@@ -405,24 +405,24 @@ int32 USensorimotorIntegration::LearnContingency(const TArray<float>& ActionPatt
     return NewContingency.ContingencyID;
 }
 
-void USensorimotorIntegration::UpdateContingencyReliability(int32 ContingencyID, bool bSuccessful)
+void USensorimotorLoopIntegration::UpdateContingencyReliability(int32 ContingencyID, bool bSuccessful)
 {
     if (ContingencyID >= 0 && ContingencyID < Contingencies.Num())
     {
-        FSensorimotorContingency& Contingency = Contingencies[ContingencyID];
+        FSensorimotorLoopContingency& Contingency = Contingencies[ContingencyID];
         
         float Delta = bSuccessful ? 0.1f : -0.1f;
         Contingency.Reliability = FMath::Clamp(Contingency.Reliability + Delta, 0.0f, 1.0f);
     }
 }
 
-TArray<float> USensorimotorIntegration::PredictSensoryConsequence(const TArray<float>& ActionPattern) const
+TArray<float> USensorimotorLoopIntegration::PredictSensoryConsequence(const TArray<float>& ActionPattern) const
 {
     TArray<float> Prediction;
     float TotalWeight = 0.0f;
     
     // Weighted combination of matching contingencies
-    for (const FSensorimotorContingency& Contingency : Contingencies)
+    for (const FSensorimotorLoopContingency& Contingency : Contingencies)
     {
         float Similarity = ComputeFeatureSimilarity(ActionPattern, Contingency.ActionPattern);
         if (Similarity > 0.5f)
@@ -454,7 +454,7 @@ TArray<float> USensorimotorIntegration::PredictSensoryConsequence(const TArray<f
     return Prediction;
 }
 
-int32 USensorimotorIntegration::FindMatchingContingency(const TArray<float>& ActionPattern) const
+int32 USensorimotorLoopIntegration::FindMatchingContingency(const TArray<float>& ActionPattern) const
 {
     int32 BestMatch = -1;
     float BestSimilarity = 0.8f; // Threshold for matching
@@ -476,7 +476,7 @@ int32 USensorimotorIntegration::FindMatchingContingency(const TArray<float>& Act
 // AFFORDANCE DETECTION
 // ========================================
 
-void USensorimotorIntegration::DetectAffordances()
+void USensorimotorLoopIntegration::DetectAffordances()
 {
     CurrentState.Affordances.Empty();
     
@@ -485,7 +485,7 @@ void USensorimotorIntegration::DetectAffordances()
     if (Features.Num() == 0) return;
     
     // Check each contingency for potential affordance
-    for (const FSensorimotorContingency& Contingency : Contingencies)
+    for (const FSensorimotorLoopContingency& Contingency : Contingencies)
     {
         if (Contingency.Reliability < 0.3f) continue;
         
@@ -518,7 +518,7 @@ void USensorimotorIntegration::DetectAffordances()
     });
 }
 
-TArray<FAffordance> USensorimotorIntegration::GetAffordancesForAction(FName ActionType) const
+TArray<FAffordance> USensorimotorLoopIntegration::GetAffordancesForAction(FName ActionType) const
 {
     TArray<FAffordance> Matching;
     for (const FAffordance& Aff : CurrentState.Affordances)
@@ -531,7 +531,7 @@ TArray<FAffordance> USensorimotorIntegration::GetAffordancesForAction(FName Acti
     return Matching;
 }
 
-FAffordance USensorimotorIntegration::GetStrongestAffordance() const
+FAffordance USensorimotorLoopIntegration::GetStrongestAffordance() const
 {
     if (CurrentState.Affordances.Num() > 0)
     {
@@ -540,7 +540,7 @@ FAffordance USensorimotorIntegration::GetStrongestAffordance() const
     return FAffordance();
 }
 
-bool USensorimotorIntegration::IsActionAfforded(FName ActionType) const
+bool USensorimotorLoopIntegration::IsActionAfforded(FName ActionType) const
 {
     for (const FAffordance& Aff : CurrentState.Affordances)
     {
@@ -556,7 +556,7 @@ bool USensorimotorIntegration::IsActionAfforded(FName ActionType) const
 // BODY SCHEMA
 // ========================================
 
-void USensorimotorIntegration::UpdateBodyPartPosition(FName PartName, FVector Position, FRotator Orientation)
+void USensorimotorLoopIntegration::UpdateBodyPartPosition(FName PartName, FVector Position, FRotator Orientation)
 {
     CurrentState.BodySchema.PartPositions.Add(PartName, Position);
     CurrentState.BodySchema.PartOrientations.Add(PartName, Orientation);
@@ -577,7 +577,7 @@ void USensorimotorIntegration::UpdateBodyPartPosition(FName PartName, FVector Po
     }
 }
 
-void USensorimotorIntegration::ExtendBodySchema(FName ToolName, FVector Extension)
+void USensorimotorLoopIntegration::ExtendBodySchema(FName ToolName, FVector Extension)
 {
     CurrentState.BodySchema.CurrentTool = ToolName;
     CurrentState.BodySchema.ToolExtension = Extension;
@@ -589,7 +589,7 @@ void USensorimotorIntegration::ExtendBodySchema(FName ToolName, FVector Extensio
     OnBodySchemaAdapted.Broadcast(EBodySchemaState::Extended);
 }
 
-void USensorimotorIntegration::ResetBodySchema()
+void USensorimotorLoopIntegration::ResetBodySchema()
 {
     CurrentState.BodySchema.CurrentTool = NAME_None;
     CurrentState.BodySchema.ToolExtension = FVector::ZeroVector;
@@ -598,12 +598,12 @@ void USensorimotorIntegration::ResetBodySchema()
     OnBodySchemaAdapted.Broadcast(EBodySchemaState::Normal);
 }
 
-bool USensorimotorIntegration::IsPositionReachable(FVector Position) const
+bool USensorimotorLoopIntegration::IsPositionReachable(FVector Position) const
 {
     return CurrentState.BodySchema.ReachableSpace.IsInside(Position);
 }
 
-float USensorimotorIntegration::GetEffectorCapability(EMotorEffector Effector) const
+float USensorimotorLoopIntegration::GetEffectorCapability(EMotorEffector Effector) const
 {
     if (const float* Capability = CurrentState.BodySchema.EffectorCapabilities.Find(Effector))
     {
@@ -616,7 +616,7 @@ float USensorimotorIntegration::GetEffectorCapability(EMotorEffector Effector) c
 // COGNITIVE CYCLE INTEGRATION
 // ========================================
 
-void USensorimotorIntegration::ProcessCognitiveStep(int32 GlobalStep, EConsciousnessStream ActiveStream)
+void USensorimotorLoopIntegration::ProcessCognitiveStep(int32 GlobalStep, EConsciousnessStream ActiveStream)
 {
     int32 StepInCycle = ((GlobalStep - 1) % 12) + 1;
     
@@ -709,7 +709,7 @@ void USensorimotorIntegration::ProcessCognitiveStep(int32 GlobalStep, EConscious
     }
 }
 
-TArray<float> USensorimotorIntegration::GetSalienceMap() const
+TArray<float> USensorimotorLoopIntegration::GetSalienceMap() const
 {
     TArray<float> Salience;
     Salience.SetNum(CurrentState.SensoryChannels.Num());
@@ -730,7 +730,7 @@ TArray<float> USensorimotorIntegration::GetSalienceMap() const
     return Salience;
 }
 
-float USensorimotorIntegration::GetActionReadiness() const
+float USensorimotorLoopIntegration::GetActionReadiness() const
 {
     float Readiness = 0.0f;
     int32 Count = 0;
@@ -758,7 +758,7 @@ float USensorimotorIntegration::GetActionReadiness() const
 // INTERNAL METHODS
 // ========================================
 
-void USensorimotorIntegration::ProcessSensoryPrediction()
+void USensorimotorLoopIntegration::ProcessSensoryPrediction()
 {
     // Generate predictions for next sensory state based on current motor commands
     for (const FMotorChannel& Channel : CurrentState.MotorChannels)
@@ -775,7 +775,7 @@ void USensorimotorIntegration::ProcessSensoryPrediction()
     }
 }
 
-void USensorimotorIntegration::ProcessMotorPrediction()
+void USensorimotorLoopIntegration::ProcessMotorPrediction()
 {
     // Predict motor state evolution
     for (FMotorChannel& Channel : CurrentState.MotorChannels)
@@ -797,7 +797,7 @@ void USensorimotorIntegration::ProcessMotorPrediction()
     }
 }
 
-void USensorimotorIntegration::UpdateAttention()
+void USensorimotorLoopIntegration::UpdateAttention()
 {
     // Decay attention over time
     for (FSensoryChannel& Channel : CurrentState.SensoryChannels)
@@ -815,7 +815,7 @@ void USensorimotorIntegration::UpdateAttention()
     }
 }
 
-void USensorimotorIntegration::ConsolidateContingencies()
+void USensorimotorLoopIntegration::ConsolidateContingencies()
 {
     // Merge similar contingencies
     for (int32 i = 0; i < Contingencies.Num(); ++i)
@@ -846,12 +846,12 @@ void USensorimotorIntegration::ConsolidateContingencies()
     }
     
     // Prune weak contingencies
-    Contingencies.RemoveAll([](const FSensorimotorContingency& C) {
+    Contingencies.RemoveAll([](const FSensorimotorLoopContingency& C) {
         return C.Reliability < 0.1f && C.ActivationCount < 5;
     });
 }
 
-void USensorimotorIntegration::AdaptBodySchema()
+void USensorimotorLoopIntegration::AdaptBodySchema()
 {
     // Compute overall prediction error
     float TotalError = 0.0f;
@@ -859,7 +859,7 @@ void USensorimotorIntegration::AdaptBodySchema()
     
     for (const FSensoryChannel& Channel : CurrentState.SensoryChannels)
     {
-        if (Channel.Modality == ESensoryModality::Proprioceptive)
+        if (Channel.Modality == ESensorimotorLoopModality::Proprioceptive)
         {
             TotalError += Channel.PredictionError;
             Count++;
@@ -890,7 +890,7 @@ void USensorimotorIntegration::AdaptBodySchema()
     CurrentState.Coherence = 1.0f - FMath::Clamp(TotalError, 0.0f, 1.0f);
 }
 
-float USensorimotorIntegration::ComputeFeatureSimilarity(const TArray<float>& A, const TArray<float>& B) const
+float USensorimotorLoopIntegration::ComputeFeatureSimilarity(const TArray<float>& A, const TArray<float>& B) const
 {
     if (A.Num() == 0 || B.Num() == 0) return 0.0f;
     
@@ -912,7 +912,7 @@ float USensorimotorIntegration::ComputeFeatureSimilarity(const TArray<float>& A,
     return FMath::Clamp(DotProduct / Denom, 0.0f, 1.0f);
 }
 
-TArray<float> USensorimotorIntegration::NormalizeFeatures(const TArray<float>& Features) const
+TArray<float> USensorimotorLoopIntegration::NormalizeFeatures(const TArray<float>& Features) const
 {
     TArray<float> Normalized = Features;
     

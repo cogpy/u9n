@@ -5,6 +5,48 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "EchoCharacterReaction.h"
+
+namespace
+{
+    /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
+    template <typename TEnum>
+    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    {
+        const FString Trimmed = Name.TrimStartAndEnd();
+        const UEnum* Enum = StaticEnum<TEnum>();
+        if (Trimmed.IsEmpty() || !Enum)
+        {
+            return false;
+        }
+
+        // NumEnums() includes the generated _MAX entry
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            if (Enum->GetNameStringByIndex(Index).Equals(Trimmed, ESearchCase::IgnoreCase) ||
+                Enum->GetDisplayNameTextByIndex(Index).ToString().Equals(Trimmed, ESearchCase::IgnoreCase))
+            {
+                OutValue = static_cast<TEnum>(Enum->GetValueByIndex(Index));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Mouth openness for one character of the utterance being spoken. */
+    float MouthOpenForCharacter(TCHAR Character)
+    {
+        switch (FChar::ToLower(Character))
+        {
+            case TEXT('a'): case TEXT('o'):
+                return 0.8f;
+            case TEXT('e'): case TEXT('i'): case TEXT('u'): case TEXT('y'):
+                return 0.5f;
+            default:
+                return FChar::IsAlnum(Character) ? 0.25f : 0.0f;
+        }
+    }
+}
 
 UAvatarAnimInstance::UAvatarAnimInstance()
 {
@@ -27,6 +69,7 @@ UAvatarAnimInstance::UAvatarAnimInstance()
 
     CurrentGesture = EGestureState::None;
     GestureBlendWeight = 0.0f;
+    GestureIntensity = 0.0f;
     GestureTimer = 0.0f;
     GestureDuration = 0.0f;
 
@@ -46,8 +89,15 @@ UAvatarAnimInstance::UAvatarAnimInstance()
     IdleSwayTime = 0.0f;
 
     FacialBlendSpeed = 5.0f;
-    ChaosTimer = 0.0f;
-    NextChaoticEventTime = FMath::FRandRange(2.0f, 5.0f);
+
+    bIsSpeaking = false;
+    SpeechMouthOpen = 0.0f;
+    SpeechSecondsPerCharacter = 0.06f;
+    ReactionGestureDuration = 2.0f;
+
+    LipSyncDuration = 0.0f;
+    LipSyncTime = 0.0f;
+    bTextLipSyncActive = false;
 }
 
 void UAvatarAnimInstance::NativeInitializeAnimation()
@@ -66,6 +116,68 @@ void UAvatarAnimInstance::NativeInitializeAnimation()
             MovementComponent = Character->GetCharacterMovement();
         }
     }
+
+    // Apply only what the model chooses: subscribe to the character reaction bus
+    UnbindReactionBus();
+    TWeakObjectPtr<UAvatarAnimInstance> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UAvatarAnimInstance* Self = WeakThis.Get())
+        {
+            Self->ApplyCharacterReaction(Reaction);
+        }
+    });
+}
+
+void UAvatarAnimInstance::NativeUninitializeAnimation()
+{
+    UnbindReactionBus();
+    Super::NativeUninitializeAnimation();
+}
+
+void UAvatarAnimInstance::BeginDestroy()
+{
+    UnbindReactionBus();
+    Super::BeginDestroy();
+}
+
+void UAvatarAnimInstance::UnbindReactionBus()
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+}
+
+void UAvatarAnimInstance::ApplyCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+
+    EAvatarEmotionalState Emotion{};
+    if (ParseReactionEnum(Reaction.Expression, Emotion))
+    {
+        UpdateEmotionalState(Emotion, Intensity);
+    }
+
+    EGestureState Gesture{};
+    if (ParseReactionEnum(Reaction.Gesture, Gesture) && Gesture != EGestureState::None)
+    {
+        TriggerGesture(Gesture, ReactionGestureDuration);
+        GestureIntensity = Intensity;
+    }
+
+    // Speaking visuals follow the model's actual utterance
+    if (!Reaction.Utterance.IsEmpty())
+    {
+        StartLipSync(Reaction.Utterance, Reaction.Utterance.Len() * SpeechSecondsPerCharacter);
+    }
 }
 
 void UAvatarAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
@@ -83,7 +195,7 @@ void UAvatarAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
     UpdateFacialAnimation(DeltaSeconds);
     UpdateGazeTracking(DeltaSeconds);
     UpdateProceduralAnimation(DeltaSeconds);
-    UpdateChaoticBehavior(DeltaSeconds);
+    UpdateSpeech(DeltaSeconds);
 }
 
 void UAvatarAnimInstance::UpdateLocomotionState(float DeltaTime)
@@ -175,24 +287,7 @@ void UAvatarAnimInstance::UpdateGestureState(float DeltaTime)
             CurrentGesture = EGestureState::None;
             GestureBlendWeight = 0.0f;
             GestureTimer = 0.0f;
-        }
-    }
-    
-    // Personality-driven automatic gestures
-    if (CurrentGesture == EGestureState::None && FMath::FRand() < 0.01f) // 1% chance per frame
-    {
-        // Choose gesture based on personality
-        if (ConfidenceLevel > 0.7f && FMath::FRand() < 0.5f)
-        {
-            TriggerGesture(EGestureState::Confident, 2.0f);
-        }
-        else if (FlirtinessLevel > 0.6f && FMath::FRand() < 0.5f)
-        {
-            TriggerGesture(EGestureState::Flirty, 2.5f);
-        }
-        else if (PlayfulnessLevel > 0.6f && FMath::FRand() < 0.5f)
-        {
-            TriggerGesture(EGestureState::Excited, 1.5f);
+            GestureIntensity = 0.0f;
         }
     }
 }
@@ -214,6 +309,13 @@ void UAvatarAnimInstance::UpdateFacialAnimation(float DeltaTime)
     
     // Smooth blend to target
     BlendFacialShapes(TargetFacialBlendShapes, DeltaTime);
+
+    // Speech drives the mouth on top of the emotional expression
+    if (bIsSpeaking)
+    {
+        FacialBlendShapes.MouthOpen = FMath::Max(FacialBlendShapes.MouthOpen, SpeechMouthOpen);
+        FacialBlendShapes.JawOpen = FMath::Max(FacialBlendShapes.JawOpen, SpeechMouthOpen * 0.6f);
+    }
 }
 
 void UAvatarAnimInstance::UpdateGazeTracking(float DeltaTime)
@@ -240,23 +342,61 @@ void UAvatarAnimInstance::UpdateProceduralAnimation(float DeltaTime)
     IdleSwayTime += DeltaTime;
     IdleSway.X = FMath::Sin(IdleSwayTime * 0.3f) * 2.0f;
     IdleSway.Y = FMath::Cos(IdleSwayTime * 0.25f) * 1.5f;
+
+    // Glitch effects requested via ApplyChaoticBehavior fade out
+    GlitchIntensity = FMath::Max(0.0f, GlitchIntensity - DeltaTime * 0.5f);
 }
 
-void UAvatarAnimInstance::UpdateChaoticBehavior(float DeltaTime)
+void UAvatarAnimInstance::UpdateSpeech(float DeltaTime)
 {
-    if (ChaosFactor < 0.1f)
+    if (!bTextLipSyncActive)
     {
-        return; // Not chaotic enough to trigger events
+        return;
     }
 
-    ChaosTimer += DeltaTime;
-    
-    if (ChaosTimer >= NextChaoticEventTime)
+    LipSyncTime += DeltaTime;
+    if (LipSyncTime >= LipSyncDuration || LipSyncText.IsEmpty())
     {
-        TriggerRandomChaoticEvent();
-        ChaosTimer = 0.0f;
-        NextChaoticEventTime = FMath::FRandRange(1.0f / ChaosFactor, 5.0f / ChaosFactor);
+        StopLipSync();
+        return;
     }
+
+    // Step through the utterance being spoken
+    const int32 CharIndex = FMath::Clamp(
+        FMath::FloorToInt((LipSyncTime / LipSyncDuration) * LipSyncText.Len()), 0, LipSyncText.Len() - 1);
+    const float TargetOpen = MouthOpenForCharacter(LipSyncText[CharIndex]);
+    SpeechMouthOpen = FMath::FInterpTo(SpeechMouthOpen, TargetOpen, DeltaTime, 20.0f);
+}
+
+void UAvatarAnimInstance::StartLipSync(const FString& Text, float Duration)
+{
+    if (Text.IsEmpty() || Duration <= 0.0f)
+    {
+        return;
+    }
+
+    LipSyncText = Text;
+    LipSyncDuration = Duration;
+    LipSyncTime = 0.0f;
+    bTextLipSyncActive = true;
+    bIsSpeaking = true;
+}
+
+void UAvatarAnimInstance::SetSpeechAmplitude(float Amplitude)
+{
+    bTextLipSyncActive = false;
+    SpeechMouthOpen = FMath::Clamp(Amplitude, 0.0f, 1.0f);
+    bIsSpeaking = SpeechMouthOpen > 0.0f;
+}
+
+void UAvatarAnimInstance::StopLipSync()
+{
+    bTextLipSyncActive = false;
+    LipSyncText.Reset();
+    LipSyncTime = 0.0f;
+    LipSyncDuration = 0.0f;
+    bIsSpeaking = false;
+    SpeechMouthOpen = 0.0f;
 }
 
 void UAvatarAnimInstance::UpdateEmotionalState(EAvatarEmotionalState Emotion, float Intensity)
@@ -331,11 +471,12 @@ void UAvatarAnimInstance::SetGazeTarget(const FVector& Target)
 void UAvatarAnimInstance::ApplyChaoticBehavior(float Intensity)
 {
     ChaosFactor = FMath::Clamp(Intensity, 0.0f, 1.0f);
+    GlitchIntensity = ChaosFactor;
 }
 
-FFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const
+FAnimFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmotionalState Emotion) const
 {
-    FFacialBlendShapes Shapes;
+    FAnimFacialBlendShapes Shapes;
 
     switch (Emotion)
     {
@@ -389,15 +530,13 @@ FFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmo
             break;
 
         case EAvatarEmotionalState::Chaotic:
-            // Random blend shapes for chaotic expression
-            Shapes.BrowInnerUp = FMath::FRand();
-            Shapes.BrowOuterUp = FMath::FRand();
-            Shapes.BrowDown = FMath::FRand() * 0.5f;
-            Shapes.EyeWide = FMath::FRand();
-            Shapes.EyeSquint = FMath::FRand() * 0.5f;
-            Shapes.MouthSmile = FMath::FRand();
-            Shapes.MouthFrown = FMath::FRand() * 0.5f;
-            Shapes.MouthOpen = FMath::FRand() * 0.7f;
+            // Wild, asymmetric-looking expression (deterministic rendering of the chosen emotion)
+            Shapes.BrowInnerUp = 0.6f;
+            Shapes.BrowOuterUp = 0.8f;
+            Shapes.BrowDown = 0.2f;
+            Shapes.EyeWide = 0.8f;
+            Shapes.MouthSmile = 0.6f;
+            Shapes.MouthOpen = 0.4f;
             break;
 
         default: // Neutral
@@ -408,7 +547,7 @@ FFacialBlendShapes UAvatarAnimInstance::CalculateEmotionalBlendShapes(EAvatarEmo
     return Shapes;
 }
 
-void UAvatarAnimInstance::BlendFacialShapes(const FFacialBlendShapes& Target, float DeltaTime)
+void UAvatarAnimInstance::BlendFacialShapes(const FAnimFacialBlendShapes& Target, float DeltaTime)
 {
     // Smooth interpolation to target blend shapes
     FacialBlendShapes.BrowInnerUp = FMath::FInterpTo(FacialBlendShapes.BrowInnerUp, Target.BrowInnerUp, DeltaTime, FacialBlendSpeed);
@@ -431,39 +570,5 @@ float UAvatarAnimInstance::CalculateBreathingRate() const
     // Arousal increases breathing rate
     float ArousalModifier = EmotionalArousal * 10.0f; // Up to +10 BPM
     
-    // Chaos adds variability
-    float ChaosModifier = FMath::FRandRange(-2.0f, 2.0f) * ChaosFactor;
-    
-    return FMath::Clamp(BaseRate + ArousalModifier + ChaosModifier, 10.0f, 30.0f);
-}
-
-void UAvatarAnimInstance::TriggerRandomChaoticEvent()
-{
-    // Random chaotic behaviors
-    int32 EventType = FMath::RandRange(0, 3);
-    
-    switch (EventType)
-    {
-        case 0: // Random gesture
-            {
-                EGestureState RandomGesture = static_cast<EGestureState>(FMath::RandRange(1, 6));
-                TriggerGesture(RandomGesture, FMath::FRandRange(0.5f, 1.5f));
-            }
-            break;
-            
-        case 1: // Sudden emotion change
-            {
-                EAvatarEmotionalState RandomEmotion = static_cast<EAvatarEmotionalState>(FMath::RandRange(0, 9));
-                UpdateEmotionalState(RandomEmotion, FMath::FRandRange(0.3f, 0.8f));
-            }
-            break;
-            
-        case 2: // Glitch effect
-            GlitchIntensity = FMath::FRandRange(0.5f, 1.0f);
-            break;
-            
-        case 3: // Random head movement (would be implemented in animation blueprint)
-            // This would trigger a custom animation node
-            break;
-    }
+    return FMath::Clamp(BaseRate + ArousalModifier, 10.0f, 30.0f);
 }

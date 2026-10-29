@@ -28,7 +28,7 @@
 
 class UEntelechyFramework;
 class UEpisodicMemorySystem;
-class USensorimotorIntegration;
+class USensorimotorLoopIntegration;
 
 // ========================================
 // ENUMERATIONS
@@ -449,7 +449,7 @@ public:
 
     /** Reference to CognitiveCycleManager */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Goals|Config")
-    UCognitiveCycleManager* CognitiveCycleManager;
+    UCognitiveStreamCycleManager* CognitiveCycleManager;
 
     /** Reference to Entelechy Framework */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Goals|Config")

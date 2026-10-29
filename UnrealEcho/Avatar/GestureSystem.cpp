@@ -1,6 +1,34 @@
 #include "GestureSystem.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
+#include "EchoCharacterReaction.h"
+
+namespace
+{
+    /** Map a model-chosen name to an enum value (by name or display name, case-insensitive). */
+    template <typename TEnum>
+    bool ParseReactionEnum(const FString& Name, TEnum& OutValue)
+    {
+        const FString Trimmed = Name.TrimStartAndEnd();
+        const UEnum* Enum = StaticEnum<TEnum>();
+        if (Trimmed.IsEmpty() || !Enum)
+        {
+            return false;
+        }
+
+        // NumEnums() includes the generated _MAX entry
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            if (Enum->GetNameStringByIndex(Index).Equals(Trimmed, ESearchCase::IgnoreCase) ||
+                Enum->GetDisplayNameTextByIndex(Index).ToString().Equals(Trimmed, ESearchCase::IgnoreCase))
+            {
+                OutValue = static_cast<TEnum>(Enum->GetValueByIndex(Index));
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
 UGestureSystem::UGestureSystem()
 {
@@ -29,7 +57,43 @@ void UGestureSystem::BeginPlay()
     CurrentBodyLanguageData = BodyLanguagePresets[EBodyLanguageState::Neutral];
     TargetBodyLanguageData = CurrentBodyLanguageData;
 
+    // Gestures are played only when the character model chooses them
+    TWeakObjectPtr<UGestureSystem> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UGestureSystem* Self = WeakThis.Get())
+        {
+            Self->ApplyCharacterReaction(Reaction);
+        }
+    });
+
     UE_LOG(LogTemp, Log, TEXT("GestureSystem initialized with %d gestures"), GestureLibrary.Num());
+}
+
+void UGestureSystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
+void UGestureSystem::ApplyCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    EGestureType Gesture{}; // written only when the model's gesture name is recognised
+    if (ParseReactionEnum(Reaction.Gesture, Gesture))
+    {
+        TriggerGesture(Gesture, FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f));
+    }
 }
 
 void UGestureSystem::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -204,15 +268,6 @@ void UGestureSystem::InitializeGestureLibrary()
     Elegant.BlendOutTime = 0.6f;
     Elegant.bLooping = false;
     GestureLibrary.Add(EGestureType::Elegant, Elegant);
-
-    // Initialize context-gesture mappings
-    ContextGestureMappings.Add(TEXT("greeting"), {EGestureType::Wave, EGestureType::Bow});
-    ContextGestureMappings.Add(TEXT("agreement"), {EGestureType::Nod, EGestureType::ThumbsUp});
-    ContextGestureMappings.Add(TEXT("disagreement"), {EGestureType::Shake, EGestureType::ThumbsDown});
-    ContextGestureMappings.Add(TEXT("celebration"), {EGestureType::Clap, EGestureType::Excited, EGestureType::Peace});
-    ContextGestureMappings.Add(TEXT("thinking"), {EGestureType::Thinking});
-    ContextGestureMappings.Add(TEXT("flirting"), {EGestureType::Flirty, EGestureType::Heart, EGestureType::Playful});
-    ContextGestureMappings.Add(TEXT("confidence"), {EGestureType::Confident, EGestureType::Elegant});
 }
 
 void UGestureSystem::InitializeBodyLanguagePresets()
@@ -393,31 +448,6 @@ void UGestureSystem::ApplyProceduralAnimation(USkeletalMeshComponent* TargetMesh
         default:
             break;
     }
-}
-
-void UGestureSystem::SetGestureContext(const FString& Context)
-{
-    CurrentContext = Context.ToLower();
-    UE_LOG(LogTemp, Log, TEXT("Gesture context set: %s"), *CurrentContext);
-}
-
-EGestureType UGestureSystem::SelectContextualGesture()
-{
-    if (CurrentContext.IsEmpty() || !ContextGestureMappings.Contains(CurrentContext))
-    {
-        return EGestureType::Wave; // Default gesture
-    }
-
-    const TArray<EGestureType>& ContextGestures = ContextGestureMappings[CurrentContext];
-    
-    if (ContextGestures.Num() == 0)
-    {
-        return EGestureType::Wave;
-    }
-
-    // Randomly select from appropriate gestures
-    int32 RandomIndex = FMath::RandRange(0, ContextGestures.Num() - 1);
-    return ContextGestures[RandomIndex];
 }
 
 void UGestureSystem::UpdateGesture(float DeltaTime)

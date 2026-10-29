@@ -5,6 +5,8 @@
 #include "Animation/AnimMontage.h"
 #include "GestureSystem.generated.h"
 
+struct FEchoCharacterReaction;
+
 UENUM(BlueprintType)
 enum class EGestureType : uint8
 {
@@ -88,6 +90,13 @@ struct FBodyLanguageData
     float ArmOpenness = 0.0f;
 };
 
+/**
+ * Gesture and body-language renderer.
+ *
+ * Gestures shown for the character are the ones the character model chose: reactions on
+ * FEchoReactionBus are mapped from gesture name to EGestureType (unknown names ignored) and
+ * played at the model's intensity. The component never picks a gesture by itself.
+ */
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class DEEPTREECHO_API UGestureSystem : public UActorComponent
 {
@@ -98,6 +107,7 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
@@ -126,13 +136,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gesture")
     void ApplyProceduralAnimation(class USkeletalMeshComponent* TargetMesh);
 
-    /** Set gesture context for automatic selection */
-    UFUNCTION(BlueprintCallable, Category = "Gesture")
-    void SetGestureContext(const FString& Context);
+    /** Only reactions for this character are applied; empty = apply every reaction on the bus */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gesture|Reaction")
+    FString ReactionCharacterName;
 
-    /** Select appropriate gesture based on context */
-    UFUNCTION(BlueprintCallable, Category = "Gesture")
-    EGestureType SelectContextualGesture();
+    /** Apply a model-chosen reaction's gesture (unknown names are ignored) */
+    void ApplyCharacterReaction(const FEchoCharacterReaction& Reaction);
 
 private:
     /** Initialize gesture library */
@@ -201,9 +210,6 @@ private:
     /** Gesture chain queue */
     TArray<EGestureType> GestureChainQueue;
 
-    /** Current gesture context */
-    FString CurrentContext;
-
-    /** Context-gesture mappings */
-    TMap<FString, TArray<EGestureType>> ContextGestureMappings;
+    /** Subscription to FEchoReactionBus */
+    FDelegateHandle ReactionHandle;
 };

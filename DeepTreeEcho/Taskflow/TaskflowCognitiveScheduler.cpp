@@ -2,7 +2,7 @@
 // Implementation of high-performance parallel task scheduling for Deep Tree Echo
 
 #include "TaskflowCognitiveScheduler.h"
-#include "CognitiveCycleManager.h"
+#include "../Core/CognitiveCycleManager.h"
 #include "Sys6OperadEngine.h"
 #include "DeepTreeEchoReservoir.h"
 #include "HAL/PlatformProcess.h"

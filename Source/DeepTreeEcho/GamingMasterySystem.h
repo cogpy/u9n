@@ -9,6 +9,48 @@
 #include "GamingMasterySystem.generated.h"
 
 /**
+ * Companion coaching: advice, feedback and tips presented to the player by the Deep Tree Echo
+ * companion. Text broadcast through FOnCompanionCoaching is always written by the model
+ * (UEchoModelClient) from the real metrics; Topic is an internal label, not speech.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoaching, const FString&, Topic, const FString&, Text);
+
+/** A coaching request failed; Error is a system message, never shown as the companion's words. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCompanionCoachingFailed, const FString&, Topic, const FString&, Error);
+
+/**
+ * Game forward model for MCTS: writes the state that results from taking Action in State into
+ * OutNextState. Returns false when the action is not legal/applicable in State.
+ */
+DECLARE_DYNAMIC_DELEGATE_RetVal_ThreeParams(bool, FEchoGameTransitionModel, const TArray<float>&, State, const FString&, Action, TArray<float>&, OutNextState);
+
+namespace EchoCoaching
+{
+    /**
+     * Asks the model, speaking as the Deep Tree Echo gaming companion, for coaching on Topic.
+     * Instruction says what to produce; Metrics carries the real measurements it must be based
+     * on. Asynchronous: the model's text is broadcast on Ready, or the error on Failed (and
+     * logged). No text is ever composed locally, and nothing is broadcast once Owner is gone.
+     */
+    void Request(UObject* Owner, const FString& Topic, const FString& Instruction, const FString& Metrics,
+                 FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed);
+
+    /**
+     * Coaching prompt templates, keyed by topic. Each is an instruction to the model with
+     * "{slot}" placeholders (the condition-routed focus of the advice, top elements, weakest
+     * area, ...); the model writes the coaching. Editable at runtime.
+     */
+    TMap<FString, FString>& PromptTemplates();
+
+    /**
+     * Fills Topic's prompt template with Slots and requests coaching (see Request). If no
+     * template is registered for Topic, Failed is broadcast and nothing is said.
+     */
+    void RequestFromTemplate(UObject* Owner, const FString& Topic, const TMap<FString, FString>& Slots,
+                             const FString& Metrics, FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed);
+}
+
+/**
  * Skill Acquisition Phase
  * Based on Dreyfus model of skill acquisition
  */
@@ -600,9 +642,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gaming|Analysis")
     FReplayAnalysisResult AnalyzeReplay(const FString& ReplayPath);
 
-    /** Get improvement recommendations from analysis */
+    /**
+     * Ask the companion (model) for improvement recommendations based on a replay analysis.
+     * Result arrives on OnCoachingReady / OnCoachingFailed with topic "improvement_recommendations".
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Analysis")
-    TArray<FString> GetImprovementRecommendations(const FReplayAnalysisResult& Analysis) const;
+    void RequestImprovementRecommendations(const FReplayAnalysisResult& Analysis);
 
     /** Compare performance to expert benchmark */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Analysis")
@@ -656,9 +701,12 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Gaming|Flow")
     bool IsInFlowState() const;
 
-    /** Get flow optimization recommendations */
+    /**
+     * Ask the companion (model) for flow-state tips based on the current flow metrics.
+     * Result arrives on OnCoachingReady / OnCoachingFailed with topic "flow_optimization".
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|Flow")
-    TArray<FString> GetFlowOptimizationTips() const;
+    void RequestFlowOptimizationTips();
 
     // ========================================
     // ML MODEL INTERFACE
@@ -672,9 +720,28 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     void UpdateESNTraining(const TArray<float>& InputFeatures, const TArray<float>& TargetOutput);
 
-    /** Run Monte Carlo Tree Search for decision */
+    /**
+     * The game's legal action set searched by RunMCTS. Supplied by the game (it knows its actions);
+     * empty = MCTS is unavailable.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaming|ML")
+    TArray<FString> MCTSLegalActions;
+
+    /** Bind the game's forward model used by RunMCTS to apply actions to states */
+    UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
+    void SetMCTSTransitionModel(const FEchoGameTransitionModel& Model) { MCTSTransitionModel = Model; }
+
+    /**
+     * Run Monte Carlo Tree Search over MCTSLegalActions using the bound transition model and the
+     * ESN value estimate. Returns the most valuable root action, or an empty string when MCTS cannot
+     * run (no legal actions, no transition model, or no action applicable) - see GetLastMCTSError.
+     */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
     FString RunMCTS(const TArray<float>& GameState, int32 SimulationCount = 1000);
+
+    /** Why the last RunMCTS returned no action (empty if it succeeded) */
+    UFUNCTION(BlueprintPure, Category = "Gaming|ML")
+    FString GetLastMCTSError() const { return LastMCTSError; }
 
     /** Get value estimate for game state */
     UFUNCTION(BlueprintCallable, Category = "Gaming|ML")
@@ -703,6 +770,14 @@ public:
     DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTrainingComplete, const FTrainingSession&, Session);
     UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
     FOnTrainingComplete OnTrainingComplete;
+
+    /** Model-written coaching for the player (see EchoCoaching) */
+    UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
+    FOnCompanionCoaching OnCoachingReady;
+
+    /** A coaching request failed; nothing was said */
+    UPROPERTY(BlueprintAssignable, Category = "Gaming|Events")
+    FOnCompanionCoachingFailed OnCoachingFailed;
 
 private:
     // ========================================
@@ -758,7 +833,13 @@ private:
     /** Calculate flow state intensity */
     float CalculateFlowIntensity() const;
 
-    /** Generate MCTS node */
+    /** Game forward model for MCTS */
+    FEchoGameTransitionModel MCTSTransitionModel;
+
+    /** Why the last RunMCTS produced no action */
+    FString LastMCTSError;
+
+    /** Expand Parent with one child per applicable legal action; returns the first new child (or Parent if none) */
     struct FMCTSNode* ExpandMCTSNode(struct FMCTSNode* Parent, const TArray<float>& State);
 
     /** MCTS simulation */

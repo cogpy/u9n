@@ -113,7 +113,10 @@ struct FBehavioralPattern
 };
 
 /**
- * Meta-cognitive insight
+ * Meta-cognitive insight.
+ * Diagnostic insights carry a numeric Description computed from measurements (never worded as
+ * the agent's own voice); insights in the agent's own words come only from the model
+ * (SourceLevel == "Model").
  */
 USTRUCT(BlueprintType)
 struct FMetaCognitiveInsight
@@ -137,6 +140,10 @@ struct FMetaCognitiveInsight
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FString SourceLevel;
+
+    /** The measured value a diagnostic insight is based on (e.g. average stability). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float MeasuredValue = 0.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Timestamp = 0.0f;
@@ -201,6 +208,7 @@ struct FHierarchicalSelfImage
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FBehavioralPattern> DetectedPatterns;
 
+    /** Reflections in the agent's own words; written only by the model (see ReflectionInterval). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FString> MetaReflections;
 
@@ -279,6 +287,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInsightGenerated, const FMetaCogn
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOptimizationDiscovered, const FOptimizationOpportunity&, Opportunity);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAutognosisCycleComplete, int32, CycleCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelfAwarenessChanged, float, NewScore);
+/** A model request for meta-reflections failed; nothing was added. Error is a system message. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAutognosisModelError, const FString&, Error);
 
 /**
  * Autognosis System Component
@@ -318,6 +328,20 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     float PatternDetectionThreshold = 0.3f;
 
+    /** Seconds between requests asking the model to reflect on the current self-images (0 = never). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
+    float ReflectionInterval = 30.0f;
+
+    /**
+     * Meta-reflection prompt templates, one per self-awareness level that reflects (pattern
+     * analysis, meta-cognitive, recursive modeling, transcendent awareness). Each is an
+     * instruction to the model filled with that level's real measurements; the model writes the
+     * reflection. Slots: {pattern_count}, {patterns}, {level1_confidence}, {assessment},
+     * {recursive_depth}, {self_images}, {anomalies}, {cycle_count}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (MultiLine = true))
+    TMap<ESelfAwarenessLevel, FString> MetaReflectionPromptTemplates;
+
     // ========================================
     // EVENTS
     // ========================================
@@ -336,6 +360,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnSelfAwarenessChanged OnSelfAwarenessChanged;
+
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnAutognosisModelError OnModelError;
 
     // ========================================
     // SELF-MONITORING
@@ -404,6 +431,15 @@ public:
     /** Add meta-reflection to self-image */
     UFUNCTION(BlueprintCallable, Category = "Meta-Cognition")
     void AddMetaReflection(ESelfAwarenessLevel Level, const FString& Reflection);
+
+    /**
+     * Asks the model to reflect on the current self-images (real observations, patterns,
+     * anomalies and assessment). Asynchronous: on success the reflections are added to the
+     * meta-cognitive levels and a model-authored insight may be broadcast; on failure nothing
+     * is added and OnModelError fires. Returns false if a request is already in flight.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Meta-Cognition")
+    bool RequestMetaReflections();
 
     // ========================================
     // SELF-OPTIMIZATION
@@ -474,6 +510,8 @@ protected:
     TArray<FBehavioralPattern> PatternHistory;
 
     float CycleTimer = 0.0f;
+    float ReflectionTimer = 0.0f;
+    bool bReflectionRequestInFlight = false;
     int32 InsightIDCounter = 0;
     int32 PatternIDCounter = 0;
     int32 OptimizationIDCounter = 0;
@@ -490,6 +528,10 @@ protected:
     void UpdateSelfAwarenessAssessment();
 
     FComponentObservation ObserveComponent(UActorComponent* Component);
+    FString DescribeSelfImagesForModel() const;
+    void InitializeMetaReflectionTemplates();
+    static const TCHAR* ReflectionField(ESelfAwarenessLevel Level);
+    void HandleMetaReflectionReply(bool bSuccess, const FString& TextOrError);
     FBehavioralPattern AnalyzePatternFromObservations(const TArray<FComponentObservation>& Observations);
 
     float ComputePatternRecognition() const;

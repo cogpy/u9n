@@ -9,6 +9,7 @@ class UPersonalityTraitSystem;
 class UNeurochemicalSimulationComponent;
 class UDiaryInsightBlogLoop;
 class UAvatar3DComponent;
+class UAvatarAtomSpaceClient;
 
 /**
  * 9P Message Types (Plan 9 protocol)
@@ -311,36 +312,43 @@ public:
 
     // ===== Narrative Namespace Handlers =====
 
+    // Handlers return an empty string on failure and set the error returned by GetLastPathError();
+    // HandleRead/HandleWrite turn that into a 9P error. No placeholder values are ever served.
+
+    /** Diary entry stored in the avatar's AtomSpace client, as JSON. */
     UFUNCTION(BlueprintCallable, Category = "9P|Narrative")
     FString ReadDiaryEntry(const FString& EntryId);
 
     UFUNCTION(BlueprintCallable, Category = "9P|Narrative")
     TArray<FString> ListDiaryEntries();
 
+    /** Insight stored in the avatar's AtomSpace client, as JSON. */
     UFUNCTION(BlueprintCallable, Category = "9P|Narrative")
     FString ReadInsight(const FString& InsightId);
 
     // ===== Visual Namespace Handlers =====
 
+    /** Scalar material parameter currently set on the avatar mesh. */
     UFUNCTION(BlueprintCallable, Category = "9P|Visual")
     FString ReadAppearance(const FString& Parameter);
 
+    /** Sets a scalar material parameter on the avatar mesh; false (with error) if it cannot be applied. */
     UFUNCTION(BlueprintCallable, Category = "9P|Visual")
     bool WriteAppearance(const FString& Parameter, const FString& Value);
 
+    /** Live animation state of the avatar mesh's anim instance. */
     UFUNCTION(BlueprintCallable, Category = "9P|Visual")
     FString ReadAnimationState();
 
     // ===== Cognitive Namespace Handlers =====
 
+    /** No cognitive system is wired to this server: always fails with a "not available" error. */
     UFUNCTION(BlueprintCallable, Category = "9P|Cognitive")
     FString ReadCognitiveState(const FString& Parameter);
 
-    UFUNCTION(BlueprintCallable, Category = "9P|Cognitive")
-    float GetAttentionLevel() const;
-
-    UFUNCTION(BlueprintCallable, Category = "9P|Cognitive")
-    float GetMemoryLoad() const;
+    /** Error message from the last failed read/write handler (empty when the last call succeeded). */
+    UFUNCTION(BlueprintCallable, Category = "9P|Errors")
+    FString GetLastPathError() const { return LastPathError; }
 
     // ===== Performance Namespace Handlers =====
 
@@ -403,6 +411,18 @@ private:
 
     UPROPERTY()
     UDiaryInsightBlogLoop* NarrativeSystem;
+
+    UPROPERTY()
+    UAvatarAtomSpaceClient* AtomSpaceClient;
+
+    /** Error from the last failed handler; see GetLastPathError(). */
+    FString LastPathError;
+
+    /** Output of the last batch query written to batch/query; served from batch/results. */
+    FString LastBatchResults;
+
+    /** Sets LastPathError and returns an empty string (failed read). */
+    FString FailRead(const FString& Error);
 
     UPROPERTY()
     UAvatar3DComponent* AvatarComponent;

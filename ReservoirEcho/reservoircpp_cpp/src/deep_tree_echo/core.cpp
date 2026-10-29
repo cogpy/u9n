@@ -7,6 +7,7 @@
 #include <random>
 #include <algorithm>
 #include <sstream>
+#include <stdexcept>
 
 namespace deep_tree_echo {
 
@@ -369,10 +370,10 @@ void AvatarInterface::register_tool(const std::string& name,
 
 Vector AvatarInterface::use_tool(const std::string& name, const Vector& input) {
     auto it = tools_.find(name);
-    if (it != tools_.end()) {
-        return it->second(input);
+    if (it == tools_.end()) {
+        throw std::out_of_range("AvatarInterface::use_tool: tool '" + name + "' is not registered");
     }
-    return input;
+    return it->second(input);
 }
 
 void AvatarInterface::process_cycle() {

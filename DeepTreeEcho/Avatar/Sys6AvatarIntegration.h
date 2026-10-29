@@ -26,6 +26,7 @@ enum class EAvatarExpressionChannel : uint8
     Gaze            UMETA(DisplayName = "Gaze Direction"),
     Posture         UMETA(DisplayName = "Posture"),
     Breathing       UMETA(DisplayName = "Breathing Pattern"),
+    Voice           UMETA(DisplayName = "Voice Modulation"),
     Aura            UMETA(DisplayName = "Emotional Aura")
 };
 
@@ -144,7 +145,7 @@ struct FAvatarSensorimotorCoupling
  * Avatar cognitive state
  */
 USTRUCT(BlueprintType)
-struct FAvatarCognitiveState
+struct FSys6AvatarCognitiveState
 {
     GENERATED_BODY()
 
@@ -266,7 +267,7 @@ public:
 
     /** Current avatar cognitive state */
     UPROPERTY(BlueprintReadOnly, Category = "Sys6 Avatar|State")
-    FAvatarCognitiveState CognitiveState;
+    FSys6AvatarCognitiveState CognitiveState;
 
     /** Body schema elements */
     UPROPERTY(BlueprintReadOnly, Category = "Sys6 Avatar|State")
@@ -370,7 +371,7 @@ public:
 
     /** Get avatar cognitive state */
     UFUNCTION(BlueprintPure, Category = "Sys6 Avatar|State")
-    FAvatarCognitiveState GetCognitiveState() const;
+    FSys6AvatarCognitiveState GetCognitiveState() const;
 
     /** Get body schema element by bone name */
     UFUNCTION(BlueprintPure, Category = "Sys6 Avatar|State")

@@ -28,10 +28,12 @@
 #include "DeepTreeEchoUnrealBridge.generated.h"
 
 // Forward declarations
+struct FEchoCharacterReaction;
 class UAnimInstance;
 class USkeletalMeshComponent;
 class UAudioComponent;
 class UNiagaraComponent;
+class UAnimMontage;
 
 /**
  * Unreal Engine Integration Mode
@@ -54,10 +56,11 @@ enum class EUnrealIntegrationMode : uint8
 
 /**
  * Avatar Expression State
- * Represents the current emotional/cognitive expression of the avatar
+ * The emotion/blend-shape fields hold the expression most recently chosen by the character model
+ * (received on FEchoReactionBus); gaze and blink rate are procedural.
  */
 USTRUCT(BlueprintType)
-struct FAvatarExpressionState
+struct FUnrealBridgeExpressionState
 {
     GENERATED_BODY()
 
@@ -151,6 +154,41 @@ struct FSensoryInputConfig
 };
 
 /**
+ * A diary entry written by the character model from the cognitive state at the time it was
+ * requested (see UDeepTreeEchoUnrealBridge::AddDiaryEntryFromCognitiveState).
+ */
+USTRUCT(BlueprintType)
+struct FEchoBridgeDiaryEntry
+{
+    GENERATED_BODY()
+
+    /** World time (seconds) when the entry was requested */
+    UPROPERTY(BlueprintReadOnly)
+    double WorldTime = 0.0;
+
+    /** Context supplied by the caller */
+    UPROPERTY(BlueprintReadOnly)
+    FString Context;
+
+    /** Cognitive mode when the entry was requested */
+    UPROPERTY(BlueprintReadOnly)
+    FString CognitiveMode;
+
+    /** The model-written entry */
+    UPROPERTY(BlueprintReadOnly)
+    FString Text;
+};
+
+/** A model-written insight arrived for request RequestId */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnBridgeInsightReady, int32, RequestId, const FString&, Insight);
+
+/** A model-written diary entry was stored for request RequestId */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnBridgeDiaryEntryAdded, int32, RequestId, const FEchoBridgeDiaryEntry&, Entry);
+
+/** A narrative / gesture request (Kind: "insight", "diary", "gesture") failed; Error is system text */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnBridgeNarrativeFailed, int32, RequestId, const FString&, Kind, const FString&, Error);
+
+/**
  * Deep Tree Echo Unreal Bridge Component
  * 
  * Main integration component that bridges the Deep Tree Echo cognitive
@@ -182,9 +220,45 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
     FCognitiveMotorMapping MotorMapping;
 
+    /** Name used for this character in model requests and to filter bus reactions (empty = owner name, accept any) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
+    FString ReactionCharacterName;
+
+    /** Ask the character model for a facial reaction whenever the cognitive mode changes */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
+    bool bRequestReactionOnModeChange = true;
+
+    /** Minimum seconds between model reaction requests */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config", meta = (ClampMin = "0.0"))
+    float MinSecondsBetweenReactionRequests = 2.0f;
+
+    /**
+     * Prompt template for the model reaction request. Slots: {character}, {mode}, {previous_mode},
+     * {coherence}, {frame}, {salience}, {expressions}. The model's JSON answer is the reaction.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config", meta = (MultiLine = "true"))
+    FString ReactionPromptTemplate;
+
     /** Enable cognitive visualization (debug) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Config")
     bool bEnableCognitiveVisualization = false;
+
+    /**
+     * Narrative prompt templates (model input), keyed "insight", "diary" and "gesture".
+     * Slots for all: {character}, {mode}, {coherence}, {frame}, {salience}, {integration_4e},
+     * {experiences}, {diary}. "diary" adds {context}; "gesture" adds {requested_gesture},
+     * {requested_intensity}, {gestures}. The model's reply is the insight / diary entry / gesture JSON.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Narrative", meta = (MultiLine = "true"))
+    TMap<FString, FString> NarrativePromptTemplates;
+
+    /** Recent experiences kept for insight / diary prompts */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Narrative", meta = (ClampMin = "1"))
+    int32 MaxRecentExperiences = 32;
+
+    /** Gesture name -> montage. The names are the gesture vocabulary offered to the model; only these can be played. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Motor")
+    TMap<FString, UAnimMontage*> GestureMontages;
 
     // ========================================
     // COMPONENT REFERENCES
@@ -214,9 +288,9 @@ public:
     // AVATAR STATE
     // ========================================
 
-    /** Current expression state */
+    /** Expression last chosen by the character model (via FEchoReactionBus); neutral until one arrives */
     UPROPERTY(BlueprintReadOnly, Category = "DeepTreeEcho|State")
-    FAvatarExpressionState CurrentExpression;
+    FUnrealBridgeExpressionState CurrentExpression;
 
     // ========================================
     // PUBLIC API - INITIALIZATION
@@ -258,9 +332,17 @@ public:
     // PUBLIC API - MOTOR OUTPUT
     // ========================================
 
-    /** Update avatar expression based on cognitive state */
+    /** Update procedural gaze/blink and, on a cognitive mode change, ask the model for a facial reaction */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
     void UpdateAvatarExpression();
+
+    /** Ask the character model to choose a facial reaction to the current cognitive state. Returns false if a request is already pending. */
+    UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
+    bool RequestModelReaction();
+
+    /** Last model reaction request error (system-level, never shown as the character's reaction), or empty */
+    UFUNCTION(BlueprintPure, Category = "DeepTreeEcho|Motor")
+    FString GetLastReactionError() const { return LastReactionError; }
 
     /** Apply facial blend shapes */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
@@ -270,9 +352,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
     void SetGazeTarget(const FVector& TargetLocation);
 
-    /** Trigger gesture animation */
+    /**
+     * Request a gesture. The request is routed through the character model, which decides (from the
+     * GestureMontages vocabulary) whether and which gesture to make; its choice is broadcast on
+     * FEchoReactionBus and played from GestureMontages when it arrives. Returns false (nothing
+     * requested) when no gesture montages are configured; failures arrive on OnNarrativeFailed.
+     */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
-    void TriggerGesture(const FString& GestureName, float Intensity = 1.0f);
+    bool TriggerGesture(const FString& GestureName, float Intensity = 1.0f);
 
     /** Update body posture based on cognitive state */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Motor")
@@ -306,13 +393,46 @@ public:
     // PUBLIC API - NARRATIVE INTEGRATION
     // ========================================
 
-    /** Add diary entry from current cognitive state */
+    /** Record an experience (system description of an event) for later insight / diary prompts */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Narrative")
-    void AddDiaryEntryFromCognitiveState(const FString& Context);
+    void RecordExperience(const FString& Experience);
 
-    /** Generate insight from recent experiences */
+    /** Recent recorded experiences, oldest first */
+    UFUNCTION(BlueprintPure, Category = "DeepTreeEcho|Narrative")
+    TArray<FString> GetRecentExperiences() const { return RecentExperiences; }
+
+    /**
+     * Ask the model to write a diary entry from the current cognitive state, Context and recent
+     * experience. Asynchronous: the entry is stored in DiaryEntries and broadcast on
+     * OnDiaryEntryAdded, or the error on OnNarrativeFailed. Returns the request id (0 = not requested).
+     */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Narrative")
-    FString GenerateInsight();
+    int32 AddDiaryEntryFromCognitiveState(const FString& Context);
+
+    /**
+     * Ask the model for an insight drawn from recent experiences and the cognitive state.
+     * Asynchronous: the insight arrives on OnInsightReady, or the error on OnNarrativeFailed.
+     * Returns the request id, or 0 when there is no recent experience to draw on (nothing requested).
+     */
+    UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Narrative")
+    int32 RequestInsight();
+
+    /** Model-written diary entries stored by AddDiaryEntryFromCognitiveState */
+    UPROPERTY(BlueprintReadOnly, Category = "DeepTreeEcho|Narrative")
+    TArray<FEchoBridgeDiaryEntry> DiaryEntries;
+
+    /** Last model-written insight (empty until one arrives) */
+    UPROPERTY(BlueprintReadOnly, Category = "DeepTreeEcho|Narrative")
+    FString LastInsight;
+
+    UPROPERTY(BlueprintAssignable, Category = "DeepTreeEcho|Narrative")
+    FOnBridgeInsightReady OnInsightReady;
+
+    UPROPERTY(BlueprintAssignable, Category = "DeepTreeEcho|Narrative")
+    FOnBridgeDiaryEntryAdded OnDiaryEntryAdded;
+
+    UPROPERTY(BlueprintAssignable, Category = "DeepTreeEcho|Narrative")
+    FOnBridgeNarrativeFailed OnNarrativeFailed;
 
     /** Get current wisdom weight */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Narrative")
@@ -322,11 +442,17 @@ public:
     // PUBLIC API - EVOLUTION
     // ========================================
 
-    /** Trigger ontogenetic development step */
+    /**
+     * Advance the owner's UAvatarEvolutionSystem by StepSeconds of development. Returns false (and
+     * does nothing) when the owner has no evolution system.
+     */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Evolution")
-    void TriggerDevelopmentStep();
+    bool TriggerDevelopmentStep(float StepSeconds = 1.0f);
 
-    /** Get current developmental stage */
+    /**
+     * Current developmental stage of the owner's UAvatarEvolutionSystem, 1-based
+     * (1 Embryonic .. 4 Transcendent); 0 = unknown (no evolution system).
+     */
     UFUNCTION(BlueprintCallable, Category = "DeepTreeEcho|Evolution")
     int32 GetDevelopmentalStage() const;
 
@@ -336,6 +462,7 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
     // ========================================
@@ -376,10 +503,44 @@ private:
     /** Update motor outputs */
     void UpdateMotorOutputs(float DeltaTime);
 
-    /** Map cognitive state to expression */
-    FAvatarExpressionState MapCognitiveStateToExpression() const;
+    /** Build the prompt that asks the model for a facial reaction to the current cognitive state */
+    FString BuildReactionPrompt(const FString& PreviousMode) const;
 
-    /** Map emotion to facial blend shapes */
+    /** Model reply to RequestModelReaction: validate the JSON and broadcast it on FEchoReactionBus */
+    void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
+
+    /** Render a model reaction received on FEchoReactionBus (expression + intensity) to the face */
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
+
+    /** Character name used in requests / reactions */
+    FString GetReactionCharacterName() const;
+
+    /** Slots shared by the narrative prompt templates (real cognitive state + recent experience) */
+    TMap<FString, FString> BuildNarrativeSlots() const;
+
+    /** Sends a narrative template to the model; OnText receives the trimmed reply. Returns the request id or 0. */
+    int32 SendNarrativeRequest(const FString& Kind, const TMap<FString, FString>& Slots, TFunction<void(int32, const FString&)> OnText, float Temperature);
+
+    /** Model reply to a gesture request: validate and broadcast on FEchoReactionBus */
+    void HandleGestureReply(int32 RequestId, const FString& Text);
+
+    /** Play GestureName from GestureMontages (model-chosen gestures only) */
+    void PlayGestureMontage(const FString& GestureName, float Intensity);
+
+    /** Recent experiences, oldest first */
+    TArray<FString> RecentExperiences;
+
+    /** Mode / affordances last recorded as experience */
+    FString LastExperienceMode;
+    FString LastExperienceAffordances;
+
+    /** Narrative request id counter */
+    int32 NextNarrativeRequestId = 1;
+
+    /** Expression names MapEmotionToBlendShapes can render (the vocabulary offered to the model) */
+    static const TArray<FString>& GetRenderableExpressions();
+
+    /** Render a model-chosen expression name at the model's intensity as facial blend shapes */
     TMap<FString, float> MapEmotionToBlendShapes(const FString& Emotion, float Intensity) const;
 
     /** Compute gaze direction from attention */
@@ -387,4 +548,19 @@ private:
 
     /** Draw cognitive visualization (debug) */
     void DrawCognitiveVisualization() const;
+
+    /** Subscription to FEchoReactionBus */
+    FDelegateHandle ReactionHandle;
+
+    /** Cognitive mode seen at the last expression update (empty = none yet) */
+    FString LastObservedMode;
+
+    /** A model reaction request is in flight */
+    bool bReactionRequestPending = false;
+
+    /** World time of the last model reaction request */
+    double LastReactionRequestTime = -1.0e9;
+
+    /** Last request error */
+    FString LastReactionError;
 };

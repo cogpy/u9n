@@ -468,7 +468,7 @@ FEmotionVector UAdvancedEmotionBlending::GetCurrentEmotion() const
     return State.CurrentEmotion;
 }
 
-FExpressionTarget UAdvancedEmotionBlending::GetCurrentExpression() const
+FEmotionBlendTarget UAdvancedEmotionBlending::GetCurrentExpression() const
 {
     return State.CurrentExpression;
 }
@@ -668,10 +668,10 @@ void UAdvancedEmotionBlending::ProcessSensoryInput(const FSensoryInputData& Inpu
     // Modality-specific effects
     switch (Input.Modality)
     {
-    case ESensoryModality::Social:
+    case ESensoryInputModality::Social:
         SensoryEmotion.Agency = 0.3f;
         break;
-    case ESensoryModality::Tactile:
+    case ESensoryInputModality::Tactile:
         SensoryEmotion.Approach = 0.2f;
         break;
     default:
@@ -914,7 +914,7 @@ void UAdvancedEmotionBlending::EvaluateExpressionRules()
 {
     State.ActiveRuleNames.Empty();
 
-    TArray<FExpressionTarget> MatchingTargets;
+    TArray<FEmotionBlendTarget> MatchingTargets;
     TArray<float> MatchingWeights;
 
     for (const FEmotionExpressionRule& Rule : ExpressionRules)
@@ -1021,9 +1021,9 @@ float UAdvancedEmotionBlending::EvaluateTransitionCurve(float T, EEmotionTransit
     }
 }
 
-FExpressionTarget UAdvancedEmotionBlending::BlendExpressionTargets(const TArray<FExpressionTarget>& Targets, const TArray<float>& Weights)
+FEmotionBlendTarget UAdvancedEmotionBlending::BlendExpressionTargets(const TArray<FEmotionBlendTarget>& Targets, const TArray<float>& Weights)
 {
-    FExpressionTarget Result;
+    FEmotionBlendTarget Result;
 
     if (Targets.Num() == 0 || Weights.Num() == 0)
     {
@@ -1045,7 +1045,7 @@ FExpressionTarget UAdvancedEmotionBlending::BlendExpressionTargets(const TArray<
     for (int32 i = 0; i < Targets.Num(); ++i)
     {
         float NormWeight = Weights[i] / TotalWeight;
-        const FExpressionTarget& Target = Targets[i];
+        const FEmotionBlendTarget& Target = Targets[i];
 
         Result.FacialExpression.Happiness += Target.FacialExpression.Happiness * NormWeight;
         Result.FacialExpression.Sadness += Target.FacialExpression.Sadness * NormWeight;

@@ -50,7 +50,7 @@ void UDeepTreeEchoReservoir::TickComponent(float DeltaTime, ELevelTick TickType,
     }
 
     // Update stream coherence
-    for (FCognitiveStreamState& Stream : CognitiveStreams)
+    for (FReservoirStreamState& Stream : CognitiveStreams)
     {
         Stream.StreamCoherence = ComputeStreamCoherence(Stream.StreamID);
     }
@@ -269,7 +269,7 @@ void UDeepTreeEchoReservoir::UpdateCognitiveStream(int32 StreamID, const TArray<
         return;
     }
 
-    FCognitiveStreamState& Stream = CognitiveStreams[StreamID - 1];
+    FReservoirStreamState& Stream = CognitiveStreams[StreamID - 1];
     
     // Process input through stream's reservoir
     TArray<float> Output = ProcessInput(Input, StreamID);
@@ -278,13 +278,13 @@ void UDeepTreeEchoReservoir::UpdateCognitiveStream(int32 StreamID, const TArray<
     Stream.CurrentPhase = ((CurrentCycleStep + (StreamID - 1) * 4 - 1) % 12) + 1;
 }
 
-FCognitiveStreamState UDeepTreeEchoReservoir::GetStreamState(int32 StreamID) const
+FReservoirStreamState UDeepTreeEchoReservoir::GetStreamState(int32 StreamID) const
 {
     if (StreamID >= 1 && StreamID <= 3)
     {
         return CognitiveStreams[StreamID - 1];
     }
-    return FCognitiveStreamState();
+    return FReservoirStreamState();
 }
 
 void UDeepTreeEchoReservoir::SynchronizeStreams()
@@ -297,7 +297,7 @@ void UDeepTreeEchoReservoir::SynchronizeStreams()
     
     // Each stream receives weighted input from others
     TArray<TArray<float>> StreamOutputs;
-    for (const FCognitiveStreamState& Stream : CognitiveStreams)
+    for (const FReservoirStreamState& Stream : CognitiveStreams)
     {
         StreamOutputs.Add(Stream.ReservoirState.ActivationState);
     }
@@ -305,7 +305,7 @@ void UDeepTreeEchoReservoir::SynchronizeStreams()
     // Apply cross-coupling
     for (int32 i = 0; i < 3; ++i)
     {
-        FCognitiveStreamState& Stream = CognitiveStreams[i];
+        FReservoirStreamState& Stream = CognitiveStreams[i];
         
         for (int32 j = 0; j < 3; ++j)
         {
@@ -470,7 +470,7 @@ float UDeepTreeEchoReservoir::ComputeStreamCoherence(int32 StreamID) const
         return 0.0f;
     }
 
-    const FCognitiveStreamState& CurrentStream = CognitiveStreams[StreamID - 1];
+    const FReservoirStreamState& CurrentStream = CognitiveStreams[StreamID - 1];
     
     // Compute coherence as correlation with other streams
     float TotalCoherence = 0.0f;
@@ -480,7 +480,7 @@ float UDeepTreeEchoReservoir::ComputeStreamCoherence(int32 StreamID) const
     {
         if (i != StreamID - 1)
         {
-            const FCognitiveStreamState& OtherStream = CognitiveStreams[i];
+            const FReservoirStreamState& OtherStream = CognitiveStreams[i];
             
             // Compute correlation between activation states
             float Correlation = 0.0f;

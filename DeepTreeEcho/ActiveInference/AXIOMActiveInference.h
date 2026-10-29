@@ -267,7 +267,7 @@ struct FInteractionCluster
  * Policy - Sequence of actions for planning
  */
 USTRUCT(BlueprintType)
-struct FPolicy
+struct FAXIOMPolicy
 {
     GENERATED_BODY()
 
@@ -408,7 +408,7 @@ public:
 
     /** Reference to CognitiveCycleManager */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AXIOM|Config")
-    UCognitiveCycleManager* CognitiveCycleManager;
+    UCognitiveStreamCycleManager* CognitiveCycleManager;
 
     // ========================================
     // STATE
@@ -440,11 +440,11 @@ public:
 
     /** Current policies being evaluated */
     UPROPERTY(BlueprintReadOnly, Category = "AXIOM|State")
-    TArray<FPolicy> Policies;
+    TArray<FAXIOMPolicy> Policies;
 
     /** Selected policy */
     UPROPERTY(BlueprintReadOnly, Category = "AXIOM|State")
-    FPolicy SelectedPolicy;
+    FAXIOMPolicy SelectedPolicy;
 
     /** Total interaction steps */
     UPROPERTY(BlueprintReadOnly, Category = "AXIOM|State")
@@ -464,7 +464,7 @@ public:
 
     /** Set reference to CognitiveCycleManager */
     UFUNCTION(BlueprintCallable, Category = "AXIOM")
-    void SetCognitiveCycleManager(UCognitiveCycleManager* Manager);
+    void SetCognitiveCycleManager(UCognitiveStreamCycleManager* Manager);
 
     // ========================================
     // PUBLIC API - PERCEPTION (sMM + iMM)
@@ -536,15 +536,15 @@ public:
 
     /** Compute Expected Free Energy for policy */
     UFUNCTION(BlueprintCallable, Category = "AXIOM|Planning")
-    float ComputeExpectedFreeEnergy(const FPolicy& Policy);
+    float ComputeExpectedFreeEnergy(const FAXIOMPolicy& Policy);
 
     /** Compute information gain for policy */
     UFUNCTION(BlueprintCallable, Category = "AXIOM|Planning")
-    float ComputeInformationGain(const FPolicy& Policy);
+    float ComputeInformationGain(const FAXIOMPolicy& Policy);
 
     /** Compute expected utility for policy */
     UFUNCTION(BlueprintCallable, Category = "AXIOM|Planning")
-    float ComputeExpectedUtility(const FPolicy& Policy);
+    float ComputeExpectedUtility(const FAXIOMPolicy& Policy);
 
     // ========================================
     // PUBLIC API - STRUCTURE LEARNING
@@ -623,7 +623,7 @@ private:
     void VariationalUpdate();
 
     /** Rollout policy for planning */
-    TArray<FWorldState> RolloutPolicy(const FPolicy& Policy, int32 NumSamples);
+    TArray<FWorldState> RolloutPolicy(const FAXIOMPolicy& Policy, int32 NumSamples);
 
     /** Merge similar components (BMR) */
     void MergeSimilarComponents();

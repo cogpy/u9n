@@ -3,11 +3,52 @@
 // Copyright (c) 2025 Deep Tree Echo Project
 
 #include "EchobeatsGamingIntegration.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 
 UEchobeatsGamingIntegration::UEchobeatsGamingIntegration()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickInterval = 0.0f; // Tick every frame for responsive gaming
+
+    InitializeActionPlanning();
+}
+
+void UEchobeatsGamingIntegration::InitializeActionPlanning()
+{
+    // The per-strategy action scripts this component used to push verbatim, kept as prompt
+    // templates: each says what the strategy is for; the model chooses the concrete actions from
+    // the allowed vocabulary given the real game state.
+    const FString Common =
+        TEXT(" Current game state features: {game_state}. Situation assessment: {situation}. ")
+        TEXT("Detected affordances: {affordances}. Most salient elements: {salience}. ")
+        TEXT("Choose an ordered plan of at most {max_actions} actions using ONLY these action names: {allowed_actions}. ")
+        TEXT("Reply with JSON only: {\"actions\": [\"<action>\", ...]}.");
+
+    ActionPlanPromptTemplates.Add(TEXT("defensive_retreat"),
+        TEXT("Strategy {strategy}: the player is under pressure and should break contact, reach safety and recover.") + Common);
+    ActionPlanPromptTemplates.Add(TEXT("aggressive_push"),
+        TEXT("Strategy {strategy}: press an advantage - pick a target, close the distance, engage and follow up.") + Common);
+    ActionPlanPromptTemplates.Add(TEXT("hold_position"),
+        TEXT("Strategy {strategy}: hold the current position, cover the approaches and counter-attack when attacked.") + Common);
+    ActionPlanPromptTemplates.Add(TEXT("map_control"),
+        TEXT("Strategy {strategy}: gain map control - scout, claim territory and establish presence.") + Common);
+    ActionPlanPromptTemplates.Add(TEXT("resource_focus"),
+        TEXT("Strategy {strategy}: resources are low - locate and gather resources and return safely.") + Common);
+    ActionPlanPromptTemplates.Add(TEXT("balanced"),
+        TEXT("Strategy {strategy}: no single goal dominates - observe and adapt to what the state shows.") + Common);
+
+    // Default action vocabulary (model input). The game should replace it with the action names
+    // its bound executor understands.
+    AllowedActionVocabulary = {
+        TEXT("disengage"), TEXT("move_to_safety"), TEXT("heal_recover"),
+        TEXT("identify_target"), TEXT("approach"), TEXT("engage"), TEXT("follow_up"),
+        TEXT("fortify"), TEXT("watch_angles"), TEXT("counter_when_attacked"),
+        TEXT("scout"), TEXT("claim_territory"), TEXT("establish_presence"),
+        TEXT("locate_resources"), TEXT("gather"), TEXT("return_safely"),
+        TEXT("observe"), TEXT("adapt")
+    };
 }
 
 void UEchobeatsGamingIntegration::BeginPlay()
@@ -479,50 +520,191 @@ FString UEchobeatsGamingIntegration::SelectStrategy(const TMap<FString, float>& 
     return TEXT("balanced");
 }
 
-TArray<FString> UEchobeatsGamingIntegration::PlanActions(const FString& SelectedStrategy)
+bool UEchobeatsGamingIntegration::PlanActions(const FString& SelectedStrategy)
 {
-    TArray<FString> PlannedActions;
-
-    // Generate action sequence based on strategy
-    if (SelectedStrategy == TEXT("defensive_retreat"))
+    const FString* Template = ActionPlanPromptTemplates.Find(SelectedStrategy);
+    FString Error;
+    if (!Template || Template->IsEmpty())
     {
-        PlannedActions.Add(TEXT("disengage"));
-        PlannedActions.Add(TEXT("move_to_safety"));
-        PlannedActions.Add(TEXT("heal_recover"));
+        Error = FString::Printf(TEXT("no action-plan prompt template for strategy '%s'"), *SelectedStrategy);
     }
-    else if (SelectedStrategy == TEXT("aggressive_push"))
+    else if (AllowedActionVocabulary.Num() == 0)
     {
-        PlannedActions.Add(TEXT("identify_target"));
-        PlannedActions.Add(TEXT("approach"));
-        PlannedActions.Add(TEXT("engage"));
-        PlannedActions.Add(TEXT("follow_up"));
+        Error = TEXT("AllowedActionVocabulary is empty; the model has no actions to plan with");
     }
-    else if (SelectedStrategy == TEXT("hold_position"))
+    else if (bPlanRequestInFlight)
     {
-        PlannedActions.Add(TEXT("fortify"));
-        PlannedActions.Add(TEXT("watch_angles"));
-        PlannedActions.Add(TEXT("counter_when_attacked"));
+        Error = TEXT("an action-plan request is already in flight");
     }
-    else if (SelectedStrategy == TEXT("map_control"))
+    if (!Error.IsEmpty())
     {
-        PlannedActions.Add(TEXT("scout"));
-        PlannedActions.Add(TEXT("claim_territory"));
-        PlannedActions.Add(TEXT("establish_presence"));
-    }
-    else if (SelectedStrategy == TEXT("resource_focus"))
-    {
-        PlannedActions.Add(TEXT("locate_resources"));
-        PlannedActions.Add(TEXT("gather"));
-        PlannedActions.Add(TEXT("return_safely"));
-    }
-    else
-    {
-        PlannedActions.Add(TEXT("observe"));
-        PlannedActions.Add(TEXT("adapt"));
+        UE_LOG(LogTemp, Warning, TEXT("Echobeats action plan for '%s' not requested: %s"), *SelectedStrategy, *Error);
+        OnActionPlanFailed.Broadcast(SelectedStrategy, Error);
+        return false;
     }
 
-    ActionQueue = PlannedActions;
-    return PlannedActions;
+    // Real state for the template slots
+    FString GameStateText;
+    for (int32 i = 0; i < LastGameState.Num() && i < 32; ++i)
+    {
+        GameStateText += FString::Printf(TEXT("%s[%d]=%.3f"), i > 0 ? TEXT(", ") : TEXT(""), i, LastGameState[i]);
+    }
+    if (GameStateText.IsEmpty())
+    {
+        GameStateText = TEXT("(no game state received yet)");
+    }
+
+    FString SituationText;
+    const TMap<FString, float> Situation = AssessSituation(MatchPatterns(PerceptionStream.OutputData));
+    for (const auto& Pair : Situation)
+    {
+        SituationText += FString::Printf(TEXT("%s%s=%.2f"), SituationText.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value);
+    }
+    if (SituationText.IsEmpty())
+    {
+        SituationText = TEXT("(none)");
+    }
+
+    FString AffordanceText;
+    for (const FAffordanceDetection& A : DetectedAffordances)
+    {
+        AffordanceText += FString::Printf(TEXT("%s%s (type %s, confidence %.2f, value %.2f, risk %.2f, window %.1fs)"),
+            AffordanceText.IsEmpty() ? TEXT("") : TEXT("; "), *A.AffordanceID, *A.AffordanceType,
+            A.Confidence, A.EstimatedValue, A.RiskLevel, A.TimeWindow);
+    }
+    if (AffordanceText.IsEmpty())
+    {
+        AffordanceText = TEXT("(none detected)");
+    }
+
+    TArray<TPair<FString, float>> Salient;
+    for (const auto& Pair : SalienceMap.ElementSalience)
+    {
+        Salient.Emplace(Pair.Key, Pair.Value);
+    }
+    Salient.Sort([](const TPair<FString, float>& A, const TPair<FString, float>& B) { return A.Value > B.Value; });
+    FString SalienceText;
+    for (int32 i = 0; i < FMath::Min(5, Salient.Num()); ++i)
+    {
+        SalienceText += FString::Printf(TEXT("%s%s=%.2f"), i > 0 ? TEXT(", ") : TEXT(""), *Salient[i].Key, Salient[i].Value);
+    }
+    if (SalienceText.IsEmpty())
+    {
+        SalienceText = TEXT("(none)");
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("strategy"), SelectedStrategy);
+    Slots.Add(TEXT("game_state"), GameStateText);
+    Slots.Add(TEXT("situation"), SituationText);
+    Slots.Add(TEXT("affordances"), AffordanceText);
+    Slots.Add(TEXT("salience"), SalienceText);
+    Slots.Add(TEXT("allowed_actions"), FString::Join(AllowedActionVocabulary, TEXT(", ")));
+    Slots.Add(TEXT("max_actions"), FString::FromInt(FMath::Max(1, MaxPlannedActions)));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"),
+        TEXT("You are Deep Tree Echo's action-planning stream in a game. You choose which actions to take next. ")
+        TEXT("Use only the allowed action names and answer with the requested JSON only.")));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(*Template, Slots)));
+
+    bPlanRequestInFlight = true;
+    TWeakObjectPtr<UEchobeatsGamingIntegration> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, SelectedStrategy](bool bSuccess, const FString& TextOrError)
+        {
+            UEchobeatsGamingIntegration* Self = WeakThis.Get();
+            if (!Self)
+            {
+                return;
+            }
+            Self->bPlanRequestInFlight = false;
+
+            TArray<FString> Actions;
+            FString PlanError;
+            if (!bSuccess)
+            {
+                PlanError = TextOrError;
+            }
+            else
+            {
+                Self->ParseActionPlan(TextOrError, Actions, PlanError);
+            }
+
+            if (Actions.Num() == 0)
+            {
+                if (PlanError.IsEmpty())
+                {
+                    PlanError = TEXT("model returned no valid actions");
+                }
+                UE_LOG(LogTemp, Warning, TEXT("Echobeats action plan for '%s' not produced: %s"), *SelectedStrategy, *PlanError);
+                Self->OnActionPlanFailed.Broadcast(SelectedStrategy, PlanError);
+                return;
+            }
+
+            Self->ActionQueue = Actions;
+            Self->PrepareMotorExecution(Actions);
+            Self->OnActionPlanReady.Broadcast(SelectedStrategy, Actions);
+        }), 0.4f);
+
+    return true;
+}
+
+bool UEchobeatsGamingIntegration::ParseActionPlan(const FString& ModelText, TArray<FString>& OutActions, FString& OutError) const
+{
+    OutActions.Reset();
+
+    TSharedPtr<FJsonObject> Json;
+    if (!UEchoModelClient::ParseJsonObject(ModelText, Json) || !Json.IsValid())
+    {
+        OutError = TEXT("model reply contained no JSON object");
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+    if (!Json->TryGetArrayField(TEXT("actions"), Items) || !Items)
+    {
+        OutError = TEXT("model JSON has no \"actions\" array");
+        return false;
+    }
+
+    TArray<FString> Rejected;
+    for (const TSharedPtr<FJsonValue>& Item : *Items)
+    {
+        FString Name;
+        if (!Item.IsValid() || !Item->TryGetString(Name))
+        {
+            continue;
+        }
+        Name.TrimStartAndEndInline();
+        const FString* Canonical = AllowedActionVocabulary.FindByPredicate(
+            [&Name](const FString& Allowed) { return Allowed.Equals(Name, ESearchCase::IgnoreCase); });
+        if (Canonical)
+        {
+            if (OutActions.Num() < FMath::Max(1, MaxPlannedActions))
+            {
+                OutActions.Add(*Canonical);
+            }
+        }
+        else
+        {
+            Rejected.Add(Name);
+        }
+    }
+
+    if (Rejected.Num() > 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Echobeats action plan: dropped actions outside the allowed vocabulary: %s"),
+            *FString::Join(Rejected, TEXT(", ")));
+    }
+    if (OutActions.Num() == 0)
+    {
+        OutError = Rejected.Num() > 0
+            ? FString::Printf(TEXT("every planned action was outside the allowed vocabulary (%s)"), *FString::Join(Rejected, TEXT(", ")))
+            : FString(TEXT("model plan was empty"));
+        return false;
+    }
+    return true;
 }
 
 void UEchobeatsGamingIntegration::PrepareMotorExecution(const TArray<FString>& PlannedActions)
@@ -552,19 +734,40 @@ void UEchobeatsGamingIntegration::PrepareMotorExecution(const TArray<FString>& P
 
 bool UEchobeatsGamingIntegration::ExecuteAction(const FString& ActionID)
 {
-    // Execute the action
-    // In full implementation, this would interface with game input system
+    FEchoActionExecutionResult Result;
 
-    // Record execution for learning
-    if (CognitionBridge)
+    if (!ActionExecutor.IsBound())
     {
-        CognitionBridge->RecordMotorExecution(ActionID, 0.8f, 0.9f); // Placeholder quality scores
+        // Nothing can perform the action: say so, record no motor quality, leave the queue as is.
+        Result.Status = TEXT("not executed: no game input executor is bound (call SetActionExecutor)");
+        LastActionStatus = Result.Status;
+        UE_LOG(LogTemp, Verbose, TEXT("Echobeats action '%s' %s"), *ActionID, *Result.Status);
+        return false;
     }
 
-    // Remove from queue
-    ActionQueue.Remove(ActionID);
+    Result = ActionExecutor.Execute(ActionID);
+    if (Result.Status.IsEmpty())
+    {
+        Result.Status = Result.bExecuted ? TEXT("executed") : TEXT("not executed: the game executor declined the action");
+    }
+    LastActionStatus = Result.Status;
 
-    return true;
+    // Learning only from what the game measured
+    if (Result.bExecuted && Result.bMeasured && CognitionBridge)
+    {
+        CognitionBridge->RecordMotorExecution(ActionID,
+            FMath::Clamp(Result.ExecutionQuality, 0.0f, 1.0f), FMath::Clamp(Result.TimingAccuracy, 0.0f, 1.0f));
+    }
+
+    // The attempt is over either way; a failed action is reported, not retried every step.
+    ActionQueue.RemoveSingle(ActionID);
+    OnActionExecuted.Broadcast(ActionID, Result);
+
+    if (!Result.bExecuted)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Echobeats action '%s' %s"), *ActionID, *Result.Status);
+    }
+    return Result.bExecuted;
 }
 
 TArray<FAffordanceDetection> UEchobeatsGamingIntegration::DetectAffordances(const TArray<float>& GameState)
@@ -708,6 +911,10 @@ void UEchobeatsGamingIntegration::UpdateLearning(float RewardSignal, const TArra
             FeatureWeights[i][j] = FMath::Clamp(FeatureWeights[i][j], -2.0f, 2.0f);
         }
     }
+    if (RewardSignal != 0.0f && FeatureWeights.Num() > 0 && StateFeatures.Num() > 0)
+    {
+        ++LearningUpdateCount;
+    }
 
     // Update Gaming Mastery System if available
     if (GamingMasterySystem)
@@ -794,6 +1001,9 @@ TMap<FString, float> UEchobeatsGamingIntegration::PredictOpponentBehavior(const 
 
 FString UEchobeatsGamingIntegration::GetIntegratedDecision()
 {
+    // Untrained (randomly initialised) weights carry no decision
+    if (LearningUpdateCount == 0) { return FString(); }
+
     // Combine outputs from all three streams
 
     // Get situation assessment from perception
@@ -971,27 +1181,35 @@ FString UEchobeatsGamingIntegration::GetRecommendedAction(const TArray<float>& G
     return Decision;
 }
 
-FString UEchobeatsGamingIntegration::GetAttentionFocusRecommendation() const
+void UEchobeatsGamingIntegration::RequestAttentionFocusRecommendation()
 {
-    // Find highest salience element
-    FString HighestSalience;
-    float MaxSalience = 0.0f;
+    const FString Topic = TEXT("attention_focus");
+    if (SalienceMap.ElementSalience.Num() == 0)
+    {
+        OnCoachingFailed.Broadcast(Topic, TEXT("salience map is empty; nothing to base a recommendation on"));
+        return;
+    }
 
+    TArray<TPair<FString, float>> Elements;
     for (const auto& Pair : SalienceMap.ElementSalience)
     {
-        if (Pair.Value > MaxSalience)
-        {
-            MaxSalience = Pair.Value;
-            HighestSalience = Pair.Key;
-        }
+        Elements.Emplace(Pair.Key, Pair.Value);
     }
+    Elements.Sort([](const TPair<FString, float>& A, const TPair<FString, float>& B) { return A.Value > B.Value; });
 
-    if (MaxSalience > 0.7f)
+    FString Metrics = FString::Printf(TEXT("attention radius %.1f, peripheral awareness %.2f, threat boost %.2f, opportunity boost %.2f\n"),
+        SalienceMap.AttentionRadius, SalienceMap.PeripheralAwareness, SalienceMap.ThreatBoost, SalienceMap.OpportunityBoost);
+    for (int32 i = 0; i < FMath::Min(10, Elements.Num()); ++i)
     {
-        return FString::Printf(TEXT("Focus on %s (salience: %.2f)"), *HighestSalience, MaxSalience);
+        Metrics += FString::Printf(TEXT("element %s: salience %.2f\n"), *Elements[i].Key, Elements[i].Value);
     }
 
-    return TEXT("Maintain broad awareness");
+    // Salience router; the model writes the recommendation.
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("focus"), Elements[0].Value > 0.7f
+        ? FString::Printf(TEXT("The most salient element is %s (salience %.2f): direct their focus there."), *Elements[0].Key, Elements[0].Value)
+        : FString(TEXT("No element stands out strongly: advise keeping broad awareness.")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 float UEchobeatsGamingIntegration::GetActionTimingRecommendation(const FString& ActionID) const
@@ -1106,10 +1324,12 @@ void UEchobeatsGamingIntegration::ProcessActionStep(EGamingCognitiveStep Step)
             // Motor preparation
             break;
         case EGamingCognitiveStep::Step9_ActionExecution:
-            // Execute next action in queue
-            if (ActionQueue.Num() > 0)
+            // Execute the next model-planned action, only when the game has bound an executor
+            // (without one nothing can be performed; GetLastActionStatus says so on request).
+            if (ActionQueue.Num() > 0 && ActionExecutor.IsBound())
             {
-                ExecuteAction(ActionQueue[0]);
+                const FString NextAction = ActionQueue[0];
+                ExecuteAction(NextAction);
             }
             break;
         default:

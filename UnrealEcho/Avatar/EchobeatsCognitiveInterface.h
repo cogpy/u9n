@@ -3,7 +3,6 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "DeepTreeEchoExpressionSystem.h"
-#include "ExpressionStateMachine.h"
 #include "ProceduralAnimationComponent.h"
 #include "EchobeatsCognitiveInterface.generated.h"
 
@@ -19,7 +18,9 @@
  * - Steps {3,7,11}: Salience Processing (Stream 3)
  * - Steps {4,8,12}: Integration/Transition
  * 
- * Each step maps to expression hints that visualize the cognitive process.
+ * The loop is cognition cadence only: steps broadcast events but never set the avatar's
+ * expression, micro-expressions or emissives. The character's visible reactions come only
+ * from model replies on FEchoReactionBus.
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCognitiveStepChanged, int32, StepNumber, FString, PhaseName);
@@ -87,18 +88,6 @@ struct FCognitiveStepConfig
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step")
     ECognitiveMode Mode = ECognitiveMode::Expressive;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step")
-    EExpressionState ExpressionHint;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step")
-    float EmissiveMultiplier = 1.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step")
-    bool bTriggerMicroExpression = false;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step")
-    EMicroExpression MicroExpressionType = EMicroExpression::None;
 };
 
 /**
@@ -164,11 +153,11 @@ public:
 
     // ========== Relevance Realization ==========
 
-    /** Signal a relevance realization event (triggers expression response) */
+    /** Signal a relevance realization event (updates stream salience and broadcasts; no expression change) */
     UFUNCTION(BlueprintCallable, Category = "Cognitive")
     void SignalRelevanceRealization(const FRelevanceRealizationEvent& Event);
 
-    /** Signal an insight moment (triggers Wonder-to-Joy) */
+    /** Signal an insight moment (emissive pulse on the tech elements; no facial expression change) */
     UFUNCTION(BlueprintCallable, Category = "Cognitive")
     void SignalInsight(float Intensity = 1.0f);
 
@@ -243,9 +232,6 @@ protected:
     /** Update streams based on current step */
     void UpdateStreams();
 
-    /** Apply expression for current step */
-    void ApplyStepExpression();
-
     /** Get step configuration */
     const FCognitiveStepConfig* GetStepConfig(int32 StepNumber) const;
 
@@ -253,9 +239,6 @@ private:
     // Component references
     UPROPERTY()
     UDeepTreeEchoExpressionSystem* ExpressionSystem;
-
-    UPROPERTY()
-    UExpressionStateMachine* StateMachine;
 
     UPROPERTY()
     UProceduralAnimationComponent* ProceduralAnim;

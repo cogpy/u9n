@@ -141,7 +141,7 @@ struct FTemporalPattern
  * Cognitive Stream State - State of one consciousness stream
  */
 USTRUCT(BlueprintType)
-struct FCognitiveStreamState
+struct FReservoirStreamState
 {
     GENERATED_BODY()
 
@@ -210,7 +210,7 @@ public:
 
     /** Cognitive stream states (3 streams) */
     UPROPERTY(BlueprintReadOnly, Category = "Reservoir|State")
-    TArray<FCognitiveStreamState> CognitiveStreams;
+    TArray<FReservoirStreamState> CognitiveStreams;
 
     /** Detected temporal patterns */
     UPROPERTY(BlueprintReadOnly, Category = "Reservoir|State")
@@ -254,7 +254,7 @@ public:
 
     /** Get stream state */
     UFUNCTION(BlueprintCallable, Category = "Reservoir|Cognitive")
-    FCognitiveStreamState GetStreamState(int32 StreamID) const;
+    FReservoirStreamState GetStreamState(int32 StreamID) const;
 
     /** Synchronize streams at triadic point */
     UFUNCTION(BlueprintCallable, Category = "Reservoir|Cognitive")

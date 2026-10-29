@@ -190,35 +190,37 @@ void UStrategicCognitionBridge::RecordMapExperience(const FString& MapID, float 
     EmbeddedContext.MapFamiliarity = MapExperienceDB[MapID];
 }
 
-FString UStrategicCognitionBridge::GetContextualStrategyRecommendation() const
+void UStrategicCognitionBridge::RequestContextualStrategyRecommendation()
 {
-    // Recommend strategy based on game phase and context
+    // Phase/context router: chooses the focus of the advice; the model writes it.
+    FString Focus;
     if (EmbeddedContext.GamePhase == TEXT("early"))
     {
-        if (EmbeddedContext.MapFamiliarity < 0.5f)
-        {
-            return TEXT("Focus on map exploration and information gathering");
-        }
-        return TEXT("Establish early resource control and map presence");
+        Focus = EmbeddedContext.MapFamiliarity < 0.5f
+            ? TEXT("map exploration and information gathering (map familiarity is low)")
+            : TEXT("establishing early resource control and map presence");
     }
     else if (EmbeddedContext.GamePhase == TEXT("mid"))
     {
-        if (EmbeddedContext.ThreatAssessmentAccuracy > 0.7f)
-        {
-            return TEXT("Capitalize on identified opponent weaknesses");
-        }
-        return TEXT("Maintain pressure while building strategic advantage");
+        Focus = EmbeddedContext.ThreatAssessmentAccuracy > 0.7f
+            ? TEXT("capitalizing on the opponent weaknesses already identified")
+            : TEXT("maintaining pressure while building a strategic advantage");
     }
     else if (EmbeddedContext.GamePhase == TEXT("late"))
     {
-        if (EmbeddedContext.ResourceAwareness > 0.8f)
-        {
-            return TEXT("Execute decisive plays with resource advantage");
-        }
-        return TEXT("Play conservatively and wait for opponent mistakes");
+        Focus = EmbeddedContext.ResourceAwareness > 0.8f
+            ? TEXT("decisive plays that use the resource advantage")
+            : TEXT("playing conservatively and waiting for opponent mistakes");
     }
-
-    return TEXT("Adapt to current situation dynamically");
+    else
+    {
+        Focus = TEXT("adapting dynamically to the current situation");
+    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("game_phase"), EmbeddedContext.GamePhase.IsEmpty() ? FString(TEXT("unknown")) : EmbeddedContext.GamePhase);
+    Slots.Add(TEXT("focus"), Focus);
+    EchoCoaching::RequestFromTemplate(this, TEXT("contextual_strategy"), Slots,
+        DescribeCognitiveStateForModel(), &OnCoachingReady, &OnCoachingFailed);
 }
 
 float UStrategicCognitionBridge::AssessThreatLevel(const TArray<float>& ThreatIndicators)
@@ -242,40 +244,38 @@ float UStrategicCognitionBridge::AssessThreatLevel(const TArray<float>& ThreatIn
     return FMath::Clamp(AdjustedThreat, 0.0f, 1.0f);
 }
 
-TArray<FString> UStrategicCognitionBridge::IdentifyOpportunities(const TArray<float>& GameState)
+void UStrategicCognitionBridge::RequestOpportunityAnalysis(const TArray<float>& GameState)
 {
-    TArray<FString> Opportunities;
+    if (GameState.Num() == 0)
+    {
+        OnCoachingFailed.Broadcast(TEXT("opportunities"), TEXT("no game state provided"));
+        return;
+    }
 
-    // Analyze game state for opportunities
-    // This is a simplified implementation - full version would use ML
+    FString Metrics = DescribeCognitiveStateForModel();
+    Metrics += TEXT("game state features (0-1):");
+    static const TCHAR* FeatureNames[] = { TEXT("resource advantage"), TEXT("opponent strength"), TEXT("map control") };
+    constexpr int32 NumNamedFeatures = UE_ARRAY_COUNT(FeatureNames);
+    for (int32 i = 0; i < GameState.Num(); ++i)
+    {
+        const FString FeatureName = i < NumNamedFeatures ? FString(FeatureNames[i]) : FString::Printf(TEXT("feature_%d"), i);
+        Metrics += FString::Printf(TEXT(" %s=%.2f;"), *FeatureName, GameState[i]);
+    }
+    Metrics += TEXT("\n");
 
+    // Signal router; the model writes the analysis.
+    TArray<FString> Signals;
     if (GameState.Num() >= 3)
     {
-        if (GameState[0] > 0.7f) // Resource advantage
-        {
-            Opportunities.Add(TEXT("Resource advantage - consider aggressive expansion"));
-        }
-        if (GameState[1] < 0.3f) // Opponent weakness
-        {
-            Opportunities.Add(TEXT("Opponent vulnerability detected - timing attack opportunity"));
-        }
-        if (GameState[2] > 0.6f) // Map control
-        {
-            Opportunities.Add(TEXT("Map control advantage - deny opponent resources"));
-        }
+        if (GameState[0] > 0.7f) Signals.Add(TEXT("resource advantage (aggressive expansion may pay)"));
+        if (GameState[1] < 0.3f) Signals.Add(TEXT("opponent vulnerability (timing-attack window)"));
+        if (GameState[2] > 0.6f) Signals.Add(TEXT("map control advantage (deny opponent resources)"));
     }
-
-    // Speed of recognition affects quality
-    if (EmbeddedContext.OpportunityRecognitionSpeed < 0.5f)
-    {
-        // May miss some opportunities
-        if (Opportunities.Num() > 1)
-        {
-            Opportunities.RemoveAt(Opportunities.Num() - 1);
-        }
-    }
-
-    return Opportunities;
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("signals"), Signals.Num() ? FString::Join(Signals, TEXT("; ")) : FString(TEXT("no strong signal")));
+    Slots.Add(TEXT("recognition_note"), EmbeddedContext.OpportunityRecognitionSpeed < 0.5f
+        ? FString(TEXT(" The player's opportunity recognition is slow, so keep it to the clearest opportunity.")) : FString());
+    EchoCoaching::RequestFromTemplate(this, TEXT("opportunities"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================
@@ -318,18 +318,22 @@ void UStrategicCognitionBridge::UpdateEnactedStrategy(const FString& ActionTaken
     }
 }
 
-FString UStrategicCognitionBridge::GetExplorationRecommendation() const
+void UStrategicCognitionBridge::RequestExplorationRecommendation()
 {
-    if (EnactedStrategy.ExplorationTendency < 0.3f)
+    FString Metrics = DescribeCognitiveStateForModel();
+    for (const auto& Pair : StrategyEffectivenessHistory)
     {
-        return TEXT("Consider trying new strategies - current approach may be too predictable");
-    }
-    else if (EnactedStrategy.ExplorationTendency > 0.7f)
-    {
-        return TEXT("Focus on refining effective strategies rather than exploring new ones");
+        Metrics += FString::Printf(TEXT("strategy %s: effectiveness %.2f over %d outcomes\n"),
+                                   *Pair.Key, CalculateStrategyEffectiveness(Pair.Key), Pair.Value.Num());
     }
 
-    return TEXT("Balance exploration with exploitation of known effective strategies");
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("focus"), EnactedStrategy.ExplorationTendency < 0.3f
+        ? FString(TEXT("the current approach may be too predictable - try new strategies"))
+        : EnactedStrategy.ExplorationTendency > 0.7f
+            ? FString(TEXT("refine the strategies that work rather than exploring further"))
+            : FString(TEXT("balance exploring with exploiting known effective strategies")));
+    EchoCoaching::RequestFromTemplate(this, TEXT("exploration"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 void UStrategicCognitionBridge::AdjustRiskTolerance(float GameProgress, float CurrentAdvantage)
@@ -373,45 +377,43 @@ void UStrategicCognitionBridge::AdjustRiskTolerance(float GameProgress, float Cu
     }
 }
 
-FString UStrategicCognitionBridge::GetAdaptiveResponse(const FString& OpponentAction, const TArray<float>& GameState)
+void UStrategicCognitionBridge::RequestAdaptiveResponse(const FString& OpponentAction, const TArray<float>& GameState)
 {
-    // Generate adaptive response based on opponent action and game state
-    // This would integrate with GamingMasterySystem's opponent modeling
+    FString Metrics = DescribeCognitiveStateForModel();
+    Metrics += FString::Printf(TEXT("opponent action: %s\ngame state features:"), *OpponentAction);
+    for (int32 i = 0; i < GameState.Num(); ++i)
+    {
+        Metrics += FString::Printf(TEXT(" %.2f"), GameState[i]);
+    }
+    Metrics += TEXT("\n");
 
-    FString Response;
-
+    // Opponent-action router (keywords) picks the kind of response; the model writes it.
+    FString Kind = TEXT("unclassified action");
+    FString Focus = TEXT("keeping the current strategy and observing");
     if (OpponentAction.Contains(TEXT("aggressive")) || OpponentAction.Contains(TEXT("attack")))
     {
-        if (EnactedStrategy.CounterPlayEffectiveness > 0.6f)
-        {
-            Response = TEXT("Counter-attack with prepared response");
-        }
-        else
-        {
-            Response = TEXT("Defensive posture while gathering information");
-        }
+        Kind = TEXT("aggression");
+        Focus = EnactedStrategy.CounterPlayEffectiveness > 0.6f
+            ? TEXT("a prepared counter-attack (counter-play has been effective)")
+            : TEXT("a defensive posture while gathering information");
     }
     else if (OpponentAction.Contains(TEXT("defensive")) || OpponentAction.Contains(TEXT("turtle")))
     {
-        Response = TEXT("Apply pressure and force reactions");
+        Kind = TEXT("defensive play");
+        Focus = TEXT("applying pressure and forcing reactions");
     }
     else if (OpponentAction.Contains(TEXT("expand")) || OpponentAction.Contains(TEXT("economic")))
     {
-        if (EnactedStrategy.RiskTolerance > 0.6f)
-        {
-            Response = TEXT("Punish greedy play with timing attack");
-        }
-        else
-        {
-            Response = TEXT("Match expansion while maintaining safety");
-        }
+        Kind = TEXT("economic expansion");
+        Focus = EnactedStrategy.RiskTolerance > 0.6f
+            ? TEXT("punishing greedy play with a timing attack")
+            : TEXT("matching the expansion while staying safe");
     }
-    else
-    {
-        Response = TEXT("Maintain current strategy and observe");
-    }
-
-    return Response;
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("opponent_action"), OpponentAction);
+    Slots.Add(TEXT("action_kind"), Kind);
+    Slots.Add(TEXT("focus"), Focus);
+    EchoCoaching::RequestFromTemplate(this, TEXT("adaptive_response"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 float UStrategicCognitionBridge::EvaluateInitiativeOpportunity(const TArray<float>& GameState)
@@ -479,36 +481,49 @@ void UStrategicCognitionBridge::RecordToolUsage(const FString& ToolType, float E
     ExtendedCognition.ExternalToolUsage = ToolCount > 0 ? TotalEffectiveness / ToolCount : 0.0f;
 }
 
-FString UStrategicCognitionBridge::GetTeamCoordinationRecommendation(const TArray<FString>& TeamRoles, const TArray<float>& TeamState)
+void UStrategicCognitionBridge::RequestTeamCoordinationRecommendation(const TArray<FString>& TeamRoles, const TArray<float>& TeamState)
 {
     if (TeamRoles.Num() == 0)
     {
-        return TEXT("No team coordination needed for solo play");
+        OnCoachingFailed.Broadcast(TEXT("team_coordination"), TEXT("no team roles provided (solo play)"));
+        return;
     }
 
-    if (ExtendedCognition.TeamCommunicationEffectiveness < 0.4f)
+    FString Metrics = DescribeCognitiveStateForModel();
+    for (int32 i = 0; i < TeamRoles.Num(); ++i)
     {
-        return TEXT("Focus on improving communication clarity and frequency");
+        Metrics += TeamState.IsValidIndex(i)
+            ? FString::Printf(TEXT("team member %s: state %.2f\n"), *TeamRoles[i], TeamState[i])
+            : FString::Printf(TEXT("team member %s: state unknown\n"), *TeamRoles[i]);
     }
 
-    // Analyze team state for coordination opportunities
     float AvgTeamState = 0.0f;
     for (float State : TeamState)
     {
         AvgTeamState += State;
     }
     AvgTeamState /= FMath::Max(1, TeamState.Num());
-
-    if (AvgTeamState > 0.7f)
+    FString Focus;
+    if (ExtendedCognition.TeamCommunicationEffectiveness < 0.4f)
     {
-        return TEXT("Team is strong - coordinate for decisive team play");
+        Focus = TEXT("improving communication clarity and frequency (team communication is weak)");
+    }
+    else if (AvgTeamState > 0.7f)
+    {
+        Focus = TEXT("coordinating for decisive team play (the team is strong)");
     }
     else if (AvgTeamState < 0.3f)
     {
-        return TEXT("Team is struggling - focus on supporting weakest members");
+        Focus = TEXT("supporting the weakest members (the team is struggling)");
     }
-
-    return TEXT("Maintain current coordination and adapt to opportunities");
+    else
+    {
+        Focus = TEXT("maintaining coordination and adapting to opportunities");
+    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("team_average"), TeamState.Num() ? FString::Printf(TEXT("%.2f"), AvgTeamState) : FString(TEXT("unknown")));
+    Slots.Add(TEXT("focus"), Focus);
+    EchoCoaching::RequestFromTemplate(this, TEXT("team_coordination"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 void UStrategicCognitionBridge::IntegrateCommunityKnowledge(const FString& KnowledgeType, const FString& Content)
@@ -520,31 +535,24 @@ void UStrategicCognitionBridge::IntegrateCommunityKnowledge(const FString& Knowl
     UE_LOG(LogTemp, Log, TEXT("Integrated community knowledge: %s - %s"), *KnowledgeType, *Content);
 }
 
-TArray<FString> UStrategicCognitionBridge::GetRecommendedExternalResources() const
+void UStrategicCognitionBridge::RequestExternalResourceRecommendations()
 {
-    TArray<FString> Resources;
-
-    if (ExtendedCognition.ReplayAnalysisUtilization < 0.3f)
+    FString Metrics = DescribeCognitiveStateForModel();
+    for (const auto& Pair : ToolUsageHistory)
     {
-        Resources.Add(TEXT("Replay analysis - review recent games for improvement areas"));
+        float Sum = 0.0f;
+        for (float Score : Pair.Value)
+        {
+            Sum += Score;
+        }
+        Metrics += FString::Printf(TEXT("tool %s: mean effectiveness %.2f over %d uses\n"),
+                                   *Pair.Key, Pair.Value.Num() > 0 ? Sum / Pair.Value.Num() : 0.0f, Pair.Value.Num());
     }
 
-    if (ExtendedCognition.CommunityKnowledgeIntegration < 0.5f)
-    {
-        Resources.Add(TEXT("Community guides - study current meta strategies"));
-    }
-
-    if (ExtendedCognition.CoachingIntegration < 0.2f)
-    {
-        Resources.Add(TEXT("Coaching resources - consider structured learning"));
-    }
-
-    if (ExtendedCognition.ExternalToolUsage < 0.4f)
-    {
-        Resources.Add(TEXT("Performance tracking tools - monitor improvement metrics"));
-    }
-
-    return Resources;
+    TMap<FString, FString> Slots;
+    const FString Weakest = GetWeakestAssessmentArea();
+    Slots.Add(TEXT("weakest_area"), Weakest.IsEmpty() ? FString(TEXT("none measured")) : Weakest);
+    EchoCoaching::RequestFromTemplate(this, TEXT("external_resources"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================
@@ -601,14 +609,14 @@ bool UStrategicCognitionBridge::IsCognitiveOverloadImminent() const
     return false;
 }
 
-TArray<FString> UStrategicCognitionBridge::GetLoadReductionRecommendations() const
+void UStrategicCognitionBridge::RequestLoadReductionRecommendations()
 {
-    TArray<FString> Recommendations;
+    FString Metrics = DescribeCognitiveStateForModel();
+    Metrics += FString::Printf(TEXT("overload imminent: %s\n"), IsCognitiveOverloadImminent() ? TEXT("yes") : TEXT("no"));
 
-    // Find highest load types
+    // Heaviest-load router; the model writes the advice.
     ECognitiveLoadType HighestType = ECognitiveLoadType::Perceptual;
-    float HighestLoad = 0.0f;
-
+    float HighestLoad = -1.0f;
     for (const auto& Pair : CognitiveLoad.LoadLevels)
     {
         if (Pair.Value > HighestLoad)
@@ -617,43 +625,24 @@ TArray<FString> UStrategicCognitionBridge::GetLoadReductionRecommendations() con
             HighestType = Pair.Key;
         }
     }
-
-    // Provide specific recommendations
+    FString Focus;
     switch (HighestType)
     {
-        case ECognitiveLoadType::Perceptual:
-            Recommendations.Add(TEXT("Reduce visual clutter - focus on key information"));
-            Recommendations.Add(TEXT("Use audio cues to supplement visual processing"));
-            break;
-        case ECognitiveLoadType::WorkingMemory:
-            Recommendations.Add(TEXT("Simplify decision trees - use heuristics"));
-            Recommendations.Add(TEXT("Externalize information to UI elements"));
-            break;
-        case ECognitiveLoadType::DecisionMaking:
-            Recommendations.Add(TEXT("Pre-plan responses to common situations"));
-            Recommendations.Add(TEXT("Reduce decision points by automating routine choices"));
-            break;
-        case ECognitiveLoadType::MotorExecution:
-            Recommendations.Add(TEXT("Simplify input sequences where possible"));
-            Recommendations.Add(TEXT("Take micro-breaks to prevent motor fatigue"));
-            break;
-        case ECognitiveLoadType::TimePressure:
-            Recommendations.Add(TEXT("Practice time management in low-stakes situations"));
-            Recommendations.Add(TEXT("Develop faster pattern recognition for common scenarios"));
-            break;
-        case ECognitiveLoadType::SocialCoordination:
-            Recommendations.Add(TEXT("Establish clear communication protocols"));
-            Recommendations.Add(TEXT("Assign specific coordination responsibilities"));
-            break;
+        case ECognitiveLoadType::Perceptual: Focus = TEXT("reducing visual clutter and using audio cues to support visual processing"); break;
+        case ECognitiveLoadType::WorkingMemory: Focus = TEXT("simplifying decisions with heuristics and externalizing information to the UI"); break;
+        case ECognitiveLoadType::DecisionMaking: Focus = TEXT("pre-planning responses to common situations and automating routine choices"); break;
+        case ECognitiveLoadType::MotorExecution: Focus = TEXT("simplifying input sequences and taking micro-breaks against motor fatigue"); break;
+        case ECognitiveLoadType::TimePressure: Focus = TEXT("practising time management in low-stakes play and faster recognition of common patterns"); break;
+        case ECognitiveLoadType::SocialCoordination: Focus = TEXT("clear communication protocols and assigned coordination responsibilities"); break;
+        default: Focus = TEXT("lightening whatever is heaviest"); break;
     }
-
-    // General recommendations
-    if (CognitiveLoad.TimeAtCurrentLoad > 600.0f) // 10 minutes
-    {
-        Recommendations.Add(TEXT("Consider taking a short break to restore cognitive resources"));
-    }
-
-    return Recommendations;
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("load_type"), UEnum::GetDisplayValueAsText(HighestType).ToString());
+    Slots.Add(TEXT("load_level"), FString::Printf(TEXT("%.2f"), FMath::Max(0.0f, HighestLoad)));
+    Slots.Add(TEXT("focus"), Focus);
+    Slots.Add(TEXT("break_note"), CognitiveLoad.TimeAtCurrentLoad > 600.0f
+        ? FString(TEXT(" This load has lasted over ten minutes, so a short break to restore cognitive resources is worth suggesting.")) : FString());
+    EchoCoaching::RequestFromTemplate(this, TEXT("load_reduction"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 void UStrategicCognitionBridge::AllocateCognitiveResources(const TMap<ECognitiveLoadType, float>& Allocation)
@@ -802,43 +791,34 @@ TMap<FString, float> UStrategicCognitionBridge::GetIntegratedPerformanceAssessme
     return Assessment;
 }
 
-TArray<FString> UStrategicCognitionBridge::GetHolisticImprovementRecommendations() const
+void UStrategicCognitionBridge::RequestHolisticImprovementRecommendations()
 {
-    TArray<FString> Recommendations;
-
-    // Find weakest areas across all 4Es
-    float EmbodiedScore = GetEmbodiedPerformanceMultiplier();
-    float EmbeddedScore = (EmbeddedContext.MapFamiliarity + EmbeddedContext.ThreatAssessmentAccuracy + EmbeddedContext.OpportunityRecognitionSpeed) / 3.0f;
-    float EnactedScore = (EnactedStrategy.AdaptationRate + EnactedStrategy.CounterPlayEffectiveness + EnactedStrategy.InitiativeTaking) / 3.0f;
-    float ExtendedScore = (ExtendedCognition.InputDeviceProficiency + ExtendedCognition.TeamCommunicationEffectiveness + ExtendedCognition.CommunityKnowledgeIntegration) / 3.0f;
-
-    // Recommend based on weakest area
-    float MinScore = FMath::Min(FMath::Min(EmbodiedScore, EmbeddedScore), FMath::Min(EnactedScore, ExtendedScore));
-
-    if (MinScore == EmbodiedScore)
+    FString Metrics = DescribeCognitiveStateForModel();
+    for (const auto& Pair : GetIntegratedPerformanceAssessment())
     {
-        Recommendations.Add(TEXT("PRIORITY: Embodied - Focus on mechanical skill drills and reaction time training"));
+        Metrics += FString::Printf(TEXT("assessment %s: %.2f\n"), *Pair.Key, Pair.Value);
     }
-    else if (MinScore == EmbeddedScore)
-    {
-        Recommendations.Add(TEXT("PRIORITY: Embedded - Study maps, learn common strategies, improve game sense"));
-    }
-    else if (MinScore == EnactedScore)
-    {
-        Recommendations.Add(TEXT("PRIORITY: Enacted - Practice adaptive play, work on reading opponents"));
-    }
-    else
-    {
-        Recommendations.Add(TEXT("PRIORITY: Extended - Improve tool usage, communication, and community engagement"));
-    }
+    Metrics += FString::Printf(TEXT("weakest area: %s\noverload imminent: %s\n"),
+                               *GetWeakestAssessmentArea(), IsCognitiveOverloadImminent() ? TEXT("yes") : TEXT("no"));
 
-    // Add cognitive management recommendation if needed
-    if (IsCognitiveOverloadImminent())
-    {
-        Recommendations.Add(TEXT("URGENT: Cognitive load is high - implement load reduction strategies"));
-    }
-
-    return Recommendations;
+    // Weakest-4E router; the model writes the advice.
+    const float EmbodiedScore = GetEmbodiedPerformanceMultiplier() / 1.5f;
+    const float EmbeddedScore = (EmbeddedContext.MapFamiliarity + EmbeddedContext.ThreatAssessmentAccuracy + EmbeddedContext.OpportunityRecognitionSpeed) / 3.0f;
+    const float EnactedScore = (EnactedStrategy.AdaptationRate + EnactedStrategy.CounterPlayEffectiveness + EnactedStrategy.InitiativeTaking) / 3.0f;
+    const float ExtendedScore = (ExtendedCognition.InputDeviceProficiency + ExtendedCognition.TeamCommunicationEffectiveness + ExtendedCognition.CommunityKnowledgeIntegration) / 3.0f;
+    const float MinScore = FMath::Min(FMath::Min(EmbodiedScore, EmbeddedScore), FMath::Min(EnactedScore, ExtendedScore));
+    FString Area, Focus;
+    if (MinScore == EmbodiedScore) { Area = TEXT("embodied"); Focus = TEXT("mechanical skill drills and reaction-time training"); }
+    else if (MinScore == EmbeddedScore) { Area = TEXT("embedded"); Focus = TEXT("map study, common strategies and game sense"); }
+    else if (MinScore == EnactedScore) { Area = TEXT("enacted"); Focus = TEXT("adaptive play and reading opponents"); }
+    else { Area = TEXT("extended"); Focus = TEXT("tool usage, communication and community engagement"); }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("priority_area"), Area);
+    Slots.Add(TEXT("priority_score"), FString::Printf(TEXT("%.2f"), MinScore));
+    Slots.Add(TEXT("focus"), Focus);
+    Slots.Add(TEXT("urgent_note"), IsCognitiveOverloadImminent()
+        ? FString(TEXT(" Cognitive overload is imminent: make reducing load the urgent first point.")) : FString());
+    EchoCoaching::RequestFromTemplate(this, TEXT("holistic_improvement"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 float UStrategicCognitionBridge::Calculate4EIntegrationScore() const
@@ -846,15 +826,12 @@ float UStrategicCognitionBridge::Calculate4EIntegrationScore() const
     return Integrate4EFactors();
 }
 
-FString UStrategicCognitionBridge::GetPersonalizedTrainingFocus() const
+FString UStrategicCognitionBridge::GetWeakestAssessmentArea() const
 {
-    TMap<FString, float> Assessment = GetIntegratedPerformanceAssessment();
-
-    // Find lowest scoring area
     FString LowestArea;
-    float LowestScore = 1.0f;
+    float LowestScore = TNumericLimits<float>::Max();
 
-    for (const auto& Pair : Assessment)
+    for (const auto& Pair : GetIntegratedPerformanceAssessment())
     {
         if (Pair.Value < LowestScore && !Pair.Key.Contains(TEXT("Overall")))
         {
@@ -862,26 +839,59 @@ FString UStrategicCognitionBridge::GetPersonalizedTrainingFocus() const
             LowestArea = Pair.Key;
         }
     }
+    return LowestArea;
+}
 
-    // Generate personalized focus
-    if (LowestArea.Contains(TEXT("Embodied")))
+void UStrategicCognitionBridge::RequestPersonalizedTrainingFocus()
+{
+    FString Metrics = DescribeCognitiveStateForModel();
+    for (const auto& Pair : GetIntegratedPerformanceAssessment())
     {
-        return FString::Printf(TEXT("Focus on %s through targeted mechanical practice"), *LowestArea);
+        Metrics += FString::Printf(TEXT("assessment %s: %.2f\n"), *Pair.Key, Pair.Value);
     }
-    else if (LowestArea.Contains(TEXT("Embedded")))
-    {
-        return FString::Printf(TEXT("Improve %s through map study and game analysis"), *LowestArea);
-    }
-    else if (LowestArea.Contains(TEXT("Enacted")))
-    {
-        return FString::Printf(TEXT("Develop %s through varied practice scenarios"), *LowestArea);
-    }
-    else if (LowestArea.Contains(TEXT("Extended")))
-    {
-        return FString::Printf(TEXT("Enhance %s through tool training and community engagement"), *LowestArea);
-    }
+    Metrics += FString::Printf(TEXT("weakest area: %s\n"), *GetWeakestAssessmentArea());
 
-    return TEXT("Maintain balanced practice across all areas");
+    const FString Weakest = GetWeakestAssessmentArea();
+    const TMap<FString, float> Assessment = GetIntegratedPerformanceAssessment();
+    const float* WeakestScore = Assessment.Find(Weakest);
+    FString Focus = TEXT("with balanced practice across all areas");
+    if (Weakest.Contains(TEXT("Embodied"))) Focus = TEXT("through targeted mechanical practice");
+    else if (Weakest.Contains(TEXT("Embedded"))) Focus = TEXT("through map study and game analysis");
+    else if (Weakest.Contains(TEXT("Enacted"))) Focus = TEXT("through varied practice scenarios");
+    else if (Weakest.Contains(TEXT("Extended"))) Focus = TEXT("through tool training and community engagement");
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("weakest_area"), Weakest.IsEmpty() ? FString(TEXT("none measured")) : Weakest);
+    Slots.Add(TEXT("weakest_score"), WeakestScore ? FString::Printf(TEXT("%.2f"), *WeakestScore) : FString(TEXT("n/a")));
+    Slots.Add(TEXT("focus"), Focus);
+    EchoCoaching::RequestFromTemplate(this, TEXT("training_focus"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
+}
+
+FString UStrategicCognitionBridge::DescribeCognitiveStateForModel() const
+{
+    FString Text;
+    Text += FString::Printf(TEXT("embodied: motor readiness %.2f, hand-eye %.2f, proprioception %.2f, muscle memory %.2f, fatigue %.2f, posture %.2f, breathing %.2f\n"),
+        EmbodiedState.MotorReadiness, EmbodiedState.HandEyeCoordination, EmbodiedState.ProprioceptiveAccuracy,
+        EmbodiedState.MuscleMemoryActivation, EmbodiedState.PhysicalFatigue, EmbodiedState.PostureQuality, EmbodiedState.BreathingRegularity);
+    Text += FString::Printf(TEXT("embedded: game phase '%s', map familiarity %.2f, meta awareness %.2f, team composition %.2f, resource awareness %.2f, threat assessment %.2f, opportunity recognition %.2f\n"),
+        *EmbeddedContext.GamePhase, EmbeddedContext.MapFamiliarity, EmbeddedContext.MetaAwareness, EmbeddedContext.TeamCompositionUnderstanding,
+        EmbeddedContext.ResourceAwareness, EmbeddedContext.ThreatAssessmentAccuracy, EmbeddedContext.OpportunityRecognitionSpeed);
+    Text += FString::Printf(TEXT("enacted: stance '%s', exploration %.2f, risk tolerance %.2f, adaptation rate %.2f, initiative %.2f, counter-play %.2f, map control priority %.2f\n"),
+        *EnactedStrategy.StrategicStance, EnactedStrategy.ExplorationTendency, EnactedStrategy.RiskTolerance, EnactedStrategy.AdaptationRate,
+        EnactedStrategy.InitiativeTaking, EnactedStrategy.CounterPlayEffectiveness, EnactedStrategy.MapControlPriority);
+    Text += FString::Printf(TEXT("extended: input device %.2f, UI usage %.2f, tool usage %.2f, team communication %.2f, community knowledge %.2f, replay analysis %.2f, coaching %.2f\n"),
+        ExtendedCognition.InputDeviceProficiency, ExtendedCognition.UIUtilizationEfficiency, ExtendedCognition.ExternalToolUsage,
+        ExtendedCognition.TeamCommunicationEffectiveness, ExtendedCognition.CommunityKnowledgeIntegration,
+        ExtendedCognition.ReplayAnalysisUtilization, ExtendedCognition.CoachingIntegration);
+    Text += FString::Printf(TEXT("cognitive load: total %.2f, reserve %.2f, overload threshold %.2f, time at current load %.0fs\n"),
+        CognitiveLoad.TotalLoad, CognitiveLoad.CognitiveReserve, CognitiveLoad.OverloadThreshold, CognitiveLoad.TimeAtCurrentLoad);
+    for (const auto& Pair : CognitiveLoad.LoadLevels)
+    {
+        Text += FString::Printf(TEXT("  load %s: %.2f\n"), *UEnum::GetValueAsString(Pair.Key), Pair.Value);
+    }
+    Text += FString::Printf(TEXT("attention: primary '%s', secondary [%s], split %.2f, peripheral %.2f\n"),
+        *AttentionState.PrimaryFocus, *FString::Join(AttentionState.SecondaryTargets, TEXT(", ")),
+        AttentionState.AttentionSplitRatio, AttentionState.PeripheralAwareness);
+    return Text;
 }
 
 // ========================================

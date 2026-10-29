@@ -36,7 +36,7 @@ class UEntelechyFramework;
  * Sensory Modality Types
  */
 UENUM(BlueprintType)
-enum class ESensoryModality : uint8
+enum class ESensorimotorLoopModality : uint8
 {
     /** Visual perception */
     Visual UMETA(DisplayName = "Visual"),
@@ -138,7 +138,7 @@ struct FSensoryChannel
 
     /** Sensory modality */
     UPROPERTY(BlueprintReadWrite)
-    ESensoryModality Modality = ESensoryModality::Visual;
+    ESensorimotorLoopModality Modality = ESensorimotorLoopModality::Visual;
 
     /** Raw sensory data (normalized 0-1) */
     UPROPERTY(BlueprintReadWrite)
@@ -210,7 +210,7 @@ struct FMotorChannel
  * Sensorimotor Contingency - Learned action-perception coupling
  */
 USTRUCT(BlueprintType)
-struct FSensorimotorContingency
+struct FSensorimotorLoopContingency
 {
     GENERATED_BODY()
 
@@ -228,7 +228,7 @@ struct FSensorimotorContingency
 
     /** Sensory modalities involved */
     UPROPERTY(BlueprintReadWrite)
-    TArray<ESensoryModality> InvolvedModalities;
+    TArray<ESensorimotorLoopModality> InvolvedModalities;
 
     /** Motor effectors involved */
     UPROPERTY(BlueprintReadWrite)
@@ -281,7 +281,7 @@ struct FAffordance
 
     /** Relevant sensory cues */
     UPROPERTY(BlueprintReadWrite)
-    TArray<ESensoryModality> RelevantModalities;
+    TArray<ESensorimotorLoopModality> RelevantModalities;
 
     /** Is currently reachable */
     UPROPERTY(BlueprintReadWrite)
@@ -292,7 +292,7 @@ struct FAffordance
  * Body Schema - Internal model of body capabilities
  */
 USTRUCT(BlueprintType)
-struct FBodySchema
+struct FSensorimotorLoopBodySchema
 {
     GENERATED_BODY()
 
@@ -347,7 +347,7 @@ struct FSensorimotorState
 
     /** Current body schema */
     UPROPERTY(BlueprintReadWrite)
-    FBodySchema BodySchema;
+    FSensorimotorLoopBodySchema BodySchema;
 
     /** Detected affordances */
     UPROPERTY(BlueprintReadWrite)
@@ -414,12 +414,12 @@ struct FSensorimotorConfig
  * for embodied avatar control in the Deep-Tree-Echo framework.
  */
 UCLASS(ClassGroup=(DeepTreeEcho), meta=(BlueprintSpawnableComponent))
-class DEEPTREEECHO_API USensorimotorIntegration : public UActorComponent
+class DEEPTREEECHO_API USensorimotorLoopIntegration : public UActorComponent
 {
     GENERATED_BODY()
 
 public:
-    USensorimotorIntegration();
+    USensorimotorLoopIntegration();
 
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
@@ -433,7 +433,7 @@ public:
 
     /** Reference to CognitiveCycleManager */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensorimotor|Config")
-    UCognitiveCycleManager* CognitiveCycleManager;
+    UCognitiveStreamCycleManager* CognitiveCycleManager;
 
     /** Reference to AXIOM Active Inference */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensorimotor|Config")
@@ -453,7 +453,7 @@ public:
 
     /** Learned sensorimotor contingencies */
     UPROPERTY(BlueprintReadOnly, Category = "Sensorimotor|State")
-    TArray<FSensorimotorContingency> Contingencies;
+    TArray<FSensorimotorLoopContingency> Contingencies;
 
     // ========================================
     // PUBLIC API - INITIALIZATION
@@ -473,7 +473,7 @@ public:
 
     /** Register a sensory channel */
     UFUNCTION(BlueprintCallable, Category = "Sensorimotor|Sensory")
-    void RegisterSensoryChannel(FName ChannelID, ESensoryModality Modality, int32 DataDimension);
+    void RegisterSensoryChannel(FName ChannelID, ESensorimotorLoopModality Modality, int32 DataDimension);
 
     /** Update sensory channel data */
     UFUNCTION(BlueprintCallable, Category = "Sensorimotor|Sensory")

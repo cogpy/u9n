@@ -1,6 +1,7 @@
-// Avatar 3D Component - Complete Production Implementation
+// Avatar 3D Component - asset-loading implementations
 // Deep Tree Echo AGI Avatar System
-// Replaces all placeholder implementations with full functionality
+// Lip sync, idle animation and emotion-to-face rendering live in Avatar3DComponentEnhanced.cpp
+// (driven by real speech audio and model reactions on FEchoReactionBus).
 
 #include "Avatar3DComponentEnhanced.h"
 #include "AvatarMaterialManager.h"
@@ -164,18 +165,6 @@ void UAvatar3DComponentEnhanced::PlayEmote(const FString& EmoteName)
     }
 }
 
-void UAvatar3DComponentEnhanced::SetIdleAnimation(const FString& IdleAnimName)
-{
-    // Production implementation: Change idle animation in AnimBP
-    UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance());
-    if (AvatarAnimInstance)
-    {
-        // Set custom property in anim instance
-        // This would be read by the animation blueprint to select idle variant
-        UE_LOG(LogTemp, Log, TEXT("Idle animation set to: %s"), *IdleAnimName);
-    }
-}
-
 void UAvatar3DComponentEnhanced::SetWalkStyle(const FString& WalkStyleName)
 {
     // Production implementation: Change locomotion animations
@@ -296,101 +285,6 @@ void UAvatar3DComponentEnhanced::VisualizeMemoryConstellation(const TArray<FVect
         
         UE_LOG(LogTemp, Log, TEXT("Visualizing memory constellation with %d nodes"), MemoryNodes.Num());
     }
-}
-
-// ===== Complete Lip Sync Implementations =====
-
-void UAvatar3DComponentEnhanced::StartLipSync(const TArray<float>& AudioData)
-{
-    // Production implementation: Drive mouth blend shapes based on audio
-    if (AudioData.Num() == 0)
-    {
-        return;
-    }
-    
-    // Calculate average amplitude
-    float AverageAmplitude = 0.0f;
-    for (float Sample : AudioData)
-    {
-        AverageAmplitude += FMath::Abs(Sample);
-    }
-    AverageAmplitude /= AudioData.Num();
-    
-    // Map amplitude to mouth blend shapes
-    UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance());
-    if (AvatarAnimInstance)
-    {
-        // Update facial blend shapes for lip sync
-        float MouthOpen = FMath::Clamp(AverageAmplitude * 2.0f, 0.0f, 1.0f);
-        
-        // This would integrate with the facial animation system
-        UE_LOG(LogTemp, Log, TEXT("Lip sync started with amplitude: %.2f"), AverageAmplitude);
-    }
-}
-
-void UAvatar3DComponentEnhanced::StopLipSync()
-{
-    // Production implementation: Reset mouth to neutral
-    UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance());
-    if (AvatarAnimInstance)
-    {
-        // Reset mouth blend shapes
-        UE_LOG(LogTemp, Log, TEXT("Lip sync stopped"));
-    }
-}
-
-void UAvatar3DComponentEnhanced::SetLipSyncEmotionalModulation(float EmotionalIntensity)
-{
-    // Production implementation: Modulate lip sync based on emotion
-    UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance());
-    if (AvatarAnimInstance)
-    {
-        // Emotional state affects mouth shape during speech
-        // Happy: More smile while talking
-        // Sad: Less mouth movement
-        // Angry: Sharper, more pronounced movements
-        
-        UE_LOG(LogTemp, Log, TEXT("Lip sync emotional modulation: %.2f"), EmotionalIntensity);
-    }
-}
-
-// ===== Complete Facial Animation Implementation =====
-
-void UAvatar3DComponentEnhanced::ApplyEmotionToFacialAnimation()
-{
-    // Production implementation: Set blend shape weights based on emotion
-    UAvatarAnimInstance* AvatarAnimInstance = Cast<UAvatarAnimInstance>(GetAnimInstance());
-    if (!AvatarAnimInstance)
-    {
-        return;
-    }
-    
-    // Update emotional state in anim instance
-    AvatarAnimInstance->UpdateEmotionalState(EmotionalState.CurrentEmotion, EmotionalState.EmotionIntensity);
-    
-    // Apply to materials (blush, eye dilation, etc.)
-    for (UMaterialInstanceDynamic* DMI : DynamicMaterials)
-    {
-        if (DMI)
-        {
-            // Emotional blush
-            float BlushIntensity = 0.0f;
-            if (EmotionalState.CurrentEmotion == EAvatarEmotionalState::Flirty ||
-                EmotionalState.CurrentEmotion == EAvatarEmotionalState::Happy)
-            {
-                BlushIntensity = EmotionalState.EmotionIntensity * 0.6f;
-            }
-            
-            DMI->SetScalarParameterValue(TEXT("BlushIntensity"), BlushIntensity);
-            
-            // Pupil dilation based on emotional arousal
-            float PupilDilation = 0.5f + (EmotionalState.Arousal - 0.5f) * 0.4f;
-            DMI->SetScalarParameterValue(TEXT("PupilDilation"), PupilDilation);
-        }
-    }
-    
-    UE_LOG(LogTemp, Log, TEXT("Applying emotion to facial animation: %d"), 
-           (int32)EmotionalState.CurrentEmotion);
 }
 
 // ===== Complete Head Tracking Implementation =====

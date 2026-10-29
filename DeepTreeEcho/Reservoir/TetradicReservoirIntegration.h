@@ -193,7 +193,7 @@ struct FTriadicFaceState
  * Tetrahedral State
  */
 USTRUCT(BlueprintType)
-struct FTetrahedralState
+struct FTetradicReservoirState
 {
     GENERATED_BODY()
 
@@ -271,7 +271,7 @@ public:
 
     /** Current tetrahedral state */
     UPROPERTY(BlueprintReadOnly, Category = "Tetradic|State")
-    FTetrahedralState TetrahedralState;
+    FTetradicReservoirState TetrahedralState;
 
     // ========================================
     // PUBLIC API - INITIALIZATION

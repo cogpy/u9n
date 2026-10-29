@@ -25,6 +25,13 @@ struct FSuperHotGirlTraits
     float Sass = 0.6f;
 };
 
+/**
+ * Persona trait data for the "super hot girl" character style.
+ *
+ * These values are persona description (input to the character model). They do not
+ * select expressions, gestures, auras or thoughts for the avatar: the avatar's visible
+ * reactions come only from model replies broadcast on FEchoReactionBus.
+ */
 UCLASS(Blueprintable)
 class DEEPTREECHO_API USuperHotGirlPersonality : public UObject
 {
@@ -33,8 +40,4 @@ class DEEPTREECHO_API USuperHotGirlPersonality : public UObject
 public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Personality")
     FSuperHotGirlTraits Traits;
-
-    /** Applies the personality traits to the avatar's behavior */
-    UFUNCTION(BlueprintCallable, Category = "Personality")
-    void ApplyPersonality(class UAvatar3DComponent* Avatar);
 };

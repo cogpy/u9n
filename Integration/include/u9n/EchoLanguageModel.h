@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -122,7 +123,9 @@ public:
     }
 
     // Samples `count` characters after `prompt` from the mixture (counts are not updated).
+    // Throws std::logic_error before Fit(): an unfitted model has nothing to say.
     std::string Generate(const std::string& prompt, int count, std::mt19937& rng) const {
+        if (!Res) throw std::logic_error("EchoLanguageModel::Generate called before Fit");
         std::string s = prompt;
         Res->Reset();
         for (char c : prompt) Res->Step(OneHot(c));

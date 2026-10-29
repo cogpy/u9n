@@ -740,36 +740,32 @@ FAvatarQualityMetrics UAvatarQualityAssurance::RunQualityCheck()
 
 TArray<FString> UAvatarQualityAssurance::GetQualityImprovementSuggestions() const
 {
+    // Developer-facing pipeline diagnostics (not character speech)
     TArray<FString> Suggestions;
 
     if (QualityMetrics.ExpressionCoherence < 0.8f)
     {
-        Suggestions.Add(TEXT("Expression channels may be misaligned - check facial/body/vocal sync"));
+        Suggestions.Add(FString::Printf(TEXT("ExpressionCoherence %.2f < 0.80: check facial/body/vocal channel sync"), QualityMetrics.ExpressionCoherence));
     }
 
     if (QualityMetrics.PhysiologicalCoherence < 0.8f)
     {
-        Suggestions.Add(TEXT("Autonomic responses may be inconsistent with emotional state"));
+        Suggestions.Add(FString::Printf(TEXT("PhysiologicalCoherence %.2f < 0.80: autonomic responses inconsistent with emotional state"), QualityMetrics.PhysiologicalCoherence));
     }
 
     if (QualityMetrics.TemporalCoherence < 0.8f)
     {
-        Suggestions.Add(TEXT("Expression transitions may be too abrupt - increase smoothing"));
+        Suggestions.Add(FString::Printf(TEXT("TemporalCoherence %.2f < 0.80: transitions abrupt, increase smoothing"), QualityMetrics.TemporalCoherence));
     }
 
     if (QualityMetrics.AuthenticityScore < 0.8f)
     {
-        Suggestions.Add(TEXT("Expressions may appear posed - add more asymmetry and natural timing"));
+        Suggestions.Add(FString::Printf(TEXT("AuthenticityScore %.2f < 0.80: add asymmetry and natural timing"), QualityMetrics.AuthenticityScore));
     }
 
     if (QualityMetrics.SubtletyScore < 0.8f)
     {
-        Suggestions.Add(TEXT("Micro-expressions and subtle behaviors may need enhancement"));
-    }
-
-    if (Suggestions.Num() == 0)
-    {
-        Suggestions.Add(TEXT("Avatar quality is excellent - no immediate improvements needed"));
+        Suggestions.Add(FString::Printf(TEXT("SubtletyScore %.2f < 0.80: micro-expressions need enhancement"), QualityMetrics.SubtletyScore));
     }
 
     return Suggestions;

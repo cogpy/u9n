@@ -88,8 +88,8 @@ void UTensionalCouplingDynamics::BuildTetrahedralStructure()
 
     for (int32 i = 0; i < 6; ++i)
     {
-        FDyadicEdgeState Edge;
-        Edge.EdgeType = static_cast<EDyadicEdge>(i);
+        FTensionalDyadicEdgeState Edge;
+        Edge.EdgeType = static_cast<ETensionalDyadicEdge>(i);
         Edge.VertexA = EdgeVertexPairs[i].Key;
         Edge.VertexB = EdgeVertexPairs[i].Value;
         Edge.Tension = 0.5f;
@@ -109,24 +109,24 @@ void UTensionalCouplingDynamics::BuildTetrahedralStructure()
         {EThreadVertex::V2_Memory, EThreadVertex::V3_Assessment, EThreadVertex::V4_Planning}         // Face_234
     };
 
-    TArray<TArray<EDyadicEdge>> FaceEdges = {
-        {EDyadicEdge::Edge_12, EDyadicEdge::Edge_13, EDyadicEdge::Edge_23},  // Face_123
-        {EDyadicEdge::Edge_12, EDyadicEdge::Edge_14, EDyadicEdge::Edge_24},  // Face_124
-        {EDyadicEdge::Edge_13, EDyadicEdge::Edge_14, EDyadicEdge::Edge_34},  // Face_134
-        {EDyadicEdge::Edge_23, EDyadicEdge::Edge_24, EDyadicEdge::Edge_34}   // Face_234
+    TArray<TArray<ETensionalDyadicEdge>> FaceEdges = {
+        {ETensionalDyadicEdge::Edge_12, ETensionalDyadicEdge::Edge_13, ETensionalDyadicEdge::Edge_23},  // Face_123
+        {ETensionalDyadicEdge::Edge_12, ETensionalDyadicEdge::Edge_14, ETensionalDyadicEdge::Edge_24},  // Face_124
+        {ETensionalDyadicEdge::Edge_13, ETensionalDyadicEdge::Edge_14, ETensionalDyadicEdge::Edge_34},  // Face_134
+        {ETensionalDyadicEdge::Edge_23, ETensionalDyadicEdge::Edge_24, ETensionalDyadicEdge::Edge_34}   // Face_234
     };
 
-    TArray<TArray<ETriadicFace>> FaceAdjacencies = {
-        {ETriadicFace::Face_124, ETriadicFace::Face_134, ETriadicFace::Face_234},  // Face_123
-        {ETriadicFace::Face_123, ETriadicFace::Face_134, ETriadicFace::Face_234},  // Face_124
-        {ETriadicFace::Face_123, ETriadicFace::Face_124, ETriadicFace::Face_234},  // Face_134
-        {ETriadicFace::Face_123, ETriadicFace::Face_124, ETriadicFace::Face_134}   // Face_234
+    TArray<TArray<ETensionalTriadicFace>> FaceAdjacencies = {
+        {ETensionalTriadicFace::Face_124, ETensionalTriadicFace::Face_134, ETensionalTriadicFace::Face_234},  // Face_123
+        {ETensionalTriadicFace::Face_123, ETensionalTriadicFace::Face_134, ETensionalTriadicFace::Face_234},  // Face_124
+        {ETensionalTriadicFace::Face_123, ETensionalTriadicFace::Face_124, ETensionalTriadicFace::Face_234},  // Face_134
+        {ETensionalTriadicFace::Face_123, ETensionalTriadicFace::Face_124, ETensionalTriadicFace::Face_134}   // Face_234
     };
 
     for (int32 i = 0; i < 4; ++i)
     {
-        FTriadicFaceState Face;
-        Face.FaceType = static_cast<ETriadicFace>(i);
+        FTensionalTriadicFaceState Face;
+        Face.FaceType = static_cast<ETensionalTriadicFace>(i);
         Face.Vertices = FaceVertices[i];
         Face.Edges = FaceEdges[i];
         Face.AdjacentFaces = FaceAdjacencies[i];
@@ -141,7 +141,7 @@ void UTensionalCouplingDynamics::BuildTetrahedralStructure()
     for (FThreadVertexState& Vertex : State.VertexStates)
     {
         Vertex.ConnectedEdges = GetEdgesForVertex(Vertex.VertexType);
-        for (const FTriadicFaceState& Face : State.FaceStates)
+        for (const FTensionalTriadicFaceState& Face : State.FaceStates)
         {
             if (Face.Vertices.Contains(Vertex.VertexType))
             {
@@ -191,7 +191,7 @@ void UTensionalCouplingDynamics::InitializeMultiplexPermutations()
     State.MultiplexState.MP2TriadSet = TriadPermutationsMP2[0];
 }
 
-void UTensionalCouplingDynamics::SetEdgeTension(EDyadicEdge Edge, float Tension)
+void UTensionalCouplingDynamics::SetEdgeTension(ETensionalDyadicEdge Edge, float Tension)
 {
     int32 Index = GetEdgeIndex(Edge);
     if (Index >= 0 && Index < State.EdgeStates.Num())
@@ -206,7 +206,7 @@ void UTensionalCouplingDynamics::SetEdgeTension(EDyadicEdge Edge, float Tension)
     }
 }
 
-void UTensionalCouplingDynamics::SetEdgeFlow(EDyadicEdge Edge, float FlowDirection)
+void UTensionalCouplingDynamics::SetEdgeFlow(ETensionalDyadicEdge Edge, float FlowDirection)
 {
     int32 Index = GetEdgeIndex(Edge);
     if (Index >= 0 && Index < State.EdgeStates.Num())
@@ -215,17 +215,17 @@ void UTensionalCouplingDynamics::SetEdgeFlow(EDyadicEdge Edge, float FlowDirecti
     }
 }
 
-FDyadicEdgeState UTensionalCouplingDynamics::GetEdgeState(EDyadicEdge Edge) const
+FTensionalDyadicEdgeState UTensionalCouplingDynamics::GetEdgeState(ETensionalDyadicEdge Edge) const
 {
     int32 Index = GetEdgeIndex(Edge);
     if (Index >= 0 && Index < State.EdgeStates.Num())
     {
         return State.EdgeStates[Index];
     }
-    return FDyadicEdgeState();
+    return FTensionalDyadicEdgeState();
 }
 
-void UTensionalCouplingDynamics::PropagateTension(EDyadicEdge Edge)
+void UTensionalCouplingDynamics::PropagateTension(ETensionalDyadicEdge Edge)
 {
     int32 EdgeIndex = GetEdgeIndex(Edge);
     if (EdgeIndex < 0 || EdgeIndex >= State.EdgeStates.Num())
@@ -233,7 +233,7 @@ void UTensionalCouplingDynamics::PropagateTension(EDyadicEdge Edge)
         return;
     }
 
-    FDyadicEdgeState& EdgeState = State.EdgeStates[EdgeIndex];
+    FTensionalDyadicEdgeState& EdgeState = State.EdgeStates[EdgeIndex];
     TArray<EThreadVertex> Vertices = GetVerticesForEdge(Edge);
 
     if (Vertices.Num() < 2)
@@ -286,7 +286,7 @@ void UTensionalCouplingDynamics::PropagateTension(EDyadicEdge Edge)
     }
 }
 
-void UTensionalCouplingDynamics::SetEdgeResonanceMode(EDyadicEdge Edge, ECouplingResonanceMode Mode)
+void UTensionalCouplingDynamics::SetEdgeResonanceMode(ETensionalDyadicEdge Edge, ECouplingResonanceMode Mode)
 {
     int32 Index = GetEdgeIndex(Edge);
     if (Index >= 0 && Index < State.EdgeStates.Num())
@@ -301,7 +301,7 @@ void UTensionalCouplingDynamics::SetEdgeResonanceMode(EDyadicEdge Edge, ECouplin
     }
 }
 
-void UTensionalCouplingDynamics::ActivateFace(ETriadicFace Face, float Activation)
+void UTensionalCouplingDynamics::ActivateFace(ETensionalTriadicFace Face, float Activation)
 {
     int32 Index = GetFaceIndex(Face);
     if (Index >= 0 && Index < State.FaceStates.Num())
@@ -309,7 +309,7 @@ void UTensionalCouplingDynamics::ActivateFace(ETriadicFace Face, float Activatio
         State.FaceStates[Index].Activation = FMath::Clamp(Activation, 0.0f, 1.0f);
 
         // Propagate to edges
-        for (EDyadicEdge Edge : State.FaceStates[Index].Edges)
+        for (ETensionalDyadicEdge Edge : State.FaceStates[Index].Edges)
         {
             int32 EdgeIndex = GetEdgeIndex(Edge);
             if (EdgeIndex >= 0)
@@ -325,17 +325,17 @@ void UTensionalCouplingDynamics::ActivateFace(ETriadicFace Face, float Activatio
     }
 }
 
-FTriadicFaceState UTensionalCouplingDynamics::GetFaceState(ETriadicFace Face) const
+FTensionalTriadicFaceState UTensionalCouplingDynamics::GetFaceState(ETensionalTriadicFace Face) const
 {
     int32 Index = GetFaceIndex(Face);
     if (Index >= 0 && Index < State.FaceStates.Num())
     {
         return State.FaceStates[Index];
     }
-    return FTriadicFaceState();
+    return FTensionalTriadicFaceState();
 }
 
-float UTensionalCouplingDynamics::ComputeFaceCoherence(ETriadicFace Face)
+float UTensionalCouplingDynamics::ComputeFaceCoherence(ETensionalTriadicFace Face)
 {
     int32 Index = GetFaceIndex(Face);
     if (Index < 0 || Index >= State.FaceStates.Num())
@@ -343,13 +343,13 @@ float UTensionalCouplingDynamics::ComputeFaceCoherence(ETriadicFace Face)
         return 0.0f;
     }
 
-    FTriadicFaceState& FaceState = State.FaceStates[Index];
+    FTensionalTriadicFaceState& FaceState = State.FaceStates[Index];
 
     // Compute coherence from edge tensions
     float TotalTension = 0.0f;
     float TensionVariance = 0.0f;
 
-    for (EDyadicEdge Edge : FaceState.Edges)
+    for (ETensionalDyadicEdge Edge : FaceState.Edges)
     {
         int32 EdgeIndex = GetEdgeIndex(Edge);
         if (EdgeIndex >= 0)
@@ -360,7 +360,7 @@ float UTensionalCouplingDynamics::ComputeFaceCoherence(ETriadicFace Face)
 
     float MeanTension = TotalTension / FaceState.Edges.Num();
 
-    for (EDyadicEdge Edge : FaceState.Edges)
+    for (ETensionalDyadicEdge Edge : FaceState.Edges)
     {
         int32 EdgeIndex = GetEdgeIndex(Edge);
         if (EdgeIndex >= 0)
@@ -378,7 +378,7 @@ float UTensionalCouplingDynamics::ComputeFaceCoherence(ETriadicFace Face)
     return FaceState.Coherence;
 }
 
-void UTensionalCouplingDynamics::SynchronizeAdjacentFaces(ETriadicFace Face)
+void UTensionalCouplingDynamics::SynchronizeAdjacentFaces(ETensionalTriadicFace Face)
 {
     int32 Index = GetFaceIndex(Face);
     if (Index < 0 || Index >= State.FaceStates.Num())
@@ -386,9 +386,9 @@ void UTensionalCouplingDynamics::SynchronizeAdjacentFaces(ETriadicFace Face)
         return;
     }
 
-    const FTriadicFaceState& FaceState = State.FaceStates[Index];
+    const FTensionalTriadicFaceState& FaceState = State.FaceStates[Index];
 
-    for (ETriadicFace AdjacentFace : FaceState.AdjacentFaces)
+    for (ETensionalTriadicFace AdjacentFace : FaceState.AdjacentFaces)
     {
         int32 AdjIndex = GetFaceIndex(AdjacentFace);
         if (AdjIndex >= 0 && AdjIndex < State.FaceStates.Num())
@@ -451,7 +451,7 @@ void UTensionalCouplingDynamics::ProcessVertex(EThreadVertex Vertex, const TArra
     VertexState.ProcessingLoad = FMath::Sqrt(InputMagnitude / FMath::Max(1, Input.Num()));
 }
 
-void UTensionalCouplingDynamics::CreateEntanglement(EDyadicEdge EdgeA, EDyadicEdge EdgeB)
+void UTensionalCouplingDynamics::CreateEntanglement(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB)
 {
     // Check if already entangled
     if (AreEdgesEntangled(EdgeA, EdgeB))
@@ -476,7 +476,7 @@ void UTensionalCouplingDynamics::CreateEntanglement(EDyadicEdge EdgeA, EDyadicEd
     OnEntanglementFormed.Broadcast(EdgeA, EdgeB, Entanglement.EntanglementStrength);
 }
 
-void UTensionalCouplingDynamics::BreakEntanglement(EDyadicEdge EdgeA, EDyadicEdge EdgeB)
+void UTensionalCouplingDynamics::BreakEntanglement(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB)
 {
     for (int32 i = State.ActiveEntanglements.Num() - 1; i >= 0; --i)
     {
@@ -494,7 +494,7 @@ void UTensionalCouplingDynamics::BreakEntanglement(EDyadicEdge EdgeA, EDyadicEdg
     }
 }
 
-bool UTensionalCouplingDynamics::AreEdgesEntangled(EDyadicEdge EdgeA, EDyadicEdge EdgeB) const
+bool UTensionalCouplingDynamics::AreEdgesEntangled(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB) const
 {
     for (const FCouplingEntanglement& Ent : State.ActiveEntanglements)
     {
@@ -507,7 +507,7 @@ bool UTensionalCouplingDynamics::AreEdgesEntangled(EDyadicEdge EdgeA, EDyadicEdg
     return false;
 }
 
-FCouplingEntanglement UTensionalCouplingDynamics::GetEntanglementState(EDyadicEdge EdgeA, EDyadicEdge EdgeB) const
+FCouplingEntanglement UTensionalCouplingDynamics::GetEntanglementState(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB) const
 {
     for (const FCouplingEntanglement& Ent : State.ActiveEntanglements)
     {
@@ -527,8 +527,8 @@ void UTensionalCouplingDynamics::DetectPotentialEntanglements()
     {
         for (int32 j = i + 1; j < State.EdgeStates.Num(); ++j)
         {
-            const FDyadicEdgeState& EdgeA = State.EdgeStates[i];
-            const FDyadicEdgeState& EdgeB = State.EdgeStates[j];
+            const FTensionalDyadicEdgeState& EdgeA = State.EdgeStates[i];
+            const FTensionalDyadicEdgeState& EdgeB = State.EdgeStates[j];
 
             // Check if edges are opposite (don't share vertices)
             TArray<EThreadVertex> VerticesA = GetVerticesForEdge(EdgeA.EdgeType);
@@ -643,7 +643,7 @@ void UTensionalCouplingDynamics::ProcessEchobeatStep(int32 Step, const FEchobeat
     {
         if (Coupling.bIsActive)
         {
-            EDyadicEdge Edge = MapCouplingToEdge(Coupling);
+            ETensionalDyadicEdge Edge = MapCouplingToEdge(Coupling);
             SetEdgeTension(Edge, Coupling.CouplingStrength);
         }
     }
@@ -653,7 +653,7 @@ void UTensionalCouplingDynamics::ProcessEchobeatStep(int32 Step, const FEchobeat
     int32 FaceIndex = (Step - 1) / 3;
     if (FaceIndex >= 0 && FaceIndex < 4)
     {
-        ActivateFace(static_cast<ETriadicFace>(FaceIndex), EchobeatsState.OverallCoherence);
+        ActivateFace(static_cast<ETensionalTriadicFace>(FaceIndex), EchobeatsState.OverallCoherence);
     }
 }
 
@@ -672,32 +672,32 @@ EThreadVertex UTensionalCouplingDynamics::MapStreamToVertex(ECognitiveStreamType
     }
 }
 
-EDyadicEdge UTensionalCouplingDynamics::MapCouplingToEdge(const FTensionalCoupling& Coupling) const
+ETensionalDyadicEdge UTensionalCouplingDynamics::MapCouplingToEdge(const FTensionalCoupling& Coupling) const
 {
     // Map based on term types
     if ((Coupling.TermA == ESystem4Term::T4_SensoryInput && Coupling.TermB == ESystem4Term::T7_MemoryEncoding) ||
         (Coupling.TermA == ESystem4Term::T7_MemoryEncoding && Coupling.TermB == ESystem4Term::T4_SensoryInput))
     {
-        return EDyadicEdge::Edge_12; // Perception-Memory
+        return ETensionalDyadicEdge::Edge_12; // Perception-Memory
     }
     else if ((Coupling.TermA == ESystem4Term::T1_Perception && Coupling.TermB == ESystem4Term::T2_IdeaFormation) ||
              (Coupling.TermA == ESystem4Term::T2_IdeaFormation && Coupling.TermB == ESystem4Term::T1_Perception))
     {
-        return EDyadicEdge::Edge_13; // Perception-Assessment
+        return ETensionalDyadicEdge::Edge_13; // Perception-Assessment
     }
     else if (Coupling.TermA == ESystem4Term::T8_BalancedResponse || Coupling.TermB == ESystem4Term::T8_BalancedResponse)
     {
-        return EDyadicEdge::Edge_34; // Assessment-Planning
+        return ETensionalDyadicEdge::Edge_34; // Assessment-Planning
     }
 
-    return EDyadicEdge::Edge_14; // Default
+    return ETensionalDyadicEdge::Edge_14; // Default
 }
 
 void UTensionalCouplingDynamics::ComputeTetrahedralCoherence()
 {
     float TotalCoherence = 0.0f;
 
-    for (FTriadicFaceState& Face : State.FaceStates)
+    for (FTensionalTriadicFaceState& Face : State.FaceStates)
     {
         TotalCoherence += ComputeFaceCoherence(Face.FaceType);
     }
@@ -709,7 +709,7 @@ void UTensionalCouplingDynamics::ComputeTensionBalance()
 {
     float TotalTension = 0.0f;
 
-    for (const FDyadicEdgeState& Edge : State.EdgeStates)
+    for (const FTensionalDyadicEdgeState& Edge : State.EdgeStates)
     {
         TotalTension += Edge.Tension;
     }
@@ -721,7 +721,7 @@ void UTensionalCouplingDynamics::PropagateAllTensions()
 {
     for (int32 i = 0; i < State.EdgeStates.Num(); ++i)
     {
-        PropagateTension(static_cast<EDyadicEdge>(i));
+        PropagateTension(static_cast<ETensionalDyadicEdge>(i));
     }
 }
 
@@ -764,12 +764,12 @@ void UTensionalCouplingDynamics::UpdateEntanglements(float DeltaTime)
     DetectPotentialEntanglements();
 }
 
-int32 UTensionalCouplingDynamics::GetEdgeIndex(EDyadicEdge Edge) const
+int32 UTensionalCouplingDynamics::GetEdgeIndex(ETensionalDyadicEdge Edge) const
 {
     return static_cast<int32>(Edge);
 }
 
-int32 UTensionalCouplingDynamics::GetFaceIndex(ETriadicFace Face) const
+int32 UTensionalCouplingDynamics::GetFaceIndex(ETensionalTriadicFace Face) const
 {
     return static_cast<int32>(Face);
 }
@@ -779,20 +779,20 @@ int32 UTensionalCouplingDynamics::GetVertexIndex(EThreadVertex Vertex) const
     return static_cast<int32>(Vertex);
 }
 
-TArray<EDyadicEdge> UTensionalCouplingDynamics::GetEdgesForFace(ETriadicFace Face) const
+TArray<ETensionalDyadicEdge> UTensionalCouplingDynamics::GetEdgesForFace(ETensionalTriadicFace Face) const
 {
     int32 Index = GetFaceIndex(Face);
     if (Index >= 0 && Index < State.FaceStates.Num())
     {
         return State.FaceStates[Index].Edges;
     }
-    return TArray<EDyadicEdge>();
+    return TArray<ETensionalDyadicEdge>();
 }
 
-TArray<ETriadicFace> UTensionalCouplingDynamics::GetFacesForEdge(EDyadicEdge Edge) const
+TArray<ETensionalTriadicFace> UTensionalCouplingDynamics::GetFacesForEdge(ETensionalDyadicEdge Edge) const
 {
-    TArray<ETriadicFace> Faces;
-    for (const FTriadicFaceState& Face : State.FaceStates)
+    TArray<ETensionalTriadicFace> Faces;
+    for (const FTensionalTriadicFaceState& Face : State.FaceStates)
     {
         if (Face.Edges.Contains(Edge))
         {
@@ -802,7 +802,7 @@ TArray<ETriadicFace> UTensionalCouplingDynamics::GetFacesForEdge(EDyadicEdge Edg
     return Faces;
 }
 
-TArray<EThreadVertex> UTensionalCouplingDynamics::GetVerticesForEdge(EDyadicEdge Edge) const
+TArray<EThreadVertex> UTensionalCouplingDynamics::GetVerticesForEdge(ETensionalDyadicEdge Edge) const
 {
     int32 Index = GetEdgeIndex(Edge);
     if (Index >= 0 && Index < State.EdgeStates.Num())
@@ -812,10 +812,10 @@ TArray<EThreadVertex> UTensionalCouplingDynamics::GetVerticesForEdge(EDyadicEdge
     return TArray<EThreadVertex>();
 }
 
-TArray<EDyadicEdge> UTensionalCouplingDynamics::GetEdgesForVertex(EThreadVertex Vertex) const
+TArray<ETensionalDyadicEdge> UTensionalCouplingDynamics::GetEdgesForVertex(EThreadVertex Vertex) const
 {
-    TArray<EDyadicEdge> Edges;
-    for (const FDyadicEdgeState& Edge : State.EdgeStates)
+    TArray<ETensionalDyadicEdge> Edges;
+    for (const FTensionalDyadicEdgeState& Edge : State.EdgeStates)
     {
         if (Edge.VertexA == Vertex || Edge.VertexB == Vertex)
         {

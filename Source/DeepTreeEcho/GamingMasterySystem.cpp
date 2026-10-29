@@ -3,9 +3,118 @@
 // Copyright (c) 2025 Deep Tree Echo Project
 
 #include "GamingMasterySystem.h"
+#include "EchoModelClient.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "FGamingMasterySystem"
+
+// ========================================
+// Companion coaching (model-written)
+// ========================================
+
+void EchoCoaching::Request(UObject* Owner, const FString& Topic, const FString& Instruction, const FString& Metrics,
+                           FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed)
+{
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"),
+        TEXT("You are Deep Tree Echo, an AI gaming companion coaching the player you play alongside. ")
+        TEXT("Speak directly to the player in your own voice, briefly and concretely. Base every statement ")
+        TEXT("strictly on the measurements provided; if they are insufficient, say what is missing.")));
+    Messages.Add(FEchoModelMessage(TEXT("user"),
+        FString::Printf(TEXT("Topic: %s\nMeasurements:\n%s\n\n%s"), *Topic, *Metrics, *Instruction)));
+
+    TWeakObjectPtr<UObject> WeakOwner(Owner);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakOwner, Topic, Ready, Failed](bool bSuccess, const FString& TextOrError)
+        {
+            if (!WeakOwner.IsValid())
+            {
+                return; // Ready/Failed belong to the owner
+            }
+
+            const FString Text = TextOrError.TrimStartAndEnd();
+            if (bSuccess && !Text.IsEmpty())
+            {
+                if (Ready)
+                {
+                    Ready->Broadcast(Topic, Text);
+                }
+                return;
+            }
+
+            const FString Error = bSuccess ? FString(TEXT("model reply was empty")) : TextOrError;
+            UE_LOG(LogTemp, Warning, TEXT("Deep Tree Echo coaching '%s' not produced: %s"), *Topic, *Error);
+            if (Failed)
+            {
+                Failed->Broadcast(Topic, Error);
+            }
+        }));
+}
+
+TMap<FString, FString>& EchoCoaching::PromptTemplates()
+{
+    // The structure the companion's coaching lines used to be chosen from (per topic, per
+    // measured condition) kept as prompt templates. Call sites route the condition into the
+    // {focus}-style slots; the model writes the advice.
+    static TMap<FString, FString> Templates = []()
+    {
+        TMap<FString, FString> T;
+        T.Add(TEXT("contextual_strategy"),
+            TEXT("The game is in its {game_phase} phase. Recommend a strategy in one or two sentences, centred on {focus}."));
+        T.Add(TEXT("opportunities"),
+            TEXT("Point out the opportunities this game state offers the player and how to exploit them. ")
+            TEXT("Signals detected in the state: {signals}.{recognition_note}"));
+        T.Add(TEXT("exploration"),
+            TEXT("Advise the player whether to explore new strategies or refine effective ones. The measurements suggest: {focus}."));
+        T.Add(TEXT("adaptive_response"),
+            TEXT("The opponent just did: \"{opponent_action}\" ({action_kind}). Recommend how the player should respond, ")
+            TEXT("leaning toward {focus}."));
+        T.Add(TEXT("team_coordination"),
+            TEXT("Recommend how the team should coordinate right now (average team state {team_average}), with emphasis on {focus}."));
+        T.Add(TEXT("external_resources"),
+            TEXT("Suggest which external resources would help this player most, choosing from replay analysis of recent games, ")
+            TEXT("community guides on current strategies, structured coaching and performance-tracking tools. Base the choice on ")
+            TEXT("the weakest measurements ({weakest_area})."));
+        T.Add(TEXT("load_reduction"),
+            TEXT("The heaviest cognitive load is {load_type} ({load_level}). Advise the player how to reduce it, for example by {focus}.{break_note}"));
+        T.Add(TEXT("holistic_improvement"),
+            TEXT("Give the player prioritized improvement advice across embodied, embedded, enacted and extended skills. ")
+            TEXT("Top priority: the {priority_area} area ({priority_score}) - {focus}.{urgent_note}"));
+        T.Add(TEXT("training_focus"),
+            TEXT("Tell the player what to train next: their weakest area is {weakest_area} ({weakest_score}); suggest improving it {focus}."));
+        T.Add(TEXT("improvement_recommendations"),
+            TEXT("Give the player a short list of concrete improvement recommendations from this replay analysis: for each skill to ")
+            TEXT("improve ({skills}) a focused way to practise it, and for each recommended drill ({drills}) why to do it."));
+        T.Add(TEXT("flow_optimization"),
+            TEXT("Give the player one to three tips to reach or stay in a flow state. Conditions detected: {conditions}."));
+        T.Add(TEXT("attention_focus"),
+            TEXT("Tell the player where to focus their attention right now. {focus}"));
+        T.Add(TEXT("input_improvement"),
+            TEXT("Give the player concise suggestions to improve their input execution. Inputs below 60% average timing quality: ")
+            TEXT("{weak_inputs}. If there are none, tell them their execution is good and suggest turning to strategic decision-making."));
+        T.Add(TEXT("training_guidance"),
+            TEXT("Guide the player on what to practise next for the skill {skill}. Their stage: {focus}."));
+        return T;
+    }();
+    return Templates;
+}
+
+void EchoCoaching::RequestFromTemplate(UObject* Owner, const FString& Topic, const TMap<FString, FString>& Slots,
+                                       const FString& Metrics, FOnCompanionCoaching* Ready, FOnCompanionCoachingFailed* Failed)
+{
+    const FString* Template = PromptTemplates().Find(Topic);
+    if (!Template || Template->IsEmpty())
+    {
+        const FString Error = FString::Printf(TEXT("no coaching prompt template for topic '%s'"), *Topic);
+        UE_LOG(LogTemp, Warning, TEXT("Deep Tree Echo coaching '%s' not produced: %s"), *Topic, *Error);
+        if (Failed)
+        {
+            Failed->Broadcast(Topic, Error);
+        }
+        return;
+    }
+    Request(Owner, Topic, UEchoModelClient::FillPrompt(*Template, Slots), Metrics, Ready, Failed);
+}
 
 // ========================================
 // MCTS Node Structure
@@ -535,33 +644,48 @@ FReplayAnalysisResult UGamingMasterySystem::AnalyzeReplay(const FString& ReplayP
     // 4. Compare to optimal play
     // 5. Identify mistakes and good plays
     
-    UE_LOG(LogTemp, Log, TEXT("Analyzing replay: %s"), *ReplayPath);
-    
-    // Placeholder analysis
-    Result.OverallScore = 0.7f;
-    Result.SkillsToImprove.Add(TEXT("decision_making"));
-    Result.SkillsToImprove.Add(TEXT("resource_management"));
-    Result.RecommendedDrills.Add(TEXT("drill_timing"));
-    Result.RecommendedDrills.Add(TEXT("drill_positioning"));
+    // No replay loader exists yet, so nothing was analysed: return an empty result rather than
+    // fabricated scores, skills or drills.
+    UE_LOG(LogTemp, Error, TEXT("AnalyzeReplay(%s): replay analysis is not implemented (no replay loader); no results produced"), *ReplayPath);
     
     return Result;
 }
 
-TArray<FString> UGamingMasterySystem::GetImprovementRecommendations(const FReplayAnalysisResult& Analysis) const
+void UGamingMasterySystem::RequestImprovementRecommendations(const FReplayAnalysisResult& Analysis)
 {
-    TArray<FString> Recommendations;
-    
-    for (const FString& Skill : Analysis.SkillsToImprove)
+    const FString Topic = TEXT("improvement_recommendations");
+
+    if (Analysis.SkillsToImprove.Num() == 0 && Analysis.RecommendedDrills.Num() == 0 &&
+        Analysis.IdentifiedMistakes.Num() == 0 && Analysis.DecisionMetrics.Num() == 0 && Analysis.MechanicalMetrics.Num() == 0)
     {
-        Recommendations.Add(FString::Printf(TEXT("Practice %s with focused drills"), *Skill));
+        OnCoachingFailed.Broadcast(Topic, TEXT("replay analysis contains no data to base recommendations on"));
+        return;
     }
-    
-    for (const FString& Drill : Analysis.RecommendedDrills)
+
+    FString Metrics = FString::Printf(TEXT("replay: %s\noverall score: %.2f\n"), *Analysis.ReplayID, Analysis.OverallScore);
+    Metrics += FString::Printf(TEXT("skills to improve: %s\n"), *FString::Join(Analysis.SkillsToImprove, TEXT(", ")));
+    Metrics += FString::Printf(TEXT("recommended drills: %s\n"), *FString::Join(Analysis.RecommendedDrills, TEXT(", ")));
+    for (const auto& Pair : Analysis.IdentifiedMistakes)
     {
-        Recommendations.Add(FString::Printf(TEXT("Complete drill: %s"), *Drill));
+        Metrics += FString::Printf(TEXT("mistake at %.1fs: %s\n"), Pair.Key, *Pair.Value);
     }
-    
-    return Recommendations;
+    for (const auto& Pair : Analysis.IdentifiedGoodPlays)
+    {
+        Metrics += FString::Printf(TEXT("good play at %.1fs: %s\n"), Pair.Key, *Pair.Value);
+    }
+    for (const auto& Pair : Analysis.DecisionMetrics)
+    {
+        Metrics += FString::Printf(TEXT("decision %s: %.2f\n"), *Pair.Key, Pair.Value);
+    }
+    for (const auto& Pair : Analysis.MechanicalMetrics)
+    {
+        Metrics += FString::Printf(TEXT("mechanics %s: %.2f\n"), *Pair.Key, Pair.Value);
+    }
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("skills"), Analysis.SkillsToImprove.Num() ? FString::Join(Analysis.SkillsToImprove, TEXT(", ")) : FString(TEXT("none listed")));
+    Slots.Add(TEXT("drills"), Analysis.RecommendedDrills.Num() ? FString::Join(Analysis.RecommendedDrills, TEXT(", ")) : FString(TEXT("none listed")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 TMap<FString, float> UGamingMasterySystem::CompareToExpert(const FReplayAnalysisResult& Analysis) const
@@ -806,40 +930,40 @@ bool UGamingMasterySystem::IsInFlowState() const
     return FlowMetrics.FlowIntensity >= FlowEntryThreshold;
 }
 
-TArray<FString> UGamingMasterySystem::GetFlowOptimizationTips() const
+void UGamingMasterySystem::RequestFlowOptimizationTips()
 {
-    TArray<FString> Tips;
-    
+    const FString Metrics = FString::Printf(
+        TEXT("flow intensity: %.2f (in flow: %s)\nchallenge-skill balance: %.2f\nfocus: %.2f\nintrinsic motivation: %.2f\n")
+        TEXT("anxiety: %.2f\nboredom: %.2f\ntime distortion: %.2f\ntime in flow: %.0fs\nsuggested difficulty adjustment: %+.2f\n"),
+        FlowMetrics.FlowIntensity, IsInFlowState() ? TEXT("yes") : TEXT("no"), FlowMetrics.ChallengeSkillBalance,
+        FlowMetrics.FocusLevel, FlowMetrics.IntrinsicMotivation, FlowMetrics.AnxietyLevel, FlowMetrics.BoredomLevel,
+        FlowMetrics.TimeDistortion, FlowMetrics.TimeInFlow, GetDifficultyAdjustment());
+
+    // Condition router (which kinds of tip are relevant); the model writes the tips.
+    TArray<FString> Conditions;
     if (FlowMetrics.AnxietyLevel > 0.5f)
     {
-        Tips.Add(TEXT("Challenge level may be too high. Consider practicing fundamentals."));
-        Tips.Add(TEXT("Take short breaks to reduce stress."));
+        Conditions.Add(TEXT("anxiety is high - the challenge may be too high (fundamentals practice, short breaks to reduce stress)"));
     }
-    
     if (FlowMetrics.BoredomLevel > 0.5f)
     {
-        Tips.Add(TEXT("Challenge level may be too low. Try increasing difficulty."));
-        Tips.Add(TEXT("Set specific improvement goals for this session."));
+        Conditions.Add(TEXT("boredom is high - the challenge may be too low (raise difficulty, set specific session goals)"));
     }
-    
     if (FlowMetrics.FocusLevel < 0.5f)
     {
-        Tips.Add(TEXT("Focus seems low. Eliminate distractions."));
-        Tips.Add(TEXT("Try a brief warm-up routine before practice."));
+        Conditions.Add(TEXT("focus is low (remove distractions, warm up before practice)"));
     }
-    
     if (FlowMetrics.IntrinsicMotivation < 0.5f)
     {
-        Tips.Add(TEXT("Consider why you enjoy this game. Reconnect with your goals."));
-        Tips.Add(TEXT("Try a different game mode or practice activity."));
+        Conditions.Add(TEXT("intrinsic motivation is low (reconnect with why they enjoy the game, vary the activity)"));
     }
-    
-    if (Tips.Num() == 0)
+    if (Conditions.Num() == 0)
     {
-        Tips.Add(TEXT("You're in a good state for learning. Keep it up!"));
+        Conditions.Add(TEXT("none of concern - the player is in a good state for learning; encourage them to keep it up"));
     }
-    
-    return Tips;
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("conditions"), FString::Join(Conditions, TEXT("; ")));
+    EchoCoaching::RequestFromTemplate(this, TEXT("flow_optimization"), Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================
@@ -921,6 +1045,21 @@ void UGamingMasterySystem::UpdateESNTraining(const TArray<float>& InputFeatures,
 
 FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 SimulationCount)
 {
+    LastMCTSError.Reset();
+    if (MCTSLegalActions.Num() == 0)
+    {
+        LastMCTSError = TEXT("MCTS unavailable: MCTSLegalActions is empty (the game must supply its legal action set)");
+    }
+    else if (!MCTSTransitionModel.IsBound())
+    {
+        LastMCTSError = TEXT("MCTS unavailable: no transition model bound (SetMCTSTransitionModel); without one every action leads to the same state");
+    }
+    if (!LastMCTSError.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *LastMCTSError);
+        return FString();
+    }
+
     // Create root node
     FMCTSNode* Root = new FMCTSNode();
     Root->State = GameState;
@@ -985,7 +1124,12 @@ FString UGamingMasterySystem::RunMCTS(const TArray<float>& GameState, int32 Simu
     }
     
     delete Root;
-    
+
+    if (BestAction.IsEmpty())
+    {
+        LastMCTSError = TEXT("MCTS produced no action: the transition model applied none of the legal actions to this state");
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *LastMCTSError);
+    }
     return BestAction;
 }
 
@@ -1171,29 +1315,25 @@ float UGamingMasterySystem::CalculateFlowIntensity() const
 FMCTSNode* UGamingMasterySystem::ExpandMCTSNode(FMCTSNode* Parent, const TArray<float>& State)
 {
     Parent->bExpanded = true;
-    
-    // Generate possible actions (placeholder - in full implementation, this would be game-specific)
-    TArray<FString> PossibleActions;
-    PossibleActions.Add(TEXT("action_1"));
-    PossibleActions.Add(TEXT("action_2"));
-    PossibleActions.Add(TEXT("action_3"));
-    
-    for (const FString& Action : PossibleActions)
+
+    // One child per legal action the game's forward model can apply to this state
+    for (const FString& Action : MCTSLegalActions)
     {
+        TArray<float> NextState;
+        if (!MCTSTransitionModel.IsBound() || !MCTSTransitionModel.Execute(State, Action, NextState))
+        {
+            continue;
+        }
         FMCTSNode* Child = new FMCTSNode();
         Child->Parent = Parent;
         Child->Action = Action;
-        Child->State = State; // In full implementation, apply action to get new state
+        Child->State = MoveTemp(NextState);
         Parent->Children.Add(Child);
     }
-    
-    // Return random child for simulation
-    if (Parent->Children.Num() > 0)
-    {
-        return Parent->Children[FMath::RandRange(0, Parent->Children.Num() - 1)];
-    }
-    
-    return Parent;
+
+    // Evaluate the first new child now; UCB selection visits the remaining unvisited children
+    // in later iterations. A node with no applicable action is a leaf.
+    return Parent->Children.Num() > 0 ? Parent->Children[0] : Parent;
 }
 
 float UGamingMasterySystem::SimulateMCTS(const TArray<float>& State, int32 Depth)

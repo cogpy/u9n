@@ -7,6 +7,9 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Actor.h"
 #include "Math/UnrealMathUtility.h"
+#include "EchoCharacterReaction.h"
+#include "EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 // -------------------------------------------------------
 // Constructor
@@ -17,6 +20,16 @@ UMetaHumanCNSBinding::UMetaHumanCNSBinding()
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.bStartWithTickEnabled = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    // Prompt template (model input): the model chooses the reaction, the slots carry the real state
+    ReactionPromptTemplate = TEXT(
+        "You are {character}, an embodied cognitive agent with a MetaHuman face. Event: {trigger}.\n"
+        "4E state: motor readiness {motor_readiness}, enactive engagement {enactive_engagement}, "
+        "extension integration {extension_integration}, environment coupling {environment_coupling}, niche {niche}. "
+        "Relevance coherence {relevance_coherence}, gestalt coherence {gestalt_coherence}, "
+        "body schema coherence {body_schema_coherence}. Your face currently shows: {current_expression}.\n"
+        "Choose the facial expression you show now, from exactly this list: {expressions}. "
+        "Reply with JSON only: {\"expression\": \"<one name from the list>\", \"intensity\": <number 0..1>}");
 }
 
 // -------------------------------------------------------
@@ -29,7 +42,30 @@ void UMetaHumanCNSBinding::BeginPlay()
     FindAndCacheComponents();
     InitialiseDefaultBones();
     InitialiseFACSUnits();
+    InitialiseExpressionPADMap();
+
+    // The displayed expression is chosen by the character model only
+    TWeakObjectPtr<UMetaHumanCNSBinding> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UMetaHumanCNSBinding* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
+
     bInitialised = true;
+}
+
+void UMetaHumanCNSBinding::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 // -------------------------------------------------------
@@ -62,18 +98,8 @@ void UMetaHumanCNSBinding::TickComponent(float DeltaTime,
         if (ExpressionHz > 0.0f && ExpressionTimer >= 1.0f / ExpressionHz)
         {
             ExpressionTimer = 0.0f;
-            SampleCognitiveExpression();
-            WriteExpressions(DeltaTime);
-        }
-    }
-
-    // ── Emotion override countdown ────────────────────────
-    if (EmotionOverrideTimer > 0.0f)
-    {
-        EmotionOverrideTimer -= DeltaTime;
-        if (EmotionOverrideTimer <= 0.0f)
-        {
-            EmotionOverrideTimer = 0.0f;
+            SampleCognitiveExpression();   // telemetry + shift detection (never sets PAD)
+            WriteExpressions(DeltaTime);   // renders the last model reaction
         }
     }
 }
@@ -132,14 +158,191 @@ float UMetaHumanCNSBinding::GetAUActivation(int32 AUNumber) const
     return Val ? *Val : 0.0f;
 }
 
-void UMetaHumanCNSBinding::TriggerEmotion(float Valence, float Arousal,
-                                           float Dominance, float Duration)
+// -------------------------------------------------------
+// Model reactions
+// -------------------------------------------------------
+
+void UMetaHumanCNSBinding::InitialiseExpressionPADMap()
 {
-    EmotionOverride.Valence   = Valence;
-    EmotionOverride.Arousal   = Arousal;
-    EmotionOverride.Dominance = Dominance;
-    EmotionOverrideTimer = FMath::Max(0.0f, Duration);
-    SetExpressionState(EmotionOverride);
+    if (ExpressionPADMap.Num() > 0) { return; } // configured in the editor
+
+    // Renderer map (PAD per expression name); the model picks the name
+    ExpressionPADMap.Add(TEXT("Neutral"),       FVector( 0.0f,  0.0f,  0.0f));
+    ExpressionPADMap.Add(TEXT("Joy"),           FVector( 0.8f,  0.4f,  0.3f));
+    ExpressionPADMap.Add(TEXT("Serenity"),      FVector( 0.5f, -0.4f,  0.2f));
+    ExpressionPADMap.Add(TEXT("Curiosity"),     FVector( 0.4f,  0.4f,  0.2f));
+    ExpressionPADMap.Add(TEXT("Wonder"),        FVector( 0.5f,  0.7f,  0.0f));
+    ExpressionPADMap.Add(TEXT("Surprise"),      FVector( 0.1f,  0.9f,  0.0f));
+    ExpressionPADMap.Add(TEXT("Contemplation"), FVector( 0.1f, -0.3f,  0.1f));
+    ExpressionPADMap.Add(TEXT("Focused"),       FVector( 0.1f,  0.2f,  0.4f));
+    ExpressionPADMap.Add(TEXT("Determination"), FVector( 0.2f,  0.5f,  0.7f));
+    ExpressionPADMap.Add(TEXT("Concern"),       FVector(-0.4f,  0.4f, -0.2f));
+    ExpressionPADMap.Add(TEXT("Sadness"),       FVector(-0.7f, -0.4f, -0.4f));
+    ExpressionPADMap.Add(TEXT("Fear"),          FVector(-0.7f,  0.8f, -0.6f));
+    ExpressionPADMap.Add(TEXT("Anger"),         FVector(-0.6f,  0.7f,  0.7f));
+}
+
+const FVector* UMetaHumanCNSBinding::FindPADForExpression(const FString& Name, FString& OutKey) const
+{
+    const FString Trimmed = Name.TrimStartAndEnd();
+    for (const auto& Pair : ExpressionPADMap)
+    {
+        if (Pair.Key.Equals(Trimmed, ESearchCase::IgnoreCase))
+        {
+            OutKey = Pair.Key;
+            return &Pair.Value;
+        }
+    }
+    return nullptr;
+}
+
+FVector4 UMetaHumanCNSBinding::GetCognitiveVector() const
+{
+    if (!DTECore) { return FVector4(0.5f, 0.5f, 0.5f, 1.0f); }
+    const F4ECognitionState& Cog4E = DTECore->CognitionState4E;
+    return FVector4(Cog4E.MotorReadiness, Cog4E.EnactiveEngagement, Cog4E.ExtensionIntegration,
+                    DTECore->RelevanceState.RelevanceCoherence);
+}
+
+FString UMetaHumanCNSBinding::GetReactionCharacterNameResolved() const
+{
+    if (!ReactionCharacterName.IsEmpty())
+    {
+        return ReactionCharacterName;
+    }
+    return GetOwner() ? GetOwner()->GetName() : FString(TEXT("Deep Tree Echo"));
+}
+
+FString UMetaHumanCNSBinding::BuildReactionPrompt(const FString& Trigger) const
+{
+    auto Num = [](double Value) { return FString::Printf(TEXT("%.2f"), Value); };
+
+    TArray<FString> Expressions;
+    ExpressionPADMap.GetKeys(Expressions);
+
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), GetReactionCharacterNameResolved());
+    Slots.Add(TEXT("trigger"), Trigger);
+    Slots.Add(TEXT("body_schema_coherence"), Num(BindingTelemetry.BodySchemaCoherence));
+    Slots.Add(TEXT("current_expression"), CurrentReactionExpression.IsEmpty()
+        ? FString(TEXT("a resting face"))
+        : FString::Printf(TEXT("%s at intensity %.2f"), *CurrentReactionExpression, CurrentReactionIntensity));
+    Slots.Add(TEXT("expressions"), FString::Join(Expressions, TEXT(", ")));
+
+    if (DTECore)
+    {
+        const F4ECognitionState& Cog4E = DTECore->CognitionState4E;
+        Slots.Add(TEXT("motor_readiness"), Num(Cog4E.MotorReadiness));
+        Slots.Add(TEXT("enactive_engagement"), Num(Cog4E.EnactiveEngagement));
+        Slots.Add(TEXT("extension_integration"), Num(Cog4E.ExtensionIntegration));
+        Slots.Add(TEXT("environment_coupling"), Num(Cog4E.EnvironmentCoupling));
+        Slots.Add(TEXT("niche"), Cog4E.CurrentNiche.IsEmpty() ? FString(TEXT("(none)")) : Cog4E.CurrentNiche);
+        Slots.Add(TEXT("relevance_coherence"), Num(DTECore->RelevanceState.RelevanceCoherence));
+        Slots.Add(TEXT("gestalt_coherence"), Num(DTECore->GetGestaltCoherence()));
+    }
+    else
+    {
+        for (const TCHAR* Key : { TEXT("motor_readiness"), TEXT("enactive_engagement"), TEXT("extension_integration"),
+                                  TEXT("environment_coupling"), TEXT("niche"), TEXT("relevance_coherence"),
+                                  TEXT("gestalt_coherence") })
+        {
+            Slots.Add(Key, TEXT("(unknown)"));
+        }
+    }
+
+    return UEchoModelClient::FillPrompt(ReactionPromptTemplate, Slots);
+}
+
+bool UMetaHumanCNSBinding::RequestModelReaction(const FString& Trigger)
+{
+    if (bReactionRequestPending) { return false; }
+
+    bReactionRequestPending = true;
+    LastReactionRequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    CognitiveBaseline = GetCognitiveVector();
+    bHasCognitiveBaseline = true;
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), BuildReactionPrompt(Trigger)));
+
+    TWeakObjectPtr<UMetaHumanCNSBinding> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis](bool bSuccess, const FString& TextOrError)
+        {
+            if (UMetaHumanCNSBinding* Self = WeakThis.Get())
+            {
+                Self->HandleModelReactionReply(bSuccess, TextOrError);
+            }
+        }), 0.7f);
+    return true;
+}
+
+void UMetaHumanCNSBinding::HandleModelReactionReply(bool bSuccess, const FString& TextOrError)
+{
+    bReactionRequestPending = false;
+
+    // On any failure the face stays as it is; the error is a system event only
+    if (!bSuccess)
+    {
+        LastReactionError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("MetaHumanCNSBinding: no model reaction: %s"), *TextOrError);
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Json;
+    FString Expression;
+    double Intensity = 0.0;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) ||
+        !Json->TryGetStringField(TEXT("expression"), Expression) ||
+        !Json->TryGetNumberField(TEXT("intensity"), Intensity))
+    {
+        LastReactionError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(200));
+        UE_LOG(LogTemp, Error, TEXT("MetaHumanCNSBinding: %s"), *LastReactionError);
+        return;
+    }
+
+    FString Key;
+    if (!FindPADForExpression(Expression, Key))
+    {
+        LastReactionError = FString::Printf(TEXT("model chose an expression outside the offered list: %s"), *Expression);
+        UE_LOG(LogTemp, Error, TEXT("MetaHumanCNSBinding: %s"), *LastReactionError);
+        return;
+    }
+
+    LastReactionError.Reset();
+
+    // Publish the model's reaction; every subscriber (including this component) renders it
+    FEchoCharacterReaction Reaction;
+    Reaction.CharacterName = GetReactionCharacterNameResolved();
+    Reaction.Expression = Key;
+    Reaction.Intensity = FMath::Clamp(static_cast<float>(Intensity), 0.0f, 1.0f);
+    FEchoReactionBus::OnReaction().Broadcast(Reaction);
+}
+
+void UMetaHumanCNSBinding::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    InitialiseExpressionPADMap(); // no-op once populated
+
+    // Empty or unmapped expression names leave the face unchanged
+    FString Key;
+    const FVector* PAD = FindPADForExpression(Reaction.Expression, Key);
+    if (!PAD) { return; }
+
+    const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+    CurrentReactionExpression = Key;
+    CurrentReactionIntensity = Intensity;
+
+    FCognitiveExpressionState NewState = ExpressionState; // keep recorded telemetry
+    NewState.Valence   = FMath::Clamp(static_cast<float>(PAD->X) * Intensity, -1.0f, 1.0f);
+    NewState.Arousal   = FMath::Clamp(static_cast<float>(PAD->Y) * Intensity, -1.0f, 1.0f);
+    NewState.Dominance = FMath::Clamp(static_cast<float>(PAD->Z) * Intensity, -1.0f, 1.0f);
+    SetExpressionState(NewState);
 }
 
 // -------------------------------------------------------
@@ -321,7 +524,7 @@ void UMetaHumanCNSBinding::ReadBodySchema(float DeltaTime)
             FKinematicJoint& Joint = KinematicChain[i];
             const FName BoneFName(*TrackedBones[i]);
 
-            if (!SkeletalMesh->DoesBoneExist(BoneFName)) { continue; }
+            if (SkeletalMesh->GetBoneIndex(BoneFName) == INDEX_NONE) { continue; }
 
             const FTransform BoneWorld =
                 SkeletalMesh->GetSocketTransform(BoneFName, RTS_World);
@@ -366,14 +569,10 @@ void UMetaHumanCNSBinding::WriteExpressions(float DeltaTime)
 {
     if (!SkeletalMesh) { return; }
 
+    // Render the PAD of the last model reaction
     MapPADToFACS(ExpressionState);
-
-    if (bEnableMicroExpressions)
-    {
-        ApplyMicroExpression(ExpressionState.CognitiveLoad, DeltaTime);
-    }
-
     ApplyFACSToBlendShapes();
+    (void)DeltaTime; // blend shapes interpolate with the world delta in ApplyFACSToBlendShapes
 
     BindingTelemetry.ExpressionHz = ExpressionHz;
     BindingTelemetry.ActiveAUs    = 0;
@@ -399,7 +598,7 @@ FProprioceptiveSnapshot UMetaHumanCNSBinding::BuildProprioceptiveSnapshot() cons
         Snap.WorldLocation = Owner->GetActorLocation();
         Snap.WorldRotation = Owner->GetActorRotation();
 
-        if (const UPrimitiveComponent* Prim =
+        if (UPrimitiveComponent* Prim =
                 Cast<UPrimitiveComponent>(Owner->GetRootComponent()))
         {
             Snap.Velocity = Prim->GetPhysicsLinearVelocity();
@@ -462,15 +661,13 @@ void UMetaHumanCNSBinding::MapPADToFACS(const FCognitiveExpressionState& State)
     // Sadness: negative valence, low arousal
     const float SadIntensity = FMath::Clamp(
         (-State.Valence) * (1.0f - State.Arousal) * 0.8f, 0.0f, 1.0f);
-    // Concentration (cognitive load)
-    const float ConcentrationIntensity = State.CognitiveLoad;
 
     // Set AUs from emotional intensities
     // AU 1+2 = surprise brow raise
     SetAUActivation(1, FMath::Max(SurpriseIntensity, FearIntensity * 0.7f));
     SetAUActivation(2, SurpriseIntensity);
-    // AU 4 = brow lowerer (anger, concentration)
-    SetAUActivation(4, FMath::Max(AngerIntensity, ConcentrationIntensity * 0.5f));
+    // AU 4 = brow lowerer (anger)
+    SetAUActivation(4, AngerIntensity);
     // AU 6 = cheek raise (happiness)
     SetAUActivation(6, HappyIntensity * 0.8f);
     // AU 7 = lid tightener (anger)
@@ -479,8 +676,8 @@ void UMetaHumanCNSBinding::MapPADToFACS(const FCognitiveExpressionState& State)
     SetAUActivation(12, HappyIntensity);
     // AU 15 = lip corner depress (sadness)
     SetAUActivation(15, SadIntensity);
-    // AU 17 = chin raise (contempt / concentration)
-    SetAUActivation(17, ConcentrationIntensity * 0.4f);
+    // AU 17 = chin raise (sadness / contempt)
+    SetAUActivation(17, SadIntensity * 0.4f);
     // AU 20 = lip stretch (fear)
     SetAUActivation(20, FearIntensity * 0.8f);
     // AU 23 = lip tightener (anger)
@@ -524,28 +721,6 @@ void UMetaHumanCNSBinding::ApplyFACSToBlendShapes()
 }
 
 // -------------------------------------------------------
-// PRIVATE — ApplyMicroExpression
-// -------------------------------------------------------
-
-void UMetaHumanCNSBinding::ApplyMicroExpression(float CognitiveLoad,
-                                                  float DeltaTime)
-{
-    // At high cognitive load, add subtle brow tension and lid tightening
-    const float LoadThreshold = 0.7f;
-    if (CognitiveLoad < LoadThreshold) { return; }
-
-    const float Intensity = (CognitiveLoad - LoadThreshold) / (1.0f - LoadThreshold);
-    const float Noise = FMath::Sin(GetWorld() ? GetWorld()->GetTimeSeconds() * 3.7f : 0.0f)
-                        * 0.05f * Intensity;
-
-    // Add subtle brow knit and lid squint as cognitive load spikes
-    SetAUActivation(4, FMath::Min(1.0f, GetAUActivation(4) + Intensity * 0.3f + Noise));
-    SetAUActivation(7, FMath::Min(1.0f, GetAUActivation(7) + Intensity * 0.2f + Noise));
-
-    (void)DeltaTime;
-}
-
-// -------------------------------------------------------
 // PRIVATE — SampleCognitiveExpression
 // -------------------------------------------------------
 
@@ -553,30 +728,37 @@ void UMetaHumanCNSBinding::SampleCognitiveExpression()
 {
     if (!DTECore) { return; }
 
-    // Skip if emotion override is active
-    if (EmotionOverrideTimer > 0.0f) { return; }
+    // Telemetry only: cognitive load and flow are recorded, they do not set valence/arousal/dominance
+    ExpressionState.CognitiveLoad = FMath::Clamp(1.0f - DTECore->RelevanceState.RelevanceCoherence, 0.0f, 1.0f);
+    ExpressionState.FlowIndex = FMath::Clamp(DTECore->GetGestaltCoherence(), 0.0f, 1.0f);
 
-    // Read somatic markers from 4E cognition state for valence/arousal
-    const F4ECognitionState& Cog4E = DTECore->CognitionState4E;
+    // A large shift in the 4E / coherence state is a cognition event: ask the model how the character reacts
+    const FVector4 Current = GetCognitiveVector();
+    if (!bHasCognitiveBaseline)
+    {
+        CognitiveBaseline = Current;
+        bHasCognitiveBaseline = true;
+        return;
+    }
 
-    // Map motor readiness to arousal
-    ExpressionState.Arousal = (Cog4E.MotorReadiness - 0.5f) * 2.0f;
+    if (!bRequestReactionOnCognitiveShift || bReactionRequestPending) { return; }
 
-    // Map enactive engagement to valence (proxy)
-    ExpressionState.Valence = (Cog4E.EnactiveEngagement - 0.5f) * 2.0f;
+    const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+    if (Now - LastReactionRequestTime < MinSecondsBetweenReactionRequests) { return; }
 
-    // Map extension integration to dominance
-    ExpressionState.Dominance = (Cog4E.ExtensionIntegration - 0.5f) * 2.0f;
+    static const TCHAR* DimensionNames[4] = {
+        TEXT("motor readiness"), TEXT("enactive engagement"), TEXT("extension integration"), TEXT("relevance coherence") };
+    int32 Largest = 0;
+    double LargestDelta = 0.0;
+    for (int32 i = 0; i < 4; ++i)
+    {
+        const double Delta = FMath::Abs(Current[i] - CognitiveBaseline[i]);
+        if (Delta > LargestDelta) { LargestDelta = Delta; Largest = i; }
+    }
 
-    // Cognitive load from relevance coherence (high coherence = focused)
-    ExpressionState.CognitiveLoad =
-        1.0f - DTECore->RelevanceState.RelevanceCoherence;
-
-    // Flow index from gestalt coherence
-    ExpressionState.FlowIndex = DTECore->GetGestaltCoherence();
-
-    // Clamp all values
-    ExpressionState.Valence   = FMath::Clamp(ExpressionState.Valence,   -1.0f, 1.0f);
-    ExpressionState.Arousal   = FMath::Clamp(ExpressionState.Arousal,   -1.0f, 1.0f);
-    ExpressionState.Dominance = FMath::Clamp(ExpressionState.Dominance, -1.0f, 1.0f);
+    if (LargestDelta >= CognitiveShiftThreshold)
+    {
+        RequestModelReaction(FString::Printf(TEXT("your %s shifted from %.2f to %.2f"),
+            DimensionNames[Largest], CognitiveBaseline[Largest], Current[Largest]));
+    }
 }

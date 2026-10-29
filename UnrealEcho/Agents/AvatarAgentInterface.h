@@ -422,9 +422,15 @@ public:
 
     // ===== Emotional Expression =====
 
+    /** Feed an emotional context into the neurochemical simulation (does not display anything) */
     UFUNCTION(BlueprintCallable, Category = "Agent|Emotion")
     void ExpressEmotionalState(const FEmotionalContext& Context);
 
+    /**
+     * Current emotional context. Valence/arousal come from the neurochemical simulation;
+     * PrimaryEmotion and Intensity are the last expression the character model chose
+     * (FEchoReactionBus), or "neutral"/0 when the model has not chosen one.
+     */
     UFUNCTION(BlueprintCallable, Category = "Agent|Emotion")
     FEmotionalContext GetCurrentEmotionalContext();
 
@@ -492,17 +498,6 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Agent|9P")
     FString GetNamespacePath() const { return NamespacePath; }
-
-    // ===== Avatar-Specific Capabilities =====
-
-    UFUNCTION(BlueprintCallable, Category = "Agent|Avatar")
-    void VisualizeAgentInteraction(const FString& OtherAgentId);
-
-    UFUNCTION(BlueprintCallable, Category = "Agent|Avatar")
-    void AnimateForTask(const FAgentTask& Task);
-
-    UFUNCTION(BlueprintCallable, Category = "Agent|Avatar")
-    void DisplayEmotionalResponse(const FEmotionalContext& Context);
 
     // ===== Events =====
 
@@ -603,6 +598,17 @@ private:
 
     UPROPERTY(EditAnywhere, Category = "Agent|Configuration")
     bool bVerboseLogging;
+
+    // ===== Model Reactions =====
+
+    /** Last expression chosen by the character model (empty until the model chooses one) */
+    FString LastReactionExpression;
+
+    /** Intensity of the last model-chosen expression */
+    float LastReactionIntensity = 0.0f;
+
+    /** Subscription to FEchoReactionBus */
+    FDelegateHandle ReactionHandle;
 
     // ===== Timers =====
 

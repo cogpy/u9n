@@ -14,7 +14,7 @@
  * 6 edges connecting 4 vertices (threads)
  */
 UENUM(BlueprintType)
-enum class EDyadicEdge : uint8
+enum class ETensionalDyadicEdge : uint8
 {
     Edge_12  UMETA(DisplayName = "Edge 1-2 (Perception-Memory)"),
     Edge_13  UMETA(DisplayName = "Edge 1-3 (Perception-Assessment)"),
@@ -29,7 +29,7 @@ enum class EDyadicEdge : uint8
  * 4 faces, each containing 3 vertices (threads)
  */
 UENUM(BlueprintType)
-enum class ETriadicFace : uint8
+enum class ETensionalTriadicFace : uint8
 {
     Face_123  UMETA(DisplayName = "Face 1-2-3 (Perception-Memory-Assessment)"),
     Face_124  UMETA(DisplayName = "Face 1-2-4 (Perception-Memory-Planning)"),
@@ -65,13 +65,13 @@ enum class ECouplingResonanceMode : uint8
  * Dyadic edge state
  */
 USTRUCT(BlueprintType)
-struct FDyadicEdgeState
+struct FTensionalDyadicEdgeState
 {
     GENERATED_BODY()
 
     /** Edge type */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EDyadicEdge EdgeType = EDyadicEdge::Edge_12;
+    ETensionalDyadicEdge EdgeType = ETensionalDyadicEdge::Edge_12;
 
     /** First vertex */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -106,13 +106,13 @@ struct FDyadicEdgeState
  * Triadic face state
  */
 USTRUCT(BlueprintType)
-struct FTriadicFaceState
+struct FTensionalTriadicFaceState
 {
     GENERATED_BODY()
 
     /** Face type */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ETriadicFace FaceType = ETriadicFace::Face_123;
+    ETensionalTriadicFace FaceType = ETensionalTriadicFace::Face_123;
 
     /** Vertices in this face */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -120,7 +120,7 @@ struct FTriadicFaceState
 
     /** Edges in this face */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<EDyadicEdge> Edges;
+    TArray<ETensionalDyadicEdge> Edges;
 
     /** Face orientation (0-2*PI) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -140,7 +140,7 @@ struct FTriadicFaceState
 
     /** Adjacent faces */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<ETriadicFace> AdjacentFaces;
+    TArray<ETensionalTriadicFace> AdjacentFaces;
 };
 
 /**
@@ -165,11 +165,11 @@ struct FThreadVertexState
 
     /** Connected edges */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<EDyadicEdge> ConnectedEdges;
+    TArray<ETensionalDyadicEdge> ConnectedEdges;
 
     /** Containing faces */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<ETriadicFace> ContainingFaces;
+    TArray<ETensionalTriadicFace> ContainingFaces;
 
     /** Thread processing load */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -186,11 +186,11 @@ struct FCouplingEntanglement
 
     /** First edge in entanglement */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EDyadicEdge EdgeA = EDyadicEdge::Edge_12;
+    ETensionalDyadicEdge EdgeA = ETensionalDyadicEdge::Edge_12;
 
     /** Second edge in entanglement */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EDyadicEdge EdgeB = EDyadicEdge::Edge_34;
+    ETensionalDyadicEdge EdgeB = ETensionalDyadicEdge::Edge_34;
 
     /** Entanglement strength */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -252,11 +252,11 @@ struct FTetrahedralCouplingState
 
     /** Edge states (6) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FDyadicEdgeState> EdgeStates;
+    TArray<FTensionalDyadicEdgeState> EdgeStates;
 
     /** Face states (4) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FTriadicFaceState> FaceStates;
+    TArray<FTensionalTriadicFaceState> FaceStates;
 
     /** Active entanglements */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -278,11 +278,11 @@ struct FTetrahedralCouplingState
 /**
  * Delegate declarations
  */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEdgeTensionChanged, EDyadicEdge, Edge, float, NewTension);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFaceActivated, ETriadicFace, Face, float, Activation);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnEntanglementFormed, EDyadicEdge, EdgeA, EDyadicEdge, EdgeB, float, Strength);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEdgeTensionChanged, ETensionalDyadicEdge, Edge, float, NewTension);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFaceActivated, ETensionalTriadicFace, Face, float, Activation);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnEntanglementFormed, ETensionalDyadicEdge, EdgeA, ETensionalDyadicEdge, EdgeB, float, Strength);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMultiplexAdvanced, int32, NewPermutationIndex);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnResonanceModeChanged, EDyadicEdge, Edge, ECouplingResonanceMode, NewMode);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnResonanceModeChanged, ETensionalDyadicEdge, Edge, ECouplingResonanceMode, NewMode);
 
 /**
  * Tensional Coupling Dynamics Component
@@ -385,23 +385,23 @@ public:
 
     /** Set edge tension */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Edges")
-    void SetEdgeTension(EDyadicEdge Edge, float Tension);
+    void SetEdgeTension(ETensionalDyadicEdge Edge, float Tension);
 
     /** Set edge flow direction */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Edges")
-    void SetEdgeFlow(EDyadicEdge Edge, float FlowDirection);
+    void SetEdgeFlow(ETensionalDyadicEdge Edge, float FlowDirection);
 
     /** Get edge state */
     UFUNCTION(BlueprintPure, Category = "Coupling|Edges")
-    FDyadicEdgeState GetEdgeState(EDyadicEdge Edge) const;
+    FTensionalDyadicEdgeState GetEdgeState(ETensionalDyadicEdge Edge) const;
 
     /** Propagate tension along edge */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Edges")
-    void PropagateTension(EDyadicEdge Edge);
+    void PropagateTension(ETensionalDyadicEdge Edge);
 
     /** Set edge resonance mode */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Edges")
-    void SetEdgeResonanceMode(EDyadicEdge Edge, ECouplingResonanceMode Mode);
+    void SetEdgeResonanceMode(ETensionalDyadicEdge Edge, ECouplingResonanceMode Mode);
 
     // ========================================
     // PUBLIC API - FACE OPERATIONS
@@ -409,19 +409,19 @@ public:
 
     /** Activate triadic face */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Faces")
-    void ActivateFace(ETriadicFace Face, float Activation);
+    void ActivateFace(ETensionalTriadicFace Face, float Activation);
 
     /** Get face state */
     UFUNCTION(BlueprintPure, Category = "Coupling|Faces")
-    FTriadicFaceState GetFaceState(ETriadicFace Face) const;
+    FTensionalTriadicFaceState GetFaceState(ETensionalTriadicFace Face) const;
 
     /** Compute face coherence from edges */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Faces")
-    float ComputeFaceCoherence(ETriadicFace Face);
+    float ComputeFaceCoherence(ETensionalTriadicFace Face);
 
     /** Synchronize adjacent faces */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Faces")
-    void SynchronizeAdjacentFaces(ETriadicFace Face);
+    void SynchronizeAdjacentFaces(ETensionalTriadicFace Face);
 
     // ========================================
     // PUBLIC API - VERTEX OPERATIONS
@@ -445,19 +445,19 @@ public:
 
     /** Create entanglement between edges */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Entanglement")
-    void CreateEntanglement(EDyadicEdge EdgeA, EDyadicEdge EdgeB);
+    void CreateEntanglement(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB);
 
     /** Break entanglement */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Entanglement")
-    void BreakEntanglement(EDyadicEdge EdgeA, EDyadicEdge EdgeB);
+    void BreakEntanglement(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB);
 
     /** Check if edges are entangled */
     UFUNCTION(BlueprintPure, Category = "Coupling|Entanglement")
-    bool AreEdgesEntangled(EDyadicEdge EdgeA, EDyadicEdge EdgeB) const;
+    bool AreEdgesEntangled(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB) const;
 
     /** Get entanglement state */
     UFUNCTION(BlueprintPure, Category = "Coupling|Entanglement")
-    FCouplingEntanglement GetEntanglementState(EDyadicEdge EdgeA, EDyadicEdge EdgeB) const;
+    FCouplingEntanglement GetEntanglementState(ETensionalDyadicEdge EdgeA, ETensionalDyadicEdge EdgeB) const;
 
     /** Detect potential entanglements */
     UFUNCTION(BlueprintCallable, Category = "Coupling|Entanglement")
@@ -517,7 +517,7 @@ public:
 
     /** Map tensional coupling to edge */
     UFUNCTION(BlueprintPure, Category = "Coupling|Integration")
-    EDyadicEdge MapCouplingToEdge(const FTensionalCoupling& Coupling) const;
+    ETensionalDyadicEdge MapCouplingToEdge(const FTensionalCoupling& Coupling) const;
 
 protected:
     /** Current tetrahedral state */
@@ -540,11 +540,11 @@ protected:
     void ComputeTensionBalance();
     void PropagateAllTensions();
     void UpdateEntanglements(float DeltaTime);
-    int32 GetEdgeIndex(EDyadicEdge Edge) const;
-    int32 GetFaceIndex(ETriadicFace Face) const;
+    int32 GetEdgeIndex(ETensionalDyadicEdge Edge) const;
+    int32 GetFaceIndex(ETensionalTriadicFace Face) const;
     int32 GetVertexIndex(EThreadVertex Vertex) const;
-    TArray<EDyadicEdge> GetEdgesForFace(ETriadicFace Face) const;
-    TArray<ETriadicFace> GetFacesForEdge(EDyadicEdge Edge) const;
-    TArray<EThreadVertex> GetVerticesForEdge(EDyadicEdge Edge) const;
-    TArray<EDyadicEdge> GetEdgesForVertex(EThreadVertex Vertex) const;
+    TArray<ETensionalDyadicEdge> GetEdgesForFace(ETensionalTriadicFace Face) const;
+    TArray<ETensionalTriadicFace> GetFacesForEdge(ETensionalDyadicEdge Edge) const;
+    TArray<EThreadVertex> GetVerticesForEdge(ETensionalDyadicEdge Edge) const;
+    TArray<ETensionalDyadicEdge> GetEdgesForVertex(EThreadVertex Vertex) const;
 };

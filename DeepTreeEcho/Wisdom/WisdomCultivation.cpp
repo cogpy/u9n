@@ -131,7 +131,7 @@ void UWisdomCultivation::InitializeKnowingStates()
 
     for (int32 i = 0; i < 4; ++i)
     {
-        FKnowingState Knowing;
+        FWisdomKnowingState Knowing;
         Knowing.Type = static_cast<EKnowingType>(i);
         Knowing.Strength = 0.5f;
         Knowing.Integration = 0.5f;
@@ -244,7 +244,7 @@ FSalienceLandscape UWisdomCultivation::GetSalienceLandscape() const
 
 void UWisdomCultivation::AddAffordance(const FString& Id, const FString& Action, float Availability, float ExpectedUtility)
 {
-    FAffordance Affordance;
+    FWisdomAffordance Affordance;
     Affordance.Id = Id;
     Affordance.Action = Action;
     Affordance.Availability = FMath::Clamp(Availability, 0.0f, 1.0f);
@@ -258,7 +258,7 @@ void UWisdomCultivation::AddAffordance(const FString& Id, const FString& Action,
 
 void UWisdomCultivation::UpdateAffordanceAvailability(const FString& Id, float Availability)
 {
-    for (FAffordance& Affordance : CurrentState.AffordanceLandscape.Affordances)
+    for (FWisdomAffordance& Affordance : CurrentState.AffordanceLandscape.Affordances)
     {
         if (Affordance.Id == Id)
         {
@@ -268,12 +268,12 @@ void UWisdomCultivation::UpdateAffordanceAvailability(const FString& Id, float A
     }
 }
 
-FAffordance UWisdomCultivation::GetBestAffordance() const
+FWisdomAffordance UWisdomCultivation::GetBestAffordance() const
 {
-    FAffordance Best;
+    FWisdomAffordance Best;
     float MaxScore = -1.0f;
 
-    for (const FAffordance& Affordance : CurrentState.AffordanceLandscape.Affordances)
+    for (const FWisdomAffordance& Affordance : CurrentState.AffordanceLandscape.Affordances)
     {
         // Score = utility * availability * contextual fit - risk
         float Score = Affordance.ExpectedUtility * Affordance.Availability * 
@@ -347,14 +347,14 @@ float UWisdomCultivation::GetExplorationExploitationBalance() const
 // KNOWING
 // ========================================
 
-FKnowingState UWisdomCultivation::GetKnowingState(EKnowingType Type) const
+FWisdomKnowingState UWisdomCultivation::GetKnowingState(EKnowingType Type) const
 {
     int32 Index = static_cast<int32>(Type);
     if (CurrentState.KnowingStates.IsValidIndex(Index))
     {
         return CurrentState.KnowingStates[Index];
     }
-    return FKnowingState();
+    return FWisdomKnowingState();
 }
 
 void UWisdomCultivation::UpdateKnowingStrength(EKnowingType Type, float Strength)
@@ -370,14 +370,14 @@ void UWisdomCultivation::IntegrateKnowing()
 {
     // Calculate average strength
     float TotalStrength = 0.0f;
-    for (const FKnowingState& Knowing : CurrentState.KnowingStates)
+    for (const FWisdomKnowingState& Knowing : CurrentState.KnowingStates)
     {
         TotalStrength += Knowing.Strength;
     }
     float AverageStrength = TotalStrength / FMath::Max(1, CurrentState.KnowingStates.Num());
 
     // Update integration based on how balanced the knowing types are
-    for (FKnowingState& Knowing : CurrentState.KnowingStates)
+    for (FWisdomKnowingState& Knowing : CurrentState.KnowingStates)
     {
         float Deviation = FMath::Abs(Knowing.Strength - AverageStrength);
         Knowing.Integration = 1.0f - Deviation;
@@ -494,7 +494,7 @@ void UWisdomCultivation::RealizeRelevance()
          CurrentState.RelevanceRealization.Efficiency) * 0.5f;
 }
 
-FRelevanceRealizationState UWisdomCultivation::GetRelevanceRealizationState() const
+FWisdomRelevanceState UWisdomCultivation::GetRelevanceRealizationState() const
 {
     return CurrentState.RelevanceRealization;
 }
@@ -542,7 +542,7 @@ void UWisdomCultivation::ProcessAffordanceLandscape(float DeltaTime)
         FMath::Min(1.0f, CurrentState.AffordanceLandscape.Affordances.Num() / 10.0f);
 
     // Update action readiness based on best affordance
-    FAffordance Best = GetBestAffordance();
+    FWisdomAffordance Best = GetBestAffordance();
     CurrentState.AffordanceLandscape.ActionReadiness = Best.Availability * Best.ContextualFit;
 }
 
@@ -593,7 +593,7 @@ void UWisdomCultivation::CalculateOverallWisdom()
 
     // Factor in knowing integration
     float KnowingIntegration = 0.0f;
-    for (const FKnowingState& Knowing : CurrentState.KnowingStates)
+    for (const FWisdomKnowingState& Knowing : CurrentState.KnowingStates)
     {
         KnowingIntegration += Knowing.Integration;
     }

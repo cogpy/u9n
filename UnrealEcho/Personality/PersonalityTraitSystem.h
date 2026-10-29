@@ -152,7 +152,11 @@ struct FHyperChaoticTrait
 
 /**
  * Personality Trait System Component
- * Manages all personality traits and their interactions
+ * Manages all personality traits and their interactions.
+ *
+ * Traits are persona data (input to the character model). This component never
+ * triggers expressions, gestures or emotional events on its own; the character's
+ * visible reactions come only from model replies on FEchoReactionBus.
  */
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class UNREALENGINE_API UPersonalityTraitSystem : public UActorComponent
@@ -194,15 +198,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Personality|SuperHotGirl")
     void SetSuperHotGirlParameters(float Confidence, float Charm, float Playfulness);
 
-    UFUNCTION(BlueprintCallable, Category = "Personality|SuperHotGirl")
-    void TriggerFlirtyBehavior(float Intensity);
-
-    UFUNCTION(BlueprintCallable, Category = "Personality|SuperHotGirl")
-    void TriggerConfidentGesture();
-
-    UFUNCTION(BlueprintCallable, Category = "Personality|SuperHotGirl")
-    void TriggerPlayfulExpression();
-
     // ===== Hyper Chaotic Trait =====
 
     UFUNCTION(BlueprintCallable, Category = "Personality|HyperChaotic")
@@ -213,15 +208,6 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Personality|HyperChaotic")
     void SetHyperChaoticParameters(float Unpredictability, float Volatility, float Impulsivity);
-
-    UFUNCTION(BlueprintCallable, Category = "Personality|HyperChaotic")
-    void TriggerChaoticEvent();
-
-    UFUNCTION(BlueprintCallable, Category = "Personality|HyperChaotic")
-    void TriggerEmotionalSpike(float Intensity);
-
-    UFUNCTION(BlueprintCallable, Category = "Personality|HyperChaotic")
-    void TriggerPatternBreak();
 
     // ===== Trait Interactions =====
 
@@ -248,11 +234,7 @@ public:
 protected:
     // ===== Internal Methods =====
 
-    void UpdateTraitDevelopment(float DeltaTime);
     void ProcessTraitInteractions(float DeltaTime);
-    void ApplyTraitToAvatar();
-    void UpdateChaoticBehavior(float DeltaTime);
-    void UpdateSuperHotGirlBehavior(float DeltaTime);
 
 private:
     // ===== Core Traits =====
@@ -266,13 +248,6 @@ private:
     UPROPERTY(EditAnywhere, Category = "Personality")
     FHyperChaoticTrait HyperChaoticTrait;
 
-    // ===== Timers and State =====
-
-    float ChaoticEventTimer;
-    float NextChaoticEventTime;
-    float FlirtyBehaviorTimer;
-    float ConfidentGestureTimer;
-
     // ===== Configuration =====
 
     UPROPERTY(EditAnywhere, Category = "Personality")
@@ -280,7 +255,4 @@ private:
 
     UPROPERTY(EditAnywhere, Category = "Personality")
     float TraitInteractionStrength;
-
-    UPROPERTY(EditAnywhere, Category = "Personality")
-    bool bEnableAutonomousBehavior;
 };

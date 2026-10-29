@@ -5,11 +5,25 @@
 #include "../Core/DeepTreeEchoCore.h"
 #include "../Reservoir/DeepTreeEchoReservoir.h"
 #include "../Avatar/AvatarEvolutionSystem.h"
+#include "../Model/EchoModelClient.h"
+#include "Dom/JsonObject.h"
 
 UDeepTreeEchoUnrealIntegration::UDeepTreeEchoUnrealIntegration()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    // Insight prompt templates (the two insight forms the bridge used to word itself)
+    InsightPromptTemplates.Add(TEXT("entity_pattern"),
+        TEXT("These {entry_count} diary entries share a {valence} emotional valence, and {entities} recur in at least half of them ")
+        TEXT("(pattern confidence {confidence}).\nEntries:\n{entries}\n")
+        TEXT("Write one short first-person insight (one or two sentences) about what connects you to {entities} in these moments. ")
+        TEXT("Reply with the insight text only."));
+    InsightPromptTemplates.Add(TEXT("emotional_pattern"),
+        TEXT("These {entry_count} diary entries share a {valence} emotional valence, with no single recurring subject ")
+        TEXT("(pattern confidence {confidence}).\nEntries:\n{entries}\n")
+        TEXT("Write one short first-person insight (one or two sentences) about this recurring emotional pattern. ")
+        TEXT("Reply with the insight text only."));
 
     // Initialize proprioceptive state (6 DOF)
     ProprioceptiveState.SetNum(6);
@@ -342,24 +356,37 @@ void UDeepTreeEchoUnrealIntegration::AnalyzeForInsights()
     // Look for patterns in groups with 3+ entries
     for (const auto& Group : ValenceGroups)
     {
-        if (Group.Value.Num() >= 3)
+        if (Group.Value.Num() < 3)
         {
-            FInsightEntry NewInsight = GenerateInsightFromPatterns(Group.Value);
-            if (NewInsight.Confidence > 0.5f)
-            {
-                Insights.Add(NewInsight);
-                OnInsightDiscovered.Broadcast(NewInsight);
-            }
+            continue;
+        }
+
+        // Only ask again when the group has grown since the last request.
+        const int32* PreviousSize = RequestedInsightGroupSizes.Find(Group.Key);
+        if (PreviousSize && *PreviousSize >= Group.Value.Num())
+        {
+            continue;
+        }
+
+        FInsightEntry Pattern = ComputeInsightPattern(Group.Value);
+        if (Pattern.Confidence > 0.5f)
+        {
+            RequestedInsightGroupSizes.Add(Group.Key, Group.Value.Num());
+            RequestInsightText(Pattern, Group.Value, Group.Key, Group.Value.Num());
         }
     }
 }
 
-FInsightEntry UDeepTreeEchoUnrealIntegration::GenerateInsightFromPatterns(
-    const TArray<FDiaryEntry>& RelevantEntries)
+FInsightEntry UDeepTreeEchoUnrealIntegration::ComputeInsightPattern(
+    const TArray<FDiaryEntry>& RelevantEntries) const
 {
     FInsightEntry Insight;
     Insight.DiscoveryTime = FDateTime::Now();
     Insight.SupportingEntriesCount = RelevantEntries.Num();
+    if (RelevantEntries.Num() == 0)
+    {
+        return Insight;
+    }
 
     // Find common patterns
     TMap<FString, int32> EntityCounts;
@@ -370,36 +397,19 @@ FInsightEntry UDeepTreeEchoUnrealIntegration::GenerateInsightFromPatterns(
     {
         for (const FString& Entity : Entry.KeyEntities)
         {
-            if (!EntityCounts.Contains(Entity))
-            {
-                EntityCounts.Add(Entity, 0);
-            }
-            EntityCounts[Entity]++;
+            EntityCounts.FindOrAdd(Entity)++;
         }
         TotalImportance += Entry.ImportanceScore;
         Total4EScore += (Entry.EmbodiedRelevance + Entry.EmbeddedRelevance + 
                         Entry.EnactedRelevance + Entry.ExtendedRelevance) / 4.0f;
     }
 
-    // Build insight text from common entities
-    TArray<FString> CommonEntities;
     for (const auto& EntityCount : EntityCounts)
     {
         if (EntityCount.Value >= RelevantEntries.Num() / 2)
         {
-            CommonEntities.Add(EntityCount.Key);
             Insight.SupportingPatterns.Add(EntityCount.Key);
         }
-    }
-
-    if (CommonEntities.Num() > 0)
-    {
-        Insight.InsightText = FString::Printf(TEXT("Pattern detected involving: %s"), 
-                                               *FString::Join(CommonEntities, TEXT(", ")));
-    }
-    else
-    {
-        Insight.InsightText = TEXT("Recurring emotional pattern detected");
     }
 
     // Compute confidence and wisdom weight
@@ -410,6 +420,90 @@ FInsightEntry UDeepTreeEchoUnrealIntegration::GenerateInsightFromPatterns(
     Insight.RelevanceScore = Insight.Confidence * Insight.WisdomWeight;
 
     return Insight;
+}
+
+void UDeepTreeEchoUnrealIntegration::RequestInsightText(const FInsightEntry& Pattern,
+    const TArray<FDiaryEntry>& RelevantEntries, const FString& GroupKey, int32 GroupSize)
+{
+    FString EntriesText;
+    const int32 First = FMath::Max(0, RelevantEntries.Num() - 10);
+    for (int32 i = First; i < RelevantEntries.Num(); ++i)
+    {
+        const FDiaryEntry& Entry = RelevantEntries[i];
+        EntriesText += FString::Printf(TEXT("- [%s] %s%s%s\n"),
+            *Entry.Timestamp.ToString(), *Entry.Summary,
+            Entry.Reflection.IsEmpty() ? TEXT("") : TEXT(" | reflection: "), *Entry.Reflection);
+    }
+
+    // Pattern router: recurring entities vs a purely emotional pattern picks the template.
+    const FString TemplateKey = Pattern.SupportingPatterns.Num() > 0 ? TEXT("entity_pattern") : TEXT("emotional_pattern");
+    const FString* Template = InsightPromptTemplates.Find(TemplateKey);
+    if (!Template || Template->IsEmpty())
+    {
+        RequestedInsightGroupSizes.Remove(GroupKey);
+        const FString Error = FString::Printf(TEXT("no insight prompt template '%s'"), *TemplateKey);
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealIntegration: %s"), *Error);
+        OnInsightFailed.Broadcast(Error);
+        return;
+    }
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("valence"), GroupKey);
+    Slots.Add(TEXT("entities"), FString::Join(Pattern.SupportingPatterns, TEXT(", ")));
+    Slots.Add(TEXT("entry_count"), FString::FromInt(RelevantEntries.Num()));
+    Slots.Add(TEXT("entries"), EntriesText);
+    Slots.Add(TEXT("confidence"), FString::Printf(TEXT("%.2f"), Pattern.Confidence));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("system"), FString::Printf(
+        TEXT("You are %s, an embodied AI reflecting on your own diary."), *InsightCharacterName)));
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(*Template, Slots)));
+
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateUObject(
+        this, &UDeepTreeEchoUnrealIntegration::HandleInsightText, Pattern, GroupKey, GroupSize));
+}
+
+bool UDeepTreeEchoUnrealIntegration::GenerateInsightFromPatterns(const TArray<FDiaryEntry>& RelevantEntries)
+{
+    const FInsightEntry Pattern = ComputeInsightPattern(RelevantEntries);
+    if (RelevantEntries.Num() == 0 || Pattern.Confidence <= 0.5f)
+    {
+        return false;
+    }
+    // Label the group by its most common valence label (model input only).
+    TMap<FString, int32> LabelCounts;
+    for (const FDiaryEntry& Entry : RelevantEntries)
+    {
+        LabelCounts.FindOrAdd(Entry.EmotionalValence)++;
+    }
+    FString GroupKey;
+    int32 Best = 0;
+    for (const auto& Pair : LabelCounts)
+    {
+        if (Pair.Value > Best)
+        {
+            Best = Pair.Value;
+            GroupKey = Pair.Key;
+        }
+    }
+    RequestInsightText(Pattern, RelevantEntries, GroupKey.IsEmpty() ? FString(TEXT("unlabelled")) : GroupKey, RelevantEntries.Num());
+    return true;
+}
+
+void UDeepTreeEchoUnrealIntegration::HandleInsightText(bool bSuccess, const FString& TextOrError,
+    FInsightEntry Pattern, FString GroupKey, int32 GroupSize)
+{
+    if (!bSuccess)
+    {
+        // Allow a later retry for this group; store nothing.
+        RequestedInsightGroupSizes.Remove(GroupKey);
+        UE_LOG(LogTemp, Error, TEXT("DeepTreeEchoUnrealIntegration: no insight for '%s' group: %s"), *GroupKey, *TextOrError);
+        OnInsightFailed.Broadcast(TextOrError);
+        return;
+    }
+
+    Pattern.InsightText = TextOrError.TrimStartAndEnd();
+    Insights.Add(Pattern);
+    OnInsightDiscovered.Broadcast(Pattern);
 }
 
 void UDeepTreeEchoUnrealIntegration::CultivateWisdom()
@@ -483,7 +577,7 @@ void UDeepTreeEchoUnrealIntegration::SetEmotionIntensity(const FString& EmotionN
 }
 
 void UDeepTreeEchoUnrealIntegration::BlendToExpression(
-    const FAvatarExpressionState& TargetState, float BlendTime)
+    const FUnrealIntegrationExpressionState& TargetState, float BlendTime)
 {
     // This would typically use a timeline or async task
     // For now, immediate blend

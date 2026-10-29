@@ -13,6 +13,7 @@ class UAnimMontage;
 class UAnimInstance;
 struct FEmotionalState;
 struct FPersonalityState;
+struct FEchoCharacterReaction;
 
 /**
  * EMontageCategory
@@ -197,7 +198,7 @@ struct FMontagePlayRequest
 
 // Delegates
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMontageStarted, FName, MontageId, UAnimMontage*, Montage);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnMontageEnded, FName, MontageId, UAnimMontage*, Montage, bool, bInterrupted);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnMontageSystemEnded, FName, MontageId, UAnimMontage*, Montage, bool, bInterrupted);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMontageNotify, FName, MontageId, FName, NotifyName);
 
 /**
@@ -212,6 +213,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMontageNotify, FName, MontageId,
  * - Cooldown management
  * - Priority-based interruption
  * - Montage library support
+ *
+ * Character gestures, emotes and social montages are played only for a model-chosen name
+ * (FEchoReactionBus reactions or PlayMontageForModelReaction); they are never picked at random.
+ * Random variation is limited to ambient categories (Idle fidgets, Locomotion variations).
  */
 UCLASS(ClassGroup = (DeepTreeEcho), meta = (BlueprintSpawnableComponent))
 class UNREALENGINE_API UAnimationMontageSystem : public UActorComponent
@@ -222,6 +227,7 @@ public:
 	UAnimationMontageSystem();
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	// Initialize with anim instance
@@ -240,9 +246,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	bool PlayMontageDirectly(UAnimMontage* Montage, float PlayRate = 1.0f, FName StartSection = NAME_None);
 
-	// Play random montage from category
+	// Play a random montage from an ambient category (Idle, Locomotion). Character reaction
+	// categories (Gesture, Emote, Social, Interaction, Combat, Special) are refused: use
+	// PlayMontageForModelReaction with the model-chosen name instead.
 	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	bool PlayRandomFromCategory(EMontageCategory Category);
+
+	// True for categories whose random variation is ambient motion, not a character reaction
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
+	static bool IsAmbientCategory(EMontageCategory Category);
+
+	// Play the Gesture/Emote/Social montage whose id or display name matches a model-chosen name
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
+	bool PlayMontageForModelReaction(const FString& ModelChosenName, float Intensity = 1.0f);
+
+	// Play montages for model reactions arriving on the reaction bus (gesture name, else expression name)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Montage|Reaction")
+	bool bPlayMontagesForReactions = true;
+
+	// Only reactions for this character are played; empty = all reactions accepted
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Montage|Reaction")
+	FString ReactionCharacterName;
 
 	// Stop current montage
 	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
@@ -268,7 +292,7 @@ public:
 	FOnMontageStarted OnMontageStarted;
 
 	UPROPERTY(BlueprintAssignable, Category = "Animation|Montage")
-	FOnMontageEnded OnMontageEnded;
+	FOnMontageSystemEnded OnMontageEnded;
 
 	UPROPERTY(BlueprintAssignable, Category = "Animation|Montage")
 	FOnMontageNotify OnMontageNotify;
@@ -334,8 +358,10 @@ protected:
 	float CalculateVariantScore(const FMontageVariant& Variant) const;
 	bool CanPlayMontage(const FMontageEntry& Entry, bool bForce) const;
 	void UpdateCooldowns(float DeltaTime);
+	UFUNCTION()
 	void OnMontageEndedInternal(UAnimMontage* Montage, bool bInterrupted);
+	void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
 
 	// Delegate handles
-	FDelegateHandle MontageEndedHandle;
+	FDelegateHandle ReactionHandle;
 };

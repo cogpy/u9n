@@ -432,17 +432,20 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Embedded")
     void RecordMapExperience(const FString& MapID, float PerformanceScore);
 
-    /** Get context-appropriate strategy recommendation */
+    /** Ask the companion (model) for a context-appropriate strategy. Result arrives on OnCoachingReady / OnCoachingFailed (topic "contextual_strategy"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Embedded")
-    FString GetContextualStrategyRecommendation() const;
+    void RequestContextualStrategyRecommendation();
 
     /** Assess current threat level */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Embedded")
     float AssessThreatLevel(const TArray<float>& ThreatIndicators);
 
-    /** Identify opportunity in current context */
+    /**
+     * Ask the companion (model) to identify opportunities in the given game state
+     * ([0] resource advantage, [1] opponent strength, [2] map control, ...). Result arrives on OnCoachingReady / OnCoachingFailed (topic "opportunities").
+     */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Embedded")
-    TArray<FString> IdentifyOpportunities(const TArray<float>& GameState);
+    void RequestOpportunityAnalysis(const TArray<float>& GameState);
 
     // ========================================
     // ENACTED COGNITION API
@@ -452,17 +455,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
     void UpdateEnactedStrategy(const FString& ActionTaken, bool bSuccess, float Impact);
 
-    /** Get exploration recommendation */
+    /** Ask the companion (model) for an exploration/exploitation recommendation. Result arrives on OnCoachingReady / OnCoachingFailed (topic "exploration"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
-    FString GetExplorationRecommendation() const;
+    void RequestExplorationRecommendation();
 
     /** Adjust risk tolerance based on game state */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
     void AdjustRiskTolerance(float GameProgress, float CurrentAdvantage);
 
-    /** Get adaptive response to opponent action */
+    /** Ask the companion (model) how to respond to an opponent action. Result arrives on OnCoachingReady / OnCoachingFailed (topic "adaptive_response"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
-    FString GetAdaptiveResponse(const FString& OpponentAction, const TArray<float>& GameState);
+    void RequestAdaptiveResponse(const FString& OpponentAction, const TArray<float>& GameState);
 
     /** Evaluate initiative opportunity */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Enacted")
@@ -480,17 +483,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Extended")
     void RecordToolUsage(const FString& ToolType, float EffectivenessScore);
 
-    /** Get team coordination recommendation */
+    /** Ask the companion (model) for a team coordination recommendation. Result arrives on OnCoachingReady / OnCoachingFailed (topic "team_coordination"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Extended")
-    FString GetTeamCoordinationRecommendation(const TArray<FString>& TeamRoles, const TArray<float>& TeamState);
+    void RequestTeamCoordinationRecommendation(const TArray<FString>& TeamRoles, const TArray<float>& TeamState);
 
     /** Integrate community knowledge */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Extended")
     void IntegrateCommunityKnowledge(const FString& KnowledgeType, const FString& Content);
 
-    /** Get recommended external resources */
+    /** Ask the companion (model) which external resources would help. Result arrives on OnCoachingReady / OnCoachingFailed (topic "external_resources"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Extended")
-    TArray<FString> GetRecommendedExternalResources() const;
+    void RequestExternalResourceRecommendations();
 
     // ========================================
     // COGNITIVE LOAD MANAGEMENT
@@ -508,9 +511,9 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Bridge|Load")
     bool IsCognitiveOverloadImminent() const;
 
-    /** Get load reduction recommendations */
+    /** Ask the companion (model) for cognitive load reduction advice. Result arrives on OnCoachingReady / OnCoachingFailed (topic "load_reduction"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Load")
-    TArray<FString> GetLoadReductionRecommendations() const;
+    void RequestLoadReductionRecommendations();
 
     /** Allocate cognitive resources */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Load")
@@ -544,17 +547,21 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Integration")
     TMap<FString, float> GetIntegratedPerformanceAssessment() const;
 
-    /** Get holistic improvement recommendations */
+    /** Ask the companion (model) for holistic 4E improvement advice. Result arrives on OnCoachingReady / OnCoachingFailed (topic "holistic_improvement"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Integration")
-    TArray<FString> GetHolisticImprovementRecommendations() const;
+    void RequestHolisticImprovementRecommendations();
 
     /** Calculate 4E integration score */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Bridge|Integration")
     float Calculate4EIntegrationScore() const;
 
-    /** Get personalized training focus */
+    /** Ask the companion (model) for a personalized training focus. Result arrives on OnCoachingReady / OnCoachingFailed (topic "training_focus"). */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Integration")
-    FString GetPersonalizedTrainingFocus() const;
+    void RequestPersonalizedTrainingFocus();
+
+    /** Name of the lowest-scoring 4E assessment area (internal key, not advice) */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Bridge|Integration")
+    FString GetWeakestAssessmentArea() const;
 
     // ========================================
     // EVENTS
@@ -575,6 +582,14 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Bridge|Events")
     FOnStrategicAdaptation OnStrategicAdaptation;
 
+    /** Model-written coaching for the player (see EchoCoaching) */
+    UPROPERTY(BlueprintAssignable, Category = "Bridge|Events")
+    FOnCompanionCoaching OnCoachingReady;
+
+    /** A coaching request failed; nothing was said */
+    UPROPERTY(BlueprintAssignable, Category = "Bridge|Events")
+    FOnCompanionCoachingFailed OnCoachingFailed;
+
 private:
     // ========================================
     // INTERNAL STATE
@@ -585,6 +600,9 @@ private:
 
     /** Map experience database */
     TMap<FString, float> MapExperienceDB;
+
+    /** Real 4E / load / attention measurements rendered as model input */
+    FString DescribeCognitiveStateForModel() const;
 
     /** Strategy effectiveness history */
     TMap<FString, TArray<bool>> StrategyEffectivenessHistory;

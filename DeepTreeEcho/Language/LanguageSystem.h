@@ -160,7 +160,10 @@ struct FDialogueContext
 };
 
 /**
- * Response template
+ * Response prompt template. Each entry is an instruction to the model for one kind of agent
+ * utterance (greeting, acknowledgment, answer, clarification, farewell, ...), with "{slot}"
+ * placeholders filled from the real dialogue (see ULanguageSystem::InitializeResponseTemplates
+ * for the slots). The model's reply is the utterance; template text is never spoken.
  */
 USTRUCT(BlueprintType)
 struct FResponseTemplate
@@ -170,24 +173,45 @@ struct FResponseTemplate
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FString TemplateID;
 
+    /** Kind of utterance this template asks the model for. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     ESpeechAct ResponseType = ESpeechAct::Assertion;
 
+    /** Incoming speech acts routed to this template (empty = only used when requested by ID). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FString TemplateText;
+    TArray<ESpeechAct> InputActs;
 
+    /** Incoming sentiment range routed to this template. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float MinInputSentiment = -1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float MaxInputSentiment = 1.0f;
+
+    /** The prompt template: an instruction to the model with {slot} placeholders. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (MultiLine = true))
+    FString PromptTemplate;
+
+    /** Slots this template needs; a request missing one is reported as a failure. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FString> RequiredSlots;
 
+    /** Tone this template suits (-1..1); among matching templates the nearest to the agent's tone is used. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float EmotionalTone = 0.0f;
 
+    /** Formality (0 casual .. 1 formal) asked of the model. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Formality = 0.5f;
+
+    /** Optional style example shown to the model, clearly marked as an example not to copy. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString StyleExample;
 };
 
 /**
- * Generated response
+ * Generated response. Text is always the echo model's reply; ResponseID is the request ID
+ * returned by the Request* call that produced it.
  */
 USTRUCT(BlueprintType)
 struct FGeneratedResponse
@@ -200,17 +224,17 @@ struct FGeneratedResponse
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FString Text;
 
+    /** The kind of utterance that was requested from the model (request metadata). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     ESpeechAct SpeechAct = ESpeechAct::Assertion;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Confidence = 0.0f;
-
+    /** Emotional tone passed to the model as input (-1..1). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float EmotionalTone = 0.0f;
 
+    /** The prompt template the reply was generated from. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FString> AlternativeResponses;
+    FString TemplateID;
 };
 
 /**
@@ -248,10 +272,20 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnResponseGenerated, const FGenerat
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnDialogueStateChanged, EDialogueState, OldState, EDialogueState, NewState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTopicChanged, const FString&, NewTopic);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNarrativeGenerated, const FNarrativeElement&, Narrative);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnLanguageGenerationFailed, const FString&, RequestID, const FString&, Error);
 
 /**
  * Language System Component
- * Implements natural language processing and generation
+ * Parses user utterances (keyword heuristics) and produces every agent utterance and narrative
+ * through the echo model (UEchoModelClient: a configured API or a verified local model).
+ *
+ * Response and narrative templates are PROMPT templates: the parse routes an utterance to a
+ * template (by speech act, sentiment and tone), the template's {slots} are filled with the real
+ * dialogue, and the model writes the words.
+ *
+ * All generation is asynchronous: Request* / Generate* functions return a request ID
+ * immediately; the result arrives via OnResponseGenerated / OnNarrativeGenerated (model text)
+ * or OnGenerationFailed (system error; no text is produced, nothing is spoken).
  */
 UCLASS(ClassGroup=(DeepTreeEcho), meta=(BlueprintSpawnableComponent))
 class UNREALECHO_API ULanguageSystem : public UActorComponent
@@ -284,6 +318,26 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
     FString AgentName = TEXT("Echo");
 
+    /** Persona description given to the model as part of its system prompt (model input). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (MultiLine = true))
+    FString PersonaDescription;
+
+    // ========================================
+    // PROMPT TEMPLATES
+    // ========================================
+
+    /** Response prompt templates (filled by InitializeResponseTemplates when empty). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Templates")
+    TArray<FResponseTemplate> ResponseTemplates;
+
+    /** Style instruction appended to every response prompt. Slots: {tone}, {tone_value}, {formality}. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Templates", meta = (MultiLine = true))
+    FString ResponseStylePromptTemplate;
+
+    /** Narrative prompt templates keyed by narrative type ("Description", "Self-Description", "Experience Summary"). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Templates")
+    TMap<FString, FString> NarrativePromptTemplates;
+
     // ========================================
     // EVENTS
     // ========================================
@@ -302,6 +356,10 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnNarrativeGenerated OnNarrativeGenerated;
+
+    /** A Request* call produced no text (model unconfigured / request failed). */
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnLanguageGenerationFailed OnGenerationFailed;
 
     // ========================================
     // PARSING
@@ -335,9 +393,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Dialogue")
     void StartConversation(const FString& InitialTopic);
 
-    /** Process incoming utterance */
+    /**
+     * Records an incoming utterance and asks the model for the agent's reply.
+     * Returns the request ID; the reply arrives via OnResponseGenerated (and is then added to
+     * the turn history) or OnGenerationFailed.
+     */
     UFUNCTION(BlueprintCallable, Category = "Dialogue")
-    FGeneratedResponse ProcessUtterance(const FString& Speaker, const FString& Text);
+    FString ProcessUtterance(const FString& Speaker, const FString& Text);
 
     /** Get dialogue context */
     UFUNCTION(BlueprintPure, Category = "Dialogue")
@@ -371,45 +433,79 @@ public:
     // RESPONSE GENERATION
     // ========================================
 
-    /** Generate response to parsed utterance */
+    /** Request a model reply to a parsed utterance (tone from the emotional system). Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Generation")
-    FGeneratedResponse GenerateResponse(const FParsedUtterance& Input);
+    FString RequestResponse(const FParsedUtterance& Input);
 
-    /** Generate response with emotional tone */
+    /** Request a model reply with the given emotional tone (-1..1) as input. Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Generation")
-    FGeneratedResponse GenerateEmotionalResponse(const FParsedUtterance& Input, float EmotionalTone);
+    FString RequestEmotionalResponse(const FParsedUtterance& Input, float EmotionalTone);
 
-    /** Generate clarification question */
+    /** Request a clarification question about UnclearAspect. Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Generation")
-    FGeneratedResponse GenerateClarification(const FString& UnclearAspect);
+    FString RequestClarification(const FString& UnclearAspect);
 
-    /** Generate acknowledgment */
+    /** Request an acknowledgment of the latest turn. Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Generation")
-    FGeneratedResponse GenerateAcknowledgment();
+    FString RequestAcknowledgment();
 
-    /** Generate greeting */
+    /** Request a greeting (RecipientName may be empty). Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Generation")
-    FGeneratedResponse GenerateGreeting(const FString& RecipientName);
+    FString RequestGreeting(const FString& RecipientName);
 
-    /** Generate farewell */
+    /** Request a farewell. Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Generation")
-    FGeneratedResponse GenerateFarewell();
+    FString RequestFarewell();
+
+    /**
+     * Request an utterance from the response prompt template TemplateID, with Slots filling its
+     * placeholders (dialogue slots such as {speaker}/{utterance} are filled automatically when
+     * not given). Returns the request ID.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString RequestFromTemplate(const FString& TemplateID, const TMap<FString, FString>& Slots);
+
+    /** Template the parse would route Input to (by speech act, sentiment and tone). */
+    UFUNCTION(BlueprintPure, Category = "Generation")
+    FResponseTemplate SelectResponseTemplate(const FParsedUtterance& Input, float EmotionalTone) const;
+
+    // Blueprint-compatible names: each starts the model request and returns its request ID; the
+    // text arrives via OnResponseGenerated / OnNarrativeGenerated.
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString GenerateResponse(const FParsedUtterance& Input) { return RequestResponse(Input); }
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString GenerateEmotionalResponse(const FParsedUtterance& Input, float EmotionalTone) { return RequestEmotionalResponse(Input, EmotionalTone); }
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString GenerateClarification(const FString& UnclearAspect) { return RequestClarification(UnclearAspect); }
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString GenerateAcknowledgment() { return RequestAcknowledgment(); }
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString GenerateGreeting(const FString& RecipientName) { return RequestGreeting(RecipientName); }
+    UFUNCTION(BlueprintCallable, Category = "Generation")
+    FString GenerateFarewell() { return RequestFarewell(); }
 
     // ========================================
-    // NARRATIVE GENERATION
+    // NARRATIVE GENERATION (model-backed, asynchronous)
     // ========================================
 
-    /** Generate narrative description */
+    /** Request a narrative about Subject and Events. Result via OnNarrativeGenerated. Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Narrative")
-    FNarrativeElement GenerateNarrative(const FString& Subject, const TArray<FString>& Events);
+    FString RequestNarrative(const FString& Subject, const TArray<FString>& Events);
 
-    /** Generate self-description */
+    /** Request a first-person self-description. Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Narrative")
-    FNarrativeElement GenerateSelfNarrative();
+    FString RequestSelfNarrative();
 
-    /** Generate experience summary */
+    /** Request a summary of recent experience (dialogue turns within TimeSpan seconds). Returns the request ID. */
     UFUNCTION(BlueprintCallable, Category = "Narrative")
-    FNarrativeElement GenerateExperienceSummary(float TimeSpan);
+    FString RequestExperienceSummary(float TimeSpan);
+
+    UFUNCTION(BlueprintCallable, Category = "Narrative")
+    FString GenerateNarrative(const FString& Subject, const TArray<FString>& Events) { return RequestNarrative(Subject, Events); }
+    UFUNCTION(BlueprintCallable, Category = "Narrative")
+    FString GenerateSelfNarrative() { return RequestSelfNarrative(); }
+    UFUNCTION(BlueprintCallable, Category = "Narrative")
+    FString GenerateExperienceSummary(float TimeSpan) { return RequestExperienceSummary(TimeSpan); }
 
 protected:
     // Component references
@@ -424,7 +520,6 @@ protected:
 
     // Internal state
     FDialogueContext DialogueContext;
-    TArray<FResponseTemplate> ResponseTemplates;
 
     int32 UtteranceIDCounter = 0;
     int32 TurnIDCounter = 0;
@@ -435,14 +530,30 @@ protected:
     // Internal methods
     void FindComponentReferences();
     void InitializeLanguageSystem();
-    void InitializeResponseTemplates();
 
     void UpdateDialogueState(float DeltaTime);
     void AddTurnToHistory(const FDialogueTurn& Turn);
 
-    FString SelectResponseTemplate(ESpeechAct InputAct, float EmotionalTone) const;
-    FString FillTemplateSlots(const FString& Template, const FParsedUtterance& Input) const;
-    FString ApplyEmotionalModulation(const FString& Text, float EmotionalTone) const;
+    // Prompt templates
+    void InitializeResponseTemplates();
+    void InitializeNarrativeTemplates();
+    const FResponseTemplate* FindResponseTemplate(const FString& TemplateID) const;
+    void AddDialogueSlots(TMap<FString, FString>& Slots) const;
+    static FString DescribeTone(float EmotionalTone);
+    static FString DescribeFormality(float Formality);
+
+    // Model plumbing
+    FString BuildSystemPrompt() const;
+    FString BuildRecentTranscript(int32 MaxTurns) const;
+    float GetCurrentEmotionalTone() const;
+    FString SendTemplateRequest(const FResponseTemplate& Template, TMap<FString, FString> Slots, float EmotionalTone,
+                                EDialogueState StateOnSuccess);
+    FString SendNarrativeRequest(const FString& NarrativeType, const TMap<FString, FString>& Slots,
+                                 const TArray<FString>& Characters);
+    void HandleResponseReply(bool bSuccess, const FString& TextOrError, FString RequestID,
+                             ESpeechAct SpeechAct, float EmotionalTone, EDialogueState StateOnSuccess, FString TemplateID);
+    void HandleNarrativeReply(bool bSuccess, const FString& TextOrError, FString RequestID,
+                              FString NarrativeType, TArray<FString> Characters, float EmotionalArc);
 
     bool IsQuestion(const FString& Text) const;
     bool IsCommand(const FString& Text) const;

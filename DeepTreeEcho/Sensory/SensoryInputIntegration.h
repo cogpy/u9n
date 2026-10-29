@@ -14,7 +14,7 @@
  * Sensory modality type
  */
 UENUM(BlueprintType)
-enum class ESensoryModality : uint8
+enum class ESensoryInputModality : uint8
 {
     Visual          UMETA(DisplayName = "Visual - Sight"),
     Auditory        UMETA(DisplayName = "Auditory - Hearing"),
@@ -66,7 +66,7 @@ struct FSensoryInputData
 
     /** Sensory modality */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ESensoryModality Modality = ESensoryModality::Visual;
+    ESensoryInputModality Modality = ESensoryInputModality::Visual;
 
     /** Event type */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -131,7 +131,7 @@ struct FSensoryPercept
 
     /** Modality */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ESensoryModality Modality = ESensoryModality::Visual;
+    ESensoryInputModality Modality = ESensoryInputModality::Visual;
 
     /** Integrated feature vector */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -184,7 +184,7 @@ struct FMultimodalBinding
 
     /** Modalities involved */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<ESensoryModality> Modalities;
+    TArray<ESensoryInputModality> Modalities;
 
     /** Binding strength (0-1) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -288,10 +288,10 @@ struct FSensoryIntegrationState
 /**
  * Delegate declarations
  */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSensoryInputReceived, int32, InputID, ESensoryModality, Modality);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSensoryInputReceived, int32, InputID, ESensoryInputModality, Modality);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPerceptFormed, int32, PerceptID, float, Salience);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMultimodalBindingFormed, int32, BindingID, float, Strength);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAttentionShifted, int32, NewFocusID, FVector, FocusLocation);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSensoryAttentionShifted, int32, NewFocusID, FVector, FocusLocation);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSalienceThresholdCrossed, int32, PerceptID, float, Salience);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPredictionErrorSpike, float, ErrorMagnitude);
 
@@ -372,7 +372,7 @@ public:
     FOnMultimodalBindingFormed OnBindingFormed;
 
     UPROPERTY(BlueprintAssignable, Category = "Sensory|Events")
-    FOnAttentionShifted OnAttentionShifted;
+    FOnSensoryAttentionShifted OnAttentionShifted;
 
     UPROPERTY(BlueprintAssignable, Category = "Sensory|Events")
     FOnSalienceThresholdCrossed OnSalienceThresholdCrossed;
@@ -412,7 +412,7 @@ public:
 
     /** Get all inputs by modality */
     UFUNCTION(BlueprintPure, Category = "Sensory|Input")
-    TArray<FSensoryInputData> GetInputsByModality(ESensoryModality Modality) const;
+    TArray<FSensoryInputData> GetInputsByModality(ESensoryInputModality Modality) const;
 
     // ========================================
     // PUBLIC API - PERCEPT OPERATIONS
@@ -432,7 +432,7 @@ public:
 
     /** Get percepts by modality */
     UFUNCTION(BlueprintPure, Category = "Sensory|Percepts")
-    TArray<FSensoryPercept> GetPerceptsByModality(ESensoryModality Modality) const;
+    TArray<FSensoryPercept> GetPerceptsByModality(ESensoryInputModality Modality) const;
 
     // ========================================
     // PUBLIC API - MULTIMODAL BINDING

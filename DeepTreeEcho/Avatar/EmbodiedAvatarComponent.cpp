@@ -2,6 +2,7 @@
 // Implementation of 4E Embodied Cognition Avatar Component
 
 #include "EmbodiedAvatarComponent.h"
+#include "../Model/EchoCharacterReaction.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
@@ -36,6 +37,73 @@ void UEmbodiedAvatarComponent::BeginPlay()
     EnactedState.ActionPerceptionCoupling = 0.5f;
 
     ExtendedState.IntegrationLevel = 0.5f;
+
+    // The displayed expression is chosen by the character model only
+    TWeakObjectPtr<UEmbodiedAvatarComponent> WeakThis(this);
+    ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+    {
+        if (UEmbodiedAvatarComponent* Self = WeakThis.Get())
+        {
+            Self->HandleCharacterReaction(Reaction);
+        }
+    });
+}
+
+void UEmbodiedAvatarComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (ReactionHandle.IsValid())
+    {
+        FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+        ReactionHandle.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
+TArray<FString> UEmbodiedAvatarComponent::GetRenderableEmotions()
+{
+    return {
+        TEXT("Joy"), TEXT("Sadness"), TEXT("Anger"), TEXT("Fear"), TEXT("Surprise"), TEXT("Disgust"),
+        TEXT("Concentration"), TEXT("Curiosity"), TEXT("Contemplation"), TEXT("Realization")
+    };
+}
+
+void UEmbodiedAvatarComponent::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+    if (!ReactionCharacterName.IsEmpty() &&
+        !Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+    {
+        return;
+    }
+
+    const FString Trimmed = Reaction.Expression.TrimStartAndEnd();
+    const TArray<FString> Emotions = GetRenderableEmotions();
+    const FString* Matched = Emotions.FindByPredicate(
+        [&Trimmed](const FString& Name) { return Name.Equals(Trimmed, ESearchCase::IgnoreCase); });
+
+    // "Neutral" relaxes the face; unknown or empty names leave it unchanged
+    const bool bNeutral = Trimmed.Equals(TEXT("Neutral"), ESearchCase::IgnoreCase);
+    if (!Matched && !bNeutral)
+    {
+        return;
+    }
+
+    // The model's reaction replaces the previous one (speech visemes are kept)
+    FFacialExpressionBlend Fresh;
+    Fresh.Viseme_AA = TargetExpression.Viseme_AA;
+    Fresh.Viseme_EE = TargetExpression.Viseme_EE;
+    Fresh.Viseme_OO = TargetExpression.Viseme_OO;
+    Fresh.Viseme_CH = TargetExpression.Viseme_CH;
+    TargetExpression = Fresh;
+
+    if (Matched)
+    {
+        ApplyEmotionToExpression(*Matched, FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f));
+    }
+    else
+    {
+        OnExpressionChanged.Broadcast(TargetExpression);
+    }
 }
 
 void UEmbodiedAvatarComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
@@ -491,53 +559,13 @@ void UEmbodiedAvatarComponent::UpdateHairDynamics()
 
 void UEmbodiedAvatarComponent::SetCognitiveStep(int32 Step)
 {
-    CurrentCycleStep = Step % 12;
+    // Recorded for the aura/step visuals; the cognitive clock never sets a facial expression
+    CurrentCycleStep = ((Step % 12) + 12) % 12;
 
-    // Update expression based on cognitive step
-    switch (CurrentCycleStep)
+    // Act step: motor system readies (embodied state, not a displayed emotion)
+    if (CurrentCycleStep == 6)
     {
-        case 0: // Perceive
-            TargetExpression.Curiosity = 0.3f;
-            TargetExpression.EyeWiden = 0.2f;
-            break;
-        case 1: // Orient
-            TargetExpression.Concentration = 0.4f;
-            break;
-        case 2: // Reflect
-            TargetExpression.Contemplation = 0.5f;
-            break;
-        case 3: // Integrate
-            TargetExpression.Concentration = 0.3f;
-            break;
-        case 4: // Decide
-            TargetExpression.Concentration = 0.5f;
-            TargetExpression.BrowFurrow = 0.2f;
-            break;
-        case 5: // Simulate
-            TargetExpression.Contemplation = 0.4f;
-            TargetExpression.EyeSquint = 0.2f;
-            break;
-        case 6: // Act
-            TargetExpression.Concentration = 0.3f;
-            EmbodiedState.MotorReadiness = 0.8f;
-            break;
-        case 7: // Observe
-            TargetExpression.Curiosity = 0.4f;
-            break;
-        case 8: // Learn
-            TargetExpression.Realization = 0.3f;
-            break;
-        case 9: // Consolidate
-            TargetExpression.Contemplation = 0.3f;
-            break;
-        case 10: // Anticipate
-            TargetExpression.Curiosity = 0.2f;
-            TargetExpression.BrowRaise = 0.1f;
-            break;
-        case 11: // Transcend
-            TargetExpression.Realization = 0.4f;
-            TargetExpression.Joy = 0.2f;
-            break;
+        EmbodiedState.MotorReadiness = 0.8f;
     }
 }
 

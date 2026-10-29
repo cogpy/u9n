@@ -62,7 +62,7 @@ struct FBodySchemaElement
  * Represents an action possibility in the environment
  */
 USTRUCT(BlueprintType)
-struct FEnvironmentalAffordance
+struct FEmbodied4EAffordance
 {
     GENERATED_BODY()
 
@@ -96,7 +96,7 @@ struct FEnvironmentalAffordance
  * Represents learned sensorimotor patterns
  */
 USTRUCT(BlueprintType)
-struct FSensorimotorContingency
+struct FEmbodied4EContingency
 {
     GENERATED_BODY()
 
@@ -246,7 +246,7 @@ public:
 
     /** Environmental affordances */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Embedded")
-    TArray<FEnvironmentalAffordance> Affordances;
+    TArray<FEmbodied4EAffordance> Affordances;
 
     /** Embedded dimension state */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Embedded")
@@ -258,7 +258,7 @@ public:
 
     /** Sensorimotor contingencies */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Enacted")
-    TArray<FSensorimotorContingency> SensorimotorContingencies;
+    TArray<FEmbodied4EContingency> SensorimotorContingencies;
 
     /** Enacted dimension state */
     UPROPERTY(BlueprintReadOnly, Category = "4E|Enacted")
@@ -330,11 +330,11 @@ public:
 
     /** Get affordance by ID */
     UFUNCTION(BlueprintCallable, Category = "4E|Embedded")
-    FEnvironmentalAffordance GetAffordance(const FString& AffordanceID) const;
+    FEmbodied4EAffordance GetAffordance(const FString& AffordanceID) const;
 
     /** Get strongest affordance */
     UFUNCTION(BlueprintCallable, Category = "4E|Embedded")
-    FEnvironmentalAffordance GetStrongestAffordance() const;
+    FEmbodied4EAffordance GetStrongestAffordance() const;
 
     /** Compute environmental embedding */
     UFUNCTION(BlueprintCallable, Category = "4E|Embedded")
@@ -430,12 +430,12 @@ public:
     FOnDominantDimensionChanged OnDominantDimensionChanged;
 
     /** Called when affordance detected */
-    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAffordanceDetected, FEnvironmentalAffordance, Affordance);
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAffordanceDetected, FEmbodied4EAffordance, Affordance);
     UPROPERTY(BlueprintAssignable, Category = "4E|Events")
     FOnAffordanceDetected OnAffordanceDetected;
 
     /** Called when sensorimotor contingency learned */
-    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnContingencyLearned, FSensorimotorContingency, Contingency);
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnContingencyLearned, FEmbodied4EContingency, Contingency);
     UPROPERTY(BlueprintAssignable, Category = "4E|Events")
     FOnContingencyLearned OnContingencyLearned;
 
@@ -490,5 +490,5 @@ private:
     TArray<float> EncodeBodyElementToReservoir(const FBodySchemaElement& Element) const;
 
     /** Encode affordance to reservoir */
-    TArray<float> EncodeAffordanceToReservoir(const FEnvironmentalAffordance& Affordance) const;
+    TArray<float> EncodeAffordanceToReservoir(const FEmbodied4EAffordance& Affordance) const;
 };

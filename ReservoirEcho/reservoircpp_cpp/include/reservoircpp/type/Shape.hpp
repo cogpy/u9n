@@ -1,6 +1,7 @@
 #ifndef RESERVOIRCPP_TYPE_SHAPE_HPP
 #define RESERVOIRCPP_TYPE_SHAPE_HPP
 
+#include <algorithm>
 #include <vector>
 #include <cstddef>
 #include <initializer_list>

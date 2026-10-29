@@ -449,7 +449,7 @@ void UVirtualCNS::FindAndCacheComponents()
     }
     if (!SensorimotorSys)
     {
-        SensorimotorSys = Owner->FindComponentByClass<USensorimotorIntegration>();
+        SensorimotorSys = Owner->FindComponentByClass<USensorimotorLoopIntegration>();
     }
 }
 

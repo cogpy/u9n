@@ -151,42 +151,63 @@ struct FDovecotEmail
 };
 
 /**
- * Generated Response structure
+ * A reply composed by the character's model (UEchoModelClient).
+ * Every text/label field here is parsed from the model's reply; nothing is filled from templates.
  */
 USTRUCT(BlueprintType)
-struct FGeneratedResponse
+struct FCommunicationReply
 {
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FString ResponseId;
 
+    /** The model's reply text. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FString Content;
 
+    /** Tone label chosen by the model (free text, may be empty). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FString Tone; // friendly, professional, playful, etc.
+    FString Tone;
 
+    /** Expression chosen by the model from the avatar's expression vocabulary (empty = none). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Confidence;
+    FString Expression;
 
+    /** Gesture chosen by the model from the avatar's gesture vocabulary (empty = none). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString Gesture;
+
+    /** Model-chosen reaction intensity in [0, 1]. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float Intensity;
+
+    /** Model's reading of the incoming message's sentiment in [0, 1] (0 negative, 0.5 neutral, 1 positive). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float IncomingSentiment;
+
+    /** Intent the keyword router detected, i.e. which intent prompt template was used (request metadata). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString Intent;
+
+    /** Avatar's neurochemical valence at reply time (measured state, not generated). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float EmotionalValence;
 
+    /** Avatar's neurochemical arousal at reply time (measured state, not generated). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float EmotionalArousal;
 
+    /** True only when a transport actually delivered the reply. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FString> SuggestedActions;
+    bool bDelivered;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bRequiresConfirmation;
-
-    FGeneratedResponse()
-        : Confidence(0.8f)
+    FCommunicationReply()
+        : Intensity(0.0f)
+        , IncomingSentiment(0.5f)
         , EmotionalValence(0.5f)
         , EmotionalArousal(0.5f)
-        , bRequiresConfirmation(false)
+        , bDelivered(false)
     {}
 };
 
@@ -241,12 +262,27 @@ struct FConversationContext
     {}
 };
 
+/** What a pending model request is replying to (plain C++; not exposed to reflection). */
+struct FAvatarPendingReplyInfo
+{
+    EMessageSource Source = EMessageSource::Internal;
+    FString Intent;          // routed intent (selects the intent prompt template)
+    FString MessageId;
+    FString ReplyTarget;     // chat id or email id
+    FString ParticipantId;
+    FString ParticipantName;
+    FString Subject;
+    FDeltaChatMessage ChatMessage;
+    FDovecotEmail Email;
+};
+
 /**
  * Delegates for communication events
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDeltaChatMessageReceived, const FDeltaChatMessage&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEmailReceived, const FDovecotEmail&, Email);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnResponseGenerated, const FString&, MessageId, const FGeneratedResponse&, Response);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCommunicationReplyGenerated, const FString&, MessageId, const FCommunicationReply&, Reply);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCommunicationReplyFailed, const FString&, MessageId, const FString&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnConversationStateChanged, const FString&, ConversationId, EConversationState, NewState);
 
 /**
@@ -257,16 +293,21 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnConversationStateChanged, const 
  * DeltaChat/Dovecot -> 9P Interface -> Avatar Communication Manager
  *     |
  *     v
- * Personality System (determine response style)
+ * Intent router (DetectIntent keywords) picks an intent prompt template (greeting, farewell,
+ * compliment, question, request, statement); the channel prompt template (chat or email) adds the
+ * channel's form. Both are filled with the real message and sent to the echo model
+ * (UEchoModelClient: configured API or verified local model) with the persona built from
+ * personality/neurochemical state as INPUT; the reply text, tone, sentiment reading, expression
+ * and gesture are the model's OUTPUT
  *     |
  *     v
- * Narrative System (add to diary, generate insight)
+ * FEchoReactionBus (expression/gesture/caption consumers), narrative diary (what was said)
  *     |
  *     v
- * Response Generation (craft reply)
- *     |
- *     v
- * DeltaChat/Dovecot <- 9P Interface <- Avatar Communication Manager
+ * DeltaChat/Dovecot transport (not implemented: replies are reported as not delivered)
+ *
+ * When the model is not configured or a request fails, no reply is produced, nothing is sent,
+ * nothing is recorded as the character's words and OnReplyFailed carries the error.
  */
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class UNREALENGINE_API UAvatarCommunicationManager : public UActorComponent
@@ -286,11 +327,17 @@ public:
 
     // ===== Connection Management =====
 
+    /** No DeltaChat transport is implemented: always leaves the connection down and returns false. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Connection")
-    void ConnectDeltaChat(const FString& AccountEmail, const FString& Password);
+    bool ConnectDeltaChat(const FString& AccountEmail, const FString& Password);
 
+    /** No IMAP transport is implemented: always leaves the connection down and returns false. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Connection")
-    void ConnectDovecot(const FString& ImapHost, int32 ImapPort, const FString& Username, const FString& Password);
+    bool ConnectDovecot(const FString& ImapHost, int32 ImapPort, const FString& Username, const FString& Password);
+
+    /** Last connection/transport error (empty when none). */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Connection")
+    FString GetLastTransportError() const { return LastTransportError; }
 
     UFUNCTION(BlueprintCallable, Category = "Communication|Connection")
     void DisconnectAll();
@@ -312,22 +359,42 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Communication|Messages")
     void ProcessPendingMessages();
 
-    // ===== Response Generation =====
+    // ===== Response Generation (model-backed, asynchronous) =====
 
+    /**
+     * Asks the echo model for a reply to a DeltaChat message. Completes later via
+     * OnReplyGenerated (model reply) or OnReplyFailed (error; no reply is produced).
+     * Returns false if the request could not be started (another request in flight).
+     */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
-    FGeneratedResponse GenerateResponse(const FString& Input, const FConversationContext& Context);
+    bool RequestDeltaChatResponse(const FDeltaChatMessage& Message);
 
+    /** Same as RequestDeltaChatResponse, for an email. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
-    FGeneratedResponse GenerateDeltaChatResponse(const FDeltaChatMessage& Message);
+    bool RequestEmailResponse(const FDovecotEmail& Email);
 
+    /** Blueprint-compatible name: starts the model request (see RequestDeltaChatResponse). */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
-    FGeneratedResponse GenerateEmailResponse(const FDovecotEmail& Email);
+    bool GenerateDeltaChatResponse(const FDeltaChatMessage& Message) { return RequestDeltaChatResponse(Message); }
 
+    /** Blueprint-compatible name: starts the model request (see RequestEmailResponse). */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
-    void SendDeltaChatResponse(const FString& ChatId, const FGeneratedResponse& Response);
+    bool GenerateEmailResponse(const FDovecotEmail& Email) { return RequestEmailResponse(Email); }
 
+    /**
+     * Keyword router: "greeting", "farewell", "compliment", "question", "request" or "statement".
+     * It only selects which intent prompt template the model receives; it never produces words.
+     */
+    UFUNCTION(BlueprintPure, Category = "Communication|Analysis")
+    FString DetectIntent(const FString& Text) const;
+
+    /** Delivers a reply over DeltaChat. No transport is implemented: logs and returns false. */
     UFUNCTION(BlueprintCallable, Category = "Communication|Response")
-    void SendEmailResponse(const FString& EmailId, const FGeneratedResponse& Response);
+    bool SendDeltaChatResponse(const FString& ChatId, const FCommunicationReply& Reply);
+
+    /** Delivers a reply over SMTP. No transport is implemented: logs and returns false. */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Response")
+    bool SendEmailResponse(const FString& EmailId, const FCommunicationReply& Reply);
 
     // ===== Conversation Management =====
 
@@ -346,41 +413,28 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Communication|Conversation")
     void EndConversation(const FString& ConversationId);
 
-    // ===== Personality-Driven Response Style =====
-
-    UFUNCTION(BlueprintCallable, Category = "Communication|Style")
-    FString DetermineResponseTone(const FConversationContext& Context);
+    // ===== Personality-Driven Pacing =====
 
     UFUNCTION(BlueprintCallable, Category = "Communication|Style")
     float CalculateResponseDelay(const FConversationContext& Context);
 
-    UFUNCTION(BlueprintCallable, Category = "Communication|Style")
-    bool ShouldAddEmoji(const FConversationContext& Context);
-
-    UFUNCTION(BlueprintCallable, Category = "Communication|Style")
-    int32 CalculateResponseLength(const FConversationContext& Context);
-
     // ===== Narrative Integration =====
 
+    /** Records an exchange whose reply came from the model (Reply.bDelivered says whether it was sent). */
     UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
-    void LogToNarrativeSystem(const FDeltaChatMessage& Message, const FGeneratedResponse& Response);
-
-    UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
-    void LogEmailToNarrativeSystem(const FDovecotEmail& Email, const FGeneratedResponse& Response);
+    void LogToNarrativeSystem(const FDeltaChatMessage& Message, const FCommunicationReply& Reply);
 
     UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
-    void ExtractInsightsFromConversation(const FConversationContext& Context);
+    void LogEmailToNarrativeSystem(const FDovecotEmail& Email, const FCommunicationReply& Reply);
 
-    // ===== Sentiment Analysis =====
+    /** Asks the model to reflect on a conversation; the insight is stored only if the model answers. */
+    UFUNCTION(BlueprintCallable, Category = "Communication|Narrative")
+    void RequestConversationInsight(const FConversationContext& Context);
 
-    UFUNCTION(BlueprintCallable, Category = "Communication|Analysis")
-    float AnalyzeSentiment(const FString& Text);
+    // ===== Text Utilities =====
 
     UFUNCTION(BlueprintCallable, Category = "Communication|Analysis")
     TArray<FString> ExtractKeywords(const FString& Text);
-
-    UFUNCTION(BlueprintCallable, Category = "Communication|Analysis")
-    FString DetectIntent(const FString& Text);
 
     // ===== 9P Integration =====
 
@@ -401,20 +455,33 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Communication|Events")
     FOnEmailReceived OnEmail;
 
+    /** A reply arrived from the model (Content is the model's text). */
     UPROPERTY(BlueprintAssignable, Category = "Communication|Events")
-    FOnResponseGenerated OnResponseGenerated;
+    FOnCommunicationReplyGenerated OnReplyGenerated;
+
+    /** The model produced no usable reply; Error is a system-level description (never character speech). */
+    UPROPERTY(BlueprintAssignable, Category = "Communication|Events")
+    FOnCommunicationReplyFailed OnReplyFailed;
 
     UPROPERTY(BlueprintAssignable, Category = "Communication|Events")
     FOnConversationStateChanged OnConversationStateChanged;
 
 protected:
     // ===== Internal Methods =====
+    void InitializePromptTemplates();
+    FString BuildReplyPrompt(const FAvatarPendingReplyInfo& Info, const FString& IncomingText, const FString& Transcript);
 
     void ProcessDeltaChatQueue();
     void ProcessEmailQueue();
-    FString GenerateResponseText(const FString& Input, const FConversationContext& Context);
-    void ApplyPersonalityToResponse(FGeneratedResponse& Response);
-    void UpdateEmotionalStateFromInteraction(const FString& MessageContent, bool bIsIncoming);
+    void RequestModelReply(const FAvatarPendingReplyInfo& Info, const FString& IncomingText);
+    void HandleModelReply(bool bSuccess, const FString& TextOrError, FAvatarPendingReplyInfo Info);
+    void HandleInsightReply(bool bSuccess, const FString& TextOrError, FString ConversationId, FString ParticipantName, int32 MessageCount);
+    FString BuildPersonaPrompt(const FAvatarPendingReplyInfo& Info) const;
+    void ApplyModelSentiment(float IncomingSentiment);
+    void AppendHistory(const FString& ParticipantId, const FString& Line);
+
+    static FString ListEnumNames(const UEnum* Enum);
+    static FString MatchVocabulary(const FString& Choice, const UEnum* Enum);
 
 private:
     // ===== Component References =====
@@ -459,8 +526,11 @@ private:
     UPROPERTY()
     TArray<FDovecotEmail> PendingEmails;
 
+    bool bDeltaChatRequestInFlight;
+    bool bEmailRequestInFlight;
+
     UPROPERTY()
-    TArray<FGeneratedResponse> PendingResponses;
+    FString LastTransportError;
 
     // ===== Conversation State =====
 
@@ -481,8 +551,49 @@ private:
     UPROPERTY(EditAnywhere, Category = "Communication|Configuration")
     float MaxResponseDelay;
 
+    /** When true, queued messages are answered by the echo model (one request per queue at a time). */
     UPROPERTY(EditAnywhere, Category = "Communication|Configuration")
     bool bAutoRespond;
+
+    /** Name the character goes by (model input). */
+    UPROPERTY(EditAnywhere, Category = "Communication|Persona")
+    FString CharacterName;
+
+    /** Free-text persona description passed to the model as part of its system prompt (model input). */
+    UPROPERTY(EditAnywhere, Category = "Communication|Persona", meta = (MultiLine = true))
+    FString PersonaDescription;
+
+    /** How many recent conversation lines are sent to the model as context. */
+    UPROPERTY(EditAnywhere, Category = "Communication|Persona")
+    int32 MaxHistoryLinesForModel;
+
+    // ===== Prompt Templates (instructions to the model; never sent as the character's words) =====
+
+    /**
+     * Per-intent reply prompt templates, keyed by DetectIntent's result. Slots: {participant},
+     * {message}, {keywords}, {topic}, {character}.
+     */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    TMap<FString, FString> IntentPromptTemplates;
+
+    /** Channel form for DeltaChat replies. Slots: {participant}, {max_chars}, {character}. */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    FString ChatChannelPromptTemplate;
+
+    /** Channel form for email replies (includes the sign-off instruction). Slots: {participant}, {subject}, {character}. */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    FString EmailChannelPromptTemplate;
+
+    /** Maximum DeltaChat reply length asked of the model (characters). */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts")
+    int32 MaxChatReplyChars;
+
+    /**
+     * Conversation-insight prompt templates keyed "positive" (sentiment > 0.7), "challenging"
+     * (< 0.3) and "neutral". Slots: {participant}, {sentiment}, {message_count}, {transcript}.
+     */
+    UPROPERTY(EditAnywhere, Category = "Communication|Prompts", meta = (MultiLine = true))
+    TMap<FString, FString> InsightPromptTemplates;
 
     UPROPERTY(EditAnywhere, Category = "Communication|Configuration")
     bool bVerboseLogging;

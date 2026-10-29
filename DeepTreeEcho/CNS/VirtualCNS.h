@@ -35,7 +35,7 @@ class UReinforcementLearningBridge;
 class UGameControllerInterface;
 class UGameTrainingEnvironment;
 class UAttentionSystem;
-class USensorimotorIntegration;
+class USensorimotorLoopIntegration;
 class UMetaHumanCNSBinding;
 
 // ============================================================
@@ -470,7 +470,7 @@ protected:
     UAttentionSystem* AttentionSys = nullptr;
 
     UPROPERTY()
-    USensorimotorIntegration* SensorimotorSys = nullptr;
+    USensorimotorLoopIntegration* SensorimotorSys = nullptr;
 
     UPROPERTY()
     UMetaHumanCNSBinding* MetaHumanBinding = nullptr;

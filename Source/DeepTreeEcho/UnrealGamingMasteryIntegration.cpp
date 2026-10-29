@@ -8,6 +8,7 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 
@@ -122,12 +123,8 @@ void UUnrealGamingMasteryIntegration::ProcessInputAction(const FString& ActionNa
         GamingMasterySystem->UpdateSkillProficiency(ActionName, TimingQuality, 0.1f);
     }
 
-    // Broadcast skill execution analysis
-    FString Feedback = TimingQuality > 0.8f ? TEXT("Excellent timing!") :
-                       TimingQuality > 0.6f ? TEXT("Good execution") :
-                       TimingQuality > 0.4f ? TEXT("Room for improvement") :
-                       TEXT("Practice timing");
-    OnSkillExecutionAnalyzed.Broadcast(ActionName, TimingQuality, Feedback);
+    // Broadcast the measured execution quality (no canned feedback text)
+    OnSkillExecutionAnalyzed.Broadcast(ActionName, TimingQuality);
 }
 
 float UUnrealGamingMasteryIntegration::GetOptimizedInputTiming(const FString& ActionName) const
@@ -236,46 +233,41 @@ TMap<FString, float> UUnrealGamingMasteryIntegration::AnalyzeInputSequence(const
     return Analysis;
 }
 
-TArray<FString> UUnrealGamingMasteryIntegration::GetInputImprovementSuggestions() const
+void UUnrealGamingMasteryIntegration::RequestInputImprovementSuggestions()
 {
-    TArray<FString> Suggestions;
+    const FString Topic = TEXT("input_improvement");
+    if (InputHistory.Num() == 0)
+    {
+        OnCoachingFailed.Broadcast(Topic, TEXT("no inputs recorded yet"));
+        return;
+    }
 
-    // Analyze input history for patterns
+    // Measure average timing quality per input
     TMap<FString, float> InputQuality;
     TMap<FString, int32> InputCounts;
-
     for (const auto& Input : InputHistory)
     {
-        float Quality = AnalyzeInputTiming(Input.Key, Input.Value);
-
-        if (InputQuality.Contains(Input.Key))
-        {
-            InputQuality[Input.Key] += Quality;
-            InputCounts[Input.Key]++;
-        }
-        else
-        {
-            InputQuality.Add(Input.Key, Quality);
-            InputCounts.Add(Input.Key, 1);
-        }
+        InputQuality.FindOrAdd(Input.Key) += AnalyzeInputTiming(Input.Key, Input.Value);
+        InputCounts.FindOrAdd(Input.Key) += 1;
     }
 
-    // Find inputs with low average quality
+    FString Metrics = FString::Printf(TEXT("recent inputs analysed: %d\n"), InputHistory.Num());
+    TArray<FString> WeakInputs;
     for (const auto& Pair : InputQuality)
     {
-        float AvgQuality = Pair.Value / InputCounts[Pair.Key];
+        const int32 Count = InputCounts[Pair.Key];
+        const float AvgQuality = Pair.Value / Count;
+        Metrics += FString::Printf(TEXT("input %s: %d presses, average timing quality %.0f%%\n"),
+                                   *Pair.Key, Count, 100.0f * AvgQuality);
         if (AvgQuality < 0.6f)
         {
-            Suggestions.Add(FString::Printf(TEXT("Practice %s timing (avg quality: %.1f%%)"), *Pair.Key, AvgQuality * 100.0f));
+            WeakInputs.Add(FString::Printf(TEXT("%s (%.0f%%)"), *Pair.Key, 100.0f * AvgQuality));
         }
     }
 
-    if (Suggestions.Num() == 0)
-    {
-        Suggestions.Add(TEXT("Input execution is good! Focus on strategic decision-making."));
-    }
-
-    return Suggestions;
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("weak_inputs"), WeakInputs.Num() ? FString::Join(WeakInputs, TEXT(", ")) : FString(TEXT("none")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 // ========================================
@@ -617,7 +609,8 @@ FString UUnrealGamingMasteryIntegration::PredictEnemyAttack(AActor* Enemy) const
         return MostLikely;
     }
 
-    return TEXT("attack");
+    // No opponent model: no prediction (never a fabricated one).
+    return TEXT("");
 }
 
 // ========================================
@@ -678,7 +671,8 @@ FString UUnrealGamingMasteryIntegration::GetAIDecisionRecommendation(UBlackboard
         return EchobeatsIntegration->GetIntegratedDecision();
     }
 
-    return TEXT("observe");
+    // No decision model: no recommendation (never a hard-coded default action).
+    return TEXT("");
 }
 
 void UUnrealGamingMasteryIntegration::UpdateBlackboardWithMasteryData(UBlackboardComponent* Blackboard)
@@ -736,26 +730,58 @@ void UUnrealGamingMasteryIntegration::AnalyzeAnimationState(UAnimInstance* AnimI
 
 bool UUnrealGamingMasteryIntegration::GetCancelWindow(UAnimInstance* AnimInstance, FString& OutCancelType, float& OutWindowStart, float& OutWindowEnd)
 {
+    OutCancelType.Reset();
+    OutWindowStart = 0.0f;
+    OutWindowEnd = 0.0f;
     if (!AnimInstance) return false;
 
-    // Check for cancel windows in current animation
-    // (In full implementation, read from animation notifies)
+    // Cancel windows are authored as notify states on the active montage whose name contains
+    // "Cancel" (e.g. "Cancel_Dodge"). Returns the current or next such window, normalized to the
+    // montage's play length. No such notify = no known cancel window.
+    UAnimMontage* Montage = AnimInstance->GetCurrentActiveMontage();
+    if (!Montage) return false;
 
-    OutCancelType = TEXT("dodge");
-    OutWindowStart = 0.3f;
-    OutWindowEnd = 0.7f;
+    const float Length = Montage->GetPlayLength();
+    if (Length <= KINDA_SMALL_NUMBER) return false;
+    const float Position = AnimInstance->Montage_GetPosition(Montage);
 
+    const FAnimNotifyEvent* Best = nullptr;
+    for (const FAnimNotifyEvent& Notify : Montage->Notifies)
+    {
+        const FString Name = Notify.NotifyName.ToString();
+        if (!Name.Contains(TEXT("Cancel")) || Notify.GetEndTriggerTime() < Position)
+        {
+            continue;
+        }
+        if (!Best || Notify.GetTriggerTime() < Best->GetTriggerTime())
+        {
+            Best = &Notify;
+        }
+    }
+    if (!Best) return false;
+
+    FString Type = Best->NotifyName.ToString();
+    Type.ReplaceInline(TEXT("Cancel"), TEXT(""));
+    Type.TrimStartAndEndInline();
+    while (Type.StartsWith(TEXT("_"))) Type.RightChopInline(1);
+    OutCancelType = Type.IsEmpty() ? FString(TEXT("any")) : Type;
+    OutWindowStart = FMath::Clamp(Best->GetTriggerTime() / Length, 0.0f, 1.0f);
+    OutWindowEnd = FMath::Clamp(Best->GetEndTriggerTime() / Length, 0.0f, 1.0f);
     return true;
 }
 
 float UUnrealGamingMasteryIntegration::PredictAnimationCompletion(UAnimInstance* AnimInstance) const
 {
-    if (!AnimInstance) return 0.0f;
+    // Progress of the active montage in [0, 1]; -1 = unknown (no anim instance or no montage playing).
+    if (!AnimInstance) return -1.0f;
 
-    // Get current montage position
-    // (In full implementation, get actual montage progress)
+    UAnimMontage* Montage = AnimInstance->GetCurrentActiveMontage();
+    if (!Montage) return -1.0f;
 
-    return 0.5f; // Placeholder
+    const float Length = Montage->GetPlayLength();
+    if (Length <= KINDA_SMALL_NUMBER) return -1.0f;
+
+    return FMath::Clamp(AnimInstance->Montage_GetPosition(Montage) / Length, 0.0f, 1.0f);
 }
 
 FString UUnrealGamingMasteryIntegration::GetOptimalAnimationTransition(UAnimInstance* AnimInstance, const FString& TargetAction) const
@@ -1038,30 +1064,38 @@ void UUnrealGamingMasteryIntegration::ExitTrainingMode()
     UE_LOG(LogTemp, Log, TEXT("Exited training mode"));
 }
 
-FString UUnrealGamingMasteryIntegration::GetTrainingGuidance() const
+void UUnrealGamingMasteryIntegration::RequestTrainingGuidance()
 {
-    if (!bTrainingModeActive) return TEXT("");
-
-    // Get guidance based on current skill and performance
-    if (GamingMasterySystem)
+    const FString Topic = TEXT("training_guidance");
+    if (!bTrainingModeActive)
     {
-        FGamingSkillComponent Skill = GamingMasterySystem->GetSkill(CurrentTrainingSkill);
-
-        if (Skill.ProficiencyLevel < 0.3f)
-        {
-            return FString::Printf(TEXT("Focus on basic %s execution. Take your time."), *CurrentTrainingSkill);
-        }
-        else if (Skill.ProficiencyLevel < 0.6f)
-        {
-            return FString::Printf(TEXT("Good progress! Work on %s timing and consistency."), *CurrentTrainingSkill);
-        }
-        else
-        {
-            return FString::Printf(TEXT("Advanced training: Apply %s in varied situations."), *CurrentTrainingSkill);
-        }
+        OnCoachingFailed.Broadcast(Topic, TEXT("training mode is not active"));
+        return;
+    }
+    if (!GamingMasterySystem)
+    {
+        OnCoachingFailed.Broadcast(Topic, TEXT("GamingMasterySystem not available; no skill data"));
+        return;
     }
 
-    return TEXT("Practice the current skill");
+    const FGamingSkillComponent Skill = GamingMasterySystem->GetSkill(CurrentTrainingSkill);
+    const FString Metrics = FString::Printf(
+        TEXT("skill in training: %s (%s, category %s)\nproficiency: %.2f\nacquisition phase: %s\npractice hours: %.1f\n")
+        TEXT("deliberate practice sessions: %d\nrecent success rate: %.2f\ntraining difficulty: %.2f\n")
+        TEXT("combat accuracy: %.2f\nmovement efficiency: %.2f\n"),
+        *CurrentTrainingSkill, *Skill.SkillName, *Skill.Category, Skill.ProficiencyLevel,
+        *UEnum::GetValueAsString(Skill.AcquisitionPhase), Skill.PracticeHours, Skill.DeliberatePracticeSessions,
+        Skill.RecentSuccessRate, TrainingDifficulty, CombatAnalysis.Accuracy, MovementAnalysis.Efficiency);
+
+    // Proficiency router picks the stage; the model writes the guidance.
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("skill"), CurrentTrainingSkill);
+    Slots.Add(TEXT("focus"), Skill.ProficiencyLevel < 0.3f
+        ? FString(TEXT("beginner - careful, unhurried basic execution"))
+        : Skill.ProficiencyLevel < 0.6f
+            ? FString(TEXT("progressing - timing and consistency"))
+            : FString(TEXT("advanced - applying the skill in varied situations")));
+    EchoCoaching::RequestFromTemplate(this, Topic, Slots, Metrics, &OnCoachingReady, &OnCoachingFailed);
 }
 
 void UUnrealGamingMasteryIntegration::SetTrainingDifficulty(float Difficulty)

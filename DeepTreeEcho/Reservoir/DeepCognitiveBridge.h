@@ -29,23 +29,8 @@
 #include "Components/ActorComponent.h"
 #include "DeepTreeEchoReservoir.h"
 #include "ReservoirCognitiveIntegration.h"
+#include "../Echobeats/EchobeatStreamTypes.h"
 #include "DeepCognitiveBridge.generated.h"
-
-/**
- * Cognitive Stream Type
- */
-UENUM(BlueprintType)
-enum class ECognitiveStreamType : uint8
-{
-    /** Pivotal relevance realization - present commitment */
-    Pivotal UMETA(DisplayName = "Pivotal"),
-    
-    /** Affordance interaction - past performance */
-    Affordance UMETA(DisplayName = "Affordance"),
-    
-    /** Salience simulation - future potential */
-    Salience UMETA(DisplayName = "Salience")
-};
 
 /**
  * 4E Cognition Dimension
@@ -151,7 +136,7 @@ struct FConcurrentStreamState
  * Captures the state across all four dimensions of embodied cognition
  */
 USTRUCT(BlueprintType)
-struct F4ECognitionState
+struct FCognitiveBridge4EState
 {
     GENERATED_BODY()
 
@@ -185,7 +170,7 @@ struct F4ECognitionState
  * Represents a level in the nested shell structure
  */
 USTRUCT(BlueprintType)
-struct FNestedShellLevel
+struct FCognitiveBridgeShellLevel
 {
     GENERATED_BODY()
 
@@ -280,11 +265,11 @@ public:
 
     /** 4E cognition state */
     UPROPERTY(BlueprintReadOnly, Category = "CognitiveBridge|State")
-    F4ECognitionState CognitionState4E;
+    FCognitiveBridge4EState CognitionState4E;
 
     /** Nested shell levels (4 levels) */
     UPROPERTY(BlueprintReadOnly, Category = "CognitiveBridge|State")
-    TArray<FNestedShellLevel> NestedShells;
+    TArray<FCognitiveBridgeShellLevel> NestedShells;
 
     /** Step history for pattern analysis */
     UPROPERTY(BlueprintReadOnly, Category = "CognitiveBridge|State")
@@ -380,7 +365,7 @@ public:
 
     /** Get nested shell state */
     UFUNCTION(BlueprintCallable, Category = "CognitiveBridge|NestedShells")
-    FNestedShellLevel GetNestedShellState(int32 Level) const;
+    FCognitiveBridgeShellLevel GetNestedShellState(int32 Level) const;
 
     /** Propagate through nested shells */
     UFUNCTION(BlueprintCallable, Category = "CognitiveBridge|NestedShells")

@@ -151,7 +151,7 @@ void UCubismModelWrapper::SetParameterValue(FName ParameterId, float Value)
 	int32* IndexPtr = ParameterIndexMap.Find(ParameterId);
 	if (IndexPtr && *IndexPtr >= 0 && *IndexPtr < Parameters.Num())
 	{
-		FCubismParameter& Param = Parameters[*IndexPtr];
+		FCubismCoreParameter& Param = Parameters[*IndexPtr];
 		Param.Value = FMath::Clamp(Value, Param.MinValue, Param.MaxValue);
 
 #if defined(CUBISM_SDK_AVAILABLE)
@@ -325,7 +325,7 @@ void UCubismModelWrapper::CacheModelData()
 	Parameters.Reserve(MocInfo.ParameterCount);
 	for (int32 i = 0; i < MocInfo.ParameterCount; i++)
 	{
-		FCubismParameter Param;
+		FCubismCoreParameter Param;
 		Param.Id = FName(Model->GetParameterId(i)->GetString().GetRawString());
 		Param.Value = Model->GetParameterValue(i);
 		Param.MinValue = Model->GetParameterMinimumValue(i);
@@ -353,7 +353,7 @@ void UCubismModelWrapper::CacheModelData()
 	Drawables.Reserve(MocInfo.DrawableCount);
 	for (int32 i = 0; i < MocInfo.DrawableCount; i++)
 	{
-		FCubismDrawable Drawable;
+		FCubismCoreDrawable Drawable;
 		Drawable.Id = FName(Model->GetDrawableId(i)->GetString().GetRawString());
 		Drawable.TextureIndex = Model->GetDrawableTextureIndex(i);
 		Drawable.DrawOrder = Model->GetDrawableDrawOrder(i);
@@ -424,7 +424,7 @@ void UCubismModelWrapper::InitializeDefaultParameters()
 
 	auto AddParameter = [this](const FString& Id, float DefaultValue, float MinValue, float MaxValue)
 	{
-		FCubismParameter Param;
+		FCubismCoreParameter Param;
 		Param.Id = FName(*Id);
 		Param.Value = DefaultValue;
 		Param.DefaultValue = DefaultValue;

@@ -10,24 +10,10 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Sound/SoundBase.h"
 #include "../Echobeats/EchobeatsStreamEngine.h"
-#include "../Core/Sys6AvatarIntegration.h"
+#include "Sys6AvatarIntegration.h"
 #include "UnrealAvatarCognition.generated.h"
 
-/**
- * Avatar expression channel
- */
-UENUM(BlueprintType)
-enum class EAvatarExpressionChannel : uint8
-{
-    Facial      UMETA(DisplayName = "Facial Expression"),
-    Body        UMETA(DisplayName = "Body Language"),
-    Gesture     UMETA(DisplayName = "Gesture"),
-    Gaze        UMETA(DisplayName = "Gaze Direction"),
-    Posture     UMETA(DisplayName = "Posture"),
-    Breathing   UMETA(DisplayName = "Breathing Pattern"),
-    Voice       UMETA(DisplayName = "Voice Modulation"),
-    Aura        UMETA(DisplayName = "Emotional Aura")
-};
+struct FEchoCharacterReaction;
 
 /**
  * Emotion state for avatar
@@ -48,7 +34,8 @@ enum class EAvatarEmotionState : uint8
 };
 
 /**
- * Cognitive-to-expression mapping
+ * Cognitive-to-body-tone mapping (postural/physiological tone only; facial expression and
+ * emotion are chosen by the character model)
  */
 USTRUCT(BlueprintType)
 struct FCognitiveExpressionMapping
@@ -253,20 +240,25 @@ struct FAvatarCognitiveState
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEmotionStateChanged, EAvatarEmotionState, OldState, EAvatarEmotionState, NewState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnExpressionUpdated, EAvatarExpressionChannel, Channel);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCognitiveStateChanged, FString, Parameter, float, Value);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAvatarCognitiveStateChanged, FString, Parameter, float, Value);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRelevanceRealizationTriggered, float, RelevanceLevel);
 
 /**
  * Unreal Avatar Cognition Component
  * 
  * Integrates Unreal Engine avatar functions with the Deep Tree Echo cognitive framework.
- * Implements 4E embodied cognition (Embodied, Embedded, Enacted, Extended) for
- * expressive avatar behavior driven by cognitive state.
- * 
+ * Implements 4E embodied cognition (Embodied, Embedded, Enacted, Extended) for the avatar.
+ *
+ * The emotion/facial expression shown is chosen by the character model only: cognition events
+ * (relevance realization, large coherence shifts, explicit ComputeExpressionFromCognition) send
+ * the real cognitive data (coherence, entelechy, 4E, relevance) through ReactionPromptTemplate to
+ * the model; its JSON reply is validated against EAvatarEmotionState and broadcast on
+ * FEchoReactionBus; this component renders reactions from the bus (emotion -> morph/body maps).
+ * 4E values modulate postural/physiological tone (breathing depth, spine, hand activity) only.
+ *
  * Key features:
- * - Cognitive-to-expression mapping
- * - Body schema management
- * - Facial expression control
+ * - Model-chosen emotion rendering (morph targets, body schema)
+ * - Body schema management and 4E postural tone
  * - Voice modulation
  * - Integration with echobeats and sys6 systems
  * - Relevance realization events
@@ -281,6 +273,7 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType,
@@ -290,19 +283,43 @@ public:
     // CONFIGURATION
     // ========================================
 
-    /** Expression update rate (Hz) */
+    /** Body-tone update rate (Hz) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Config")
     float ExpressionUpdateRate = 30.0f;
 
-    /** Enable automatic expression updates */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Config")
-    bool bEnableAutoExpression = true;
+    /** Cognition events ask the model for the character's reaction (the face shows only model reactions). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction")
+    bool bRequestReactionOnCognitiveEvents = true;
+
+    /** Relevance level at or above which a relevance-realization event asks the model for a reaction. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float RelevanceReactionThreshold = 0.6f;
+
+    /** Coherence change (absolute) since the last request that asks the model for a reaction. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float CoherenceShiftReactionThreshold = 0.25f;
+
+    /** Minimum seconds between reaction requests. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction", meta = (ClampMin = "0.0"))
+    float MinSecondsBetweenReactionRequests = 4.0f;
+
+    /** Only reactions for this character are rendered; empty = owner name, all reactions accepted. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction")
+    FString ReactionCharacterName;
+
+    /**
+     * Prompt template (model input). Slots: {character}, {trigger}, {coherence}, {entelechy}, {embodied},
+     * {embedded}, {enacted}, {extended}, {relevance}, {echobeat_step}, {sys6_step}, {current_emotion},
+     * {emotions}. The reply must be JSON {"emotion": <one of {emotions}>, "intensity": 0..1}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Reaction", meta = (MultiLine = "true"))
+    FString ReactionPromptTemplate;
 
     /** Expression smoothing factor (0 = instant, 1 = very smooth) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Config", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float ExpressionSmoothingFactor = 0.3f;
 
-    /** Cognitive-to-expression mappings */
+    /** Cognitive-to-body-tone mappings (Body/Posture/Gesture channels; Facial is not driven by cognition) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Avatar|Config")
     TArray<FCognitiveExpressionMapping> ExpressionMappings;
 
@@ -321,7 +338,7 @@ public:
     FOnExpressionUpdated OnExpressionUpdated;
 
     UPROPERTY(BlueprintAssignable, Category = "Avatar|Events")
-    FOnCognitiveStateChanged OnCognitiveStateChanged;
+    FOnAvatarCognitiveStateChanged OnCognitiveStateChanged;
 
     UPROPERTY(BlueprintAssignable, Category = "Avatar|Events")
     FOnRelevanceRealizationTriggered OnRelevanceRealizationTriggered;
@@ -402,9 +419,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Avatar|Cognitive")
     void Update4EState(const TMap<FString, float>& E4Values);
 
-    /** Compute expression from cognitive state */
+    /**
+     * Asks the character model how it reacts to the current cognitive state (coherence, entelechy,
+     * 4E, relevance). The expression changes only when the model's validated reply arrives on the
+     * reaction bus. Returns false if a request is already pending.
+     */
     UFUNCTION(BlueprintCallable, Category = "Avatar|Cognitive")
-    void ComputeExpressionFromCognition();
+    bool ComputeExpressionFromCognition();
+
+    /** Last model/validation error for reaction requests (system status only). */
+    UFUNCTION(BlueprintPure, Category = "Avatar|Reaction")
+    FString GetLastReactionError() const { return LastReactionError; }
 
     // ========================================
     // PUBLIC API - STATE QUERIES
@@ -456,15 +481,36 @@ protected:
     /** Target emotion intensity for blending */
     float TargetEmotionIntensity = 0.5f;
 
+    /** Body schema of the model-chosen emotion, before 4E postural tone is applied */
+    FAvatarBodySchema ReactionBodySchema;
+
+    /** Latest relevance level reported by echobeats */
+    float LastRelevanceLevel = 0.0f;
+
+    /** Coherence at the time of the last reaction request */
+    float CoherenceAtLastRequest = 1.0f;
+
+    bool bReactionRequestPending = false;
+    double LastReactionRequestTime = -1.0e9;
+    FString LastReactionError;
+    FDelegateHandle ReactionHandle;
+
     // Internal methods
     void FindComponentReferences();
     void InitializeDefaultMappings();
     void UpdateExpressionFromMappings();
     void BlendExpressionStates(float DeltaTime);
     void ApplyExpressionToAvatar();
-    void ComputeEmotionFromCognition();
     FFacialExpressionState GetEmotionFacialExpression(EAvatarEmotionState Emotion, float Intensity);
     FAvatarBodySchema GetEmotionBodySchema(EAvatarEmotionState Emotion, float Intensity);
+
+    // Model reactions
+    bool RequestModelReaction(const FString& Trigger);
+    bool CanRequestReaction() const;
+    FString GetReactionCharacterNameResolved() const;
+    FString BuildReactionPrompt(const FString& Trigger) const;
+    void HandleModelReactionReply(bool bSuccess, const FString& TextOrError);
+    void HandleCharacterReaction(const FEchoCharacterReaction& Reaction);
 
     /** Handle echobeats step changed */
     UFUNCTION()

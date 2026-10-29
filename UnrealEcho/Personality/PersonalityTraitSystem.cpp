@@ -9,13 +9,6 @@ UPersonalityTraitSystem::UPersonalityTraitSystem()
     // Initialize configuration
     TraitDevelopmentSpeed = 0.1f;
     TraitInteractionStrength = 0.5f;
-    bEnableAutonomousBehavior = true;
-    
-    // Initialize timers
-    ChaoticEventTimer = 0.0f;
-    NextChaoticEventTime = FMath::FRandRange(3.0f, 7.0f);
-    FlirtyBehaviorTimer = 0.0f;
-    ConfidentGestureTimer = 0.0f;
     
     // Initialize default traits
     FPersonalityTrait SuperHotGirlTraitData;
@@ -53,13 +46,11 @@ void UPersonalityTraitSystem::TickComponent(float DeltaTime, ELevelTick TickType
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
     
-    if (bEnableAutonomousBehavior)
-    {
-        UpdateTraitDevelopment(DeltaTime);
-        ProcessTraitInteractions(DeltaTime);
-        UpdateChaoticBehavior(DeltaTime);
-        UpdateSuperHotGirlBehavior(DeltaTime);
-    }
+    // Trait values are persona data (model input). The tick only resolves deterministic
+    // trait interactions; it never triggers expressions, gestures or emotional events.
+    // The character's visible reactions come exclusively from model replies broadcast on
+    // FEchoReactionBus.
+    ProcessTraitInteractions(DeltaTime);
 }
 
 // ===== Trait Management =====
@@ -79,8 +70,6 @@ void UPersonalityTraitSystem::SetTraitIntensity(EPersonalityTraitType TraitType,
         NewTrait.Intensity = ClampedIntensity;
         PersonalityTraits.Add(TraitType, NewTrait);
     }
-    
-    ApplyTraitToAvatar();
     
     UE_LOG(LogTemp, Log, TEXT("Trait %d set to intensity %.2f"), (int32)TraitType, ClampedIntensity);
 }
@@ -134,50 +123,6 @@ void UPersonalityTraitSystem::SetSuperHotGirlParameters(float Confidence, float 
     SuperHotGirlTrait.Confidence = FMath::Clamp(Confidence, 0.0f, 1.0f);
     SuperHotGirlTrait.Charm = FMath::Clamp(Charm, 0.0f, 1.0f);
     SuperHotGirlTrait.Playfulness = FMath::Clamp(Playfulness, 0.0f, 1.0f);
-    
-    ApplyTraitToAvatar();
-}
-
-void UPersonalityTraitSystem::TriggerFlirtyBehavior(float Intensity)
-{
-    float FlirtyIntensity = Intensity * SuperHotGirlTrait.Playfulness;
-    
-    // In production, this would trigger specific animations and expressions
-    UE_LOG(LogTemp, Log, TEXT("Flirty behavior triggered with intensity %.2f"), FlirtyIntensity);
-    
-    // Could trigger:
-    // - Hair touch gesture
-    // - Playful smile
-    // - Eye contact with slight head tilt
-    // - Subtle blush effect
-}
-
-void UPersonalityTraitSystem::TriggerConfidentGesture()
-{
-    float ConfidenceLevel = SuperHotGirlTrait.Confidence;
-    
-    // In production, this would play confident gesture animations
-    UE_LOG(LogTemp, Log, TEXT("Confident gesture triggered (confidence: %.2f)"), ConfidenceLevel);
-    
-    // Could trigger:
-    // - Assertive hand gesture
-    // - Direct eye contact
-    // - Open posture
-    // - Slight smirk
-}
-
-void UPersonalityTraitSystem::TriggerPlayfulExpression()
-{
-    float PlayfulnessLevel = SuperHotGirlTrait.Playfulness;
-    
-    // In production, this would trigger playful facial expressions
-    UE_LOG(LogTemp, Log, TEXT("Playful expression triggered (playfulness: %.2f)"), PlayfulnessLevel);
-    
-    // Could trigger:
-    // - Wink
-    // - Tongue out slightly
-    // - Mischievous smile
-    // - Raised eyebrow
 }
 
 // ===== Hyper Chaotic Trait =====
@@ -193,9 +138,6 @@ void UPersonalityTraitSystem::ActivateHyperChaoticTrait(float Intensity)
     HyperChaoticTrait.PatternBreaking = 0.4f + (Intensity * 0.6f);
     HyperChaoticTrait.CognitiveFluctuation = 0.2f + (Intensity * 0.8f);
     
-    // Adjust chaotic event frequency
-    NextChaoticEventTime = FMath::FRandRange(1.0f / (Intensity + 0.1f), 5.0f / (Intensity + 0.1f));
-    
     UE_LOG(LogTemp, Log, TEXT("Hyper Chaotic trait activated at intensity %.2f"), Intensity);
 }
 
@@ -204,53 +146,6 @@ void UPersonalityTraitSystem::SetHyperChaoticParameters(float Unpredictability, 
     HyperChaoticTrait.UnpredictabilityFactor = FMath::Clamp(Unpredictability, 0.0f, 1.0f);
     HyperChaoticTrait.EmotionalVolatility = FMath::Clamp(Volatility, 0.0f, 1.0f);
     HyperChaoticTrait.ImpulsivityLevel = FMath::Clamp(Impulsivity, 0.0f, 1.0f);
-    
-    ApplyTraitToAvatar();
-}
-
-void UPersonalityTraitSystem::TriggerChaoticEvent()
-{
-    int32 EventType = FMath::RandRange(0, 4);
-    
-    switch (EventType)
-    {
-        case 0:
-            // Sudden emotional shift
-            TriggerEmotionalSpike(FMath::FRandRange(0.5f, 1.0f));
-            break;
-        case 1:
-            // Pattern break
-            TriggerPatternBreak();
-            break;
-        case 2:
-            // Micro-expression burst
-            UE_LOG(LogTemp, Log, TEXT("Chaotic micro-expression burst"));
-            break;
-        case 3:
-            // Glitch effect
-            UE_LOG(LogTemp, Log, TEXT("Chaotic glitch effect"));
-            break;
-        case 4:
-            // Unpredictable gesture
-            UE_LOG(LogTemp, Log, TEXT("Chaotic unpredictable gesture"));
-            break;
-    }
-}
-
-void UPersonalityTraitSystem::TriggerEmotionalSpike(float Intensity)
-{
-    float SpikeIntensity = Intensity * HyperChaoticTrait.EmotionalVolatility;
-    
-    // In production, this would cause a sudden emotional state change
-    UE_LOG(LogTemp, Log, TEXT("Emotional spike triggered with intensity %.2f"), SpikeIntensity);
-}
-
-void UPersonalityTraitSystem::TriggerPatternBreak()
-{
-    float BreakIntensity = HyperChaoticTrait.PatternBreaking;
-    
-    // In production, this would interrupt current behavior pattern
-    UE_LOG(LogTemp, Log, TEXT("Pattern break triggered (intensity: %.2f)"), BreakIntensity);
 }
 
 // ===== Trait Interactions =====
@@ -334,10 +229,9 @@ FVector2D UPersonalityTraitSystem::GetEmotionalTendency() const
     Valence += SuperHotIntensity * 0.6f;
     Arousal += SuperHotIntensity * 0.3f;
     
-    // Hyper Chaotic increases arousal and adds volatility to valence
+    // Hyper Chaotic increases arousal (deterministic tendency; no random valence walk)
     float ChaoticIntensity = GetTraitIntensity(EPersonalityTraitType::HyperChaotic);
     Arousal += ChaoticIntensity * 0.4f;
-    Valence += FMath::FRandRange(-ChaoticIntensity * 0.3f, ChaoticIntensity * 0.3f);
     
     // Confident increases both
     float ConfidentIntensity = GetTraitIntensity(EPersonalityTraitType::Confident);
@@ -383,70 +277,7 @@ float UPersonalityTraitSystem::GetSocialEngagementLevel() const
 
 // ===== Internal Methods =====
 
-void UPersonalityTraitSystem::UpdateTraitDevelopment(float DeltaTime)
-{
-    // Traits develop slowly over time based on usage
-    for (auto& TraitPair : PersonalityTraits)
-    {
-        FPersonalityTrait& Trait = TraitPair.Value;
-        
-        // Traits with low stability can drift
-        if (Trait.Stability < 0.7f)
-        {
-            float Drift = FMath::FRandRange(-0.01f, 0.01f) * (1.0f - Trait.Stability) * DeltaTime;
-            Trait.Intensity = FMath::Clamp(Trait.Intensity + Drift, 0.0f, 1.0f);
-        }
-    }
-}
-
 void UPersonalityTraitSystem::ProcessTraitInteractions(float DeltaTime)
 {
     CalculateTraitInteractions();
-}
-
-void UPersonalityTraitSystem::ApplyTraitToAvatar()
-{
-    // In production, this would update the Avatar3DComponent with trait effects
-    UE_LOG(LogTemp, Verbose, TEXT("Applying personality traits to avatar"));
-}
-
-void UPersonalityTraitSystem::UpdateChaoticBehavior(float DeltaTime)
-{
-    float ChaoticIntensity = GetTraitIntensity(EPersonalityTraitType::HyperChaotic);
-    
-    if (ChaoticIntensity > 0.1f)
-    {
-        ChaoticEventTimer += DeltaTime;
-        
-        if (ChaoticEventTimer >= NextChaoticEventTime)
-        {
-            TriggerChaoticEvent();
-            ChaoticEventTimer = 0.0f;
-            NextChaoticEventTime = FMath::FRandRange(1.0f / (ChaoticIntensity + 0.1f), 5.0f / (ChaoticIntensity + 0.1f));
-        }
-    }
-}
-
-void UPersonalityTraitSystem::UpdateSuperHotGirlBehavior(float DeltaTime)
-{
-    float SuperHotIntensity = GetTraitIntensity(EPersonalityTraitType::SuperHotGirl);
-    
-    if (SuperHotIntensity > 0.5f && bEnableAutonomousBehavior)
-    {
-        // Trigger periodic flirty behaviors
-        FlirtyBehaviorTimer += DeltaTime;
-        if (FlirtyBehaviorTimer >= 10.0f)
-        {
-            TriggerFlirtyBehavior(SuperHotIntensity);
-            FlirtyBehaviorTimer = 0.0f;
-        }
-        
-        // Trigger periodic confident gestures
-        ConfidentGestureTimer += DeltaTime;
-        if (ConfidentGestureTimer >= 15.0f)
-        {
-            TriggerConfidentGesture();
-            ConfidentGestureTimer = 0.0f;
-        }
-    }
 }

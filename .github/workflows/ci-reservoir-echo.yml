@@ -298,8 +298,8 @@ jobs:
       - name: Generate coverage report
         working-directory: ${{ env.RESERVOIR_DIR }}
         run: |
-          lcov --capture --directory build --output-file coverage.info
-          lcov --remove coverage.info '/usr/*' '*/test/*' '*/external/*' --output-file coverage.info
+          lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
+          lcov --remove coverage.info '/usr/*' '*/test/*' '*/external/*' --output-file coverage.info --ignore-errors unused
           lcov --list coverage.info
 
       - name: Upload coverage to Codecov

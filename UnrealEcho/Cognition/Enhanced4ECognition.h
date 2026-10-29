@@ -6,11 +6,11 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Cognitive/EmotionalState.h"
 #include "Enhanced4ECognition.generated.h"
 
 // Forward declarations
 struct FCognitiveState;
-struct FEmotionalState;
 struct FNeurochemicalState;
 
 /**
@@ -276,6 +276,12 @@ struct FSocialAgent
     {}
 };
 
+/** The model chose an exploratory sampling action for Phenomenon (the game performs it, if it binds this) */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOn4ESamplingActionChosen, const FString&, Phenomenon, const FString&, Action);
+
+/** A sampling-action request failed; no action was chosen (Error is system text) */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOn4ESamplingActionFailed, const FString&, Phenomenon, const FString&, Error);
+
 /**
  * UEnhanced4ECognitionComponent
  * 
@@ -471,11 +477,39 @@ public:
     void InitiateExploratorySampling(float UncertaintyLevel);
 
     /**
-     * Generate sampling action
-     * @return Motor command for sampling
+     * Exploratory actions the body can perform (model input: the model chooses from these).
+     * The game should set this to the actions its motor/animation layer handles.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "4E|Enacted")
+    TArray<FString> SamplingActionVocabulary;
+
+    /**
+     * Prompt template for choosing a sampling action. Slots: {phenomenon}, {exploration_drive},
+     * {pending_predictions}, {affordances}, {niche}, {familiarity}, {body}, {actions}. The model
+     * replies with JSON {"action": "<name>"}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "4E|Enacted", meta = (MultiLine = true))
+    FString SamplingActionPromptTemplate;
+
+    /**
+     * Ask the model to choose an exploratory action that reduces uncertainty about Phenomenon,
+     * from SamplingActionVocabulary and the real enacted/embedded state. Asynchronous: the choice
+     * arrives on OnSamplingActionChosen (this component does not move the body; the game performs
+     * the action if it binds the event), failures on OnSamplingActionFailed. Returns false when
+     * nothing was requested (empty vocabulary/template or a request already in flight).
      */
     UFUNCTION(BlueprintCallable, Category = "4E|Enacted")
-    FString GenerateSamplingAction();
+    bool RequestSamplingAction(const FString& Phenomenon);
+
+    /** Last model-chosen sampling action (empty until one arrives) */
+    UPROPERTY(BlueprintReadOnly, Category = "4E|Enacted")
+    FString LastSamplingAction;
+
+    UPROPERTY(BlueprintAssignable, Category = "4E|Enacted")
+    FOn4ESamplingActionChosen OnSamplingActionChosen;
+
+    UPROPERTY(BlueprintAssignable, Category = "4E|Enacted")
+    FOn4ESamplingActionFailed OnSamplingActionFailed;
 
     /**
      * Validate sensorimotor prediction
@@ -507,7 +541,8 @@ public:
     void CoCreateMeaningWithEnvironment(const FString& InteractionContext);
 
     /**
-     * Engage participatory knowing
+     * Engage participatory knowing: requests a model-chosen sampling action for Phenomenon
+     * (see RequestSamplingAction)
      * @param Phenomenon - Phenomenon to engage with
      */
     UFUNCTION(BlueprintCallable, Category = "4E|Enacted")
@@ -616,6 +651,9 @@ protected:
 
     UPROPERTY()
     FString EnactedWorldModelDescription;
+
+    /** A sampling-action model request is in flight */
+    bool bSamplingRequestInFlight = false;
 
     // ========================================
     // EXTENDED State

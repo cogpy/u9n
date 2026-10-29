@@ -95,7 +95,7 @@ void UDeepTreeEchoIntegration::DiscoverSubsystems()
     // Find all subsystem components on the owner actor
     CosmosStateMachine = Owner->FindComponentByClass<UCosmosStateMachine>();
     HolisticMetamodel = Owner->FindComponentByClass<UHolisticMetamodel>();
-    CognitiveCycleManager = Owner->FindComponentByClass<UCognitiveCycleManager>();
+    CognitiveCycleManager = Owner->FindComponentByClass<UCognitiveStreamCycleManager>();
     EntelechyFramework = Owner->FindComponentByClass<UEntelechyFramework>();
     WisdomCultivation = Owner->FindComponentByClass<UWisdomCultivation>();
 }
@@ -522,23 +522,23 @@ void UDeepTreeEchoIntegration::FeedCognitiveCycleToSubsystems()
     }
 
     int32 Step = CognitiveCycleManager->CycleState.GlobalStep;
-    ECognitiveStepType StepType = CognitiveCycleManager->GetStepType(Step);
+    ECognitiveStreamStepType StepType = CognitiveCycleManager->GetStepType(Step);
 
     // Feed to Wisdom
     if (WisdomCultivation)
     {
         switch (StepType)
         {
-            case ECognitiveStepType::RelevanceRealization:
+            case ECognitiveStreamStepType::RelevanceRealization:
                 // Trigger relevance realization
                 WisdomCultivation->RealizeRelevance();
                 break;
-            case ECognitiveStepType::AffordanceInteraction:
+            case ECognitiveStreamStepType::AffordanceInteraction:
                 // Update affordance landscape
                 WisdomCultivation->CurrentState.AffordanceLandscape.ActionReadiness = 
                     CognitiveCycleManager->GetStreamActivation(EConsciousnessStream::Action);
                 break;
-            case ECognitiveStepType::SalienceSimulation:
+            case ECognitiveStreamStepType::SalienceSimulation:
                 // Update salience landscape
                 WisdomCultivation->CurrentState.SalienceLandscape.Coherence = 
                     CognitiveCycleManager->GetStreamActivation(EConsciousnessStream::Simulation);
@@ -585,7 +585,7 @@ void UDeepTreeEchoIntegration::FeedWisdomToSubsystems()
     }
 
     float WisdomLevel = WisdomCultivation->GetOverallWisdomLevel();
-    FRelevanceRealizationState RelevanceState = WisdomCultivation->GetRelevanceRealizationState();
+    FWisdomRelevanceState RelevanceState = WisdomCultivation->GetRelevanceRealizationState();
 
     // Feed to Cognitive Cycle
     if (CognitiveCycleManager)

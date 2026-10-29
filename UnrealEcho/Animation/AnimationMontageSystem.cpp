@@ -6,6 +6,7 @@
 #include "Animation/AnimMontage.h"
 #include "Personality/PersonalityTraitSystem.h"
 #include "Cognitive/EmotionalState.h"
+#include "EchoCharacterReaction.h"
 
 //////////////////////////////////////////////////////////////////////////
 // UMontageLibraryDataAsset
@@ -77,6 +78,99 @@ void UAnimationMontageSystem::BeginPlay()
 	{
 		CurrentLibrary = DefaultMontageLibrary;
 	}
+
+	// Character gestures/emotes are played for model reactions only
+	TWeakObjectPtr<UAnimationMontageSystem> WeakThis(this);
+	ReactionHandle = FEchoReactionBus::OnReaction().AddLambda([WeakThis](const FEchoCharacterReaction& Reaction)
+	{
+		if (UAnimationMontageSystem* Self = WeakThis.Get())
+		{
+			Self->HandleCharacterReaction(Reaction);
+		}
+	});
+}
+
+void UAnimationMontageSystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (ReactionHandle.IsValid())
+	{
+		FEchoReactionBus::OnReaction().Remove(ReactionHandle);
+		ReactionHandle.Reset();
+	}
+
+	if (AnimInstance)
+	{
+		AnimInstance->OnMontageEnded.RemoveDynamic(this, &UAnimationMontageSystem::OnMontageEndedInternal);
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
+void UAnimationMontageSystem::HandleCharacterReaction(const FEchoCharacterReaction& Reaction)
+{
+	if (!bPlayMontagesForReactions)
+	{
+		return;
+	}
+
+	if (!ReactionCharacterName.IsEmpty() &&
+		!Reaction.CharacterName.Equals(ReactionCharacterName, ESearchCase::IgnoreCase))
+	{
+		return;
+	}
+
+	// The model's gesture takes precedence; otherwise an emote montage named like its expression
+	const float Intensity = FMath::Clamp(Reaction.Intensity, 0.0f, 1.0f);
+	if (!Reaction.Gesture.IsEmpty() && PlayMontageForModelReaction(Reaction.Gesture, Intensity))
+	{
+		return;
+	}
+	if (!Reaction.Expression.IsEmpty())
+	{
+		PlayMontageForModelReaction(Reaction.Expression, Intensity);
+	}
+}
+
+bool UAnimationMontageSystem::IsAmbientCategory(EMontageCategory Category)
+{
+	return Category == EMontageCategory::Idle || Category == EMontageCategory::Locomotion;
+}
+
+bool UAnimationMontageSystem::PlayMontageForModelReaction(const FString& ModelChosenName, float Intensity)
+{
+	if (!CurrentLibrary)
+	{
+		return false;
+	}
+
+	const FString Name = ModelChosenName.TrimStartAndEnd();
+	if (Name.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const FMontageEntry& Entry : CurrentLibrary->Montages)
+	{
+		const bool bReactionCategory = Entry.Category == EMontageCategory::Gesture ||
+			Entry.Category == EMontageCategory::Emote ||
+			Entry.Category == EMontageCategory::Social;
+		if (!bReactionCategory)
+		{
+			continue;
+		}
+
+		if (Entry.MontageId.ToString().Equals(Name, ESearchCase::IgnoreCase) ||
+			Entry.DisplayName.ToString().Equals(Name, ESearchCase::IgnoreCase))
+		{
+			// Intensity modulates tempo slightly (renderer choice; the gesture itself is the model's)
+			FMontagePlayRequest Request;
+			Request.MontageId = Entry.MontageId;
+			Request.PlayRate = FMath::Lerp(0.9f, 1.1f, FMath::Clamp(Intensity, 0.0f, 1.0f));
+			return PlayMontage(Entry.MontageId, Request);
+		}
+	}
+
+	return false;
 }
 
 void UAnimationMontageSystem::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -93,7 +187,7 @@ void UAnimationMontageSystem::Initialize(UAnimInstance* InAnimInstance)
 	if (AnimInstance)
 	{
 		// Bind to montage ended event
-		MontageEndedHandle = AnimInstance->OnMontageEnded.AddUObject(this, &UAnimationMontageSystem::OnMontageEndedInternal);
+		AnimInstance->OnMontageEnded.AddDynamic(this, &UAnimationMontageSystem::OnMontageEndedInternal);
 	}
 }
 
@@ -200,6 +294,14 @@ bool UAnimationMontageSystem::PlayRandomFromCategory(EMontageCategory Category)
 		return false;
 	}
 
+	// Random choice is only for ambient motion; a character's gesture/emote is the model's choice
+	if (!IsAmbientCategory(Category))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AnimationMontageSystem: random selection refused for character reaction category %d; play the model-chosen montage via PlayMontageForModelReaction"),
+			static_cast<int32>(Category));
+		return false;
+	}
+
 	TArray<FMontageEntry> CategoryMontages = CurrentLibrary->GetMontagesByCategory(Category);
 
 	// Filter out montages on cooldown
@@ -217,7 +319,7 @@ bool UAnimationMontageSystem::PlayRandomFromCategory(EMontageCategory Category)
 		return false;
 	}
 
-	// Select random montage
+	// Select random ambient variation
 	int32 RandomIndex = FMath::RandRange(0, AvailableMontages.Num() - 1);
 	return PlayMontage(AvailableMontages[RandomIndex].MontageId);
 }

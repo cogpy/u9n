@@ -13,6 +13,8 @@ class UNiagaraComponent;
 class UWidgetComponent;
 class UPostProcessComponent;
 class USpotLightComponent;
+class UAnimMontage;
+struct FEchoCharacterReaction;
 
 /**
  * Expression Morph Targets for facial animation
@@ -172,9 +174,32 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
     virtual void Tick(float DeltaTime) override;
+
+    // ===== Model Reactions =====
+
+    /** Only reactions for this character are applied; empty = apply every reaction on the bus */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AgentAvatar|Reaction")
+    FString ReactionCharacterName;
+
+    /** Playback time per character of utterance text (duration of the speaking effect) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AgentAvatar|Reaction", meta = (ClampMin = "0.01"))
+    float SpeechSecondsPerCharacter = 0.06f;
+
+    /** Gesture name -> montage played by TriggerGesture */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AgentAvatar|Animation")
+    TMap<FString, UAnimMontage*> GestureMontages;
+
+    /**
+     * Apply a model-chosen reaction: expression name -> emotion channel (happiness, sadness,
+     * anger, fear, surprise, disgust, contempt, curiosity, excitement) at the model's
+     * intensity, gesture name -> TriggerGesture, utterance -> speaking effect for its
+     * playback duration. Unknown names are ignored.
+     */
+    void ApplyCharacterReaction(const FEchoCharacterReaction& Reaction);
 
     // ===== Agent Identity =====
 
@@ -285,6 +310,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "AgentAvatar|Animation")
     void SetIdleVariation(int32 Variation);
 
+    /** Play the montage configured in GestureMontages for this gesture name (logs a warning if none) */
     UFUNCTION(BlueprintCallable, Category = "AgentAvatar|Animation")
     void TriggerGesture(const FString& GestureType);
 
@@ -307,6 +333,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "AgentAvatar|Effects")
     void TriggerThinkingEffect(bool bEnable);
 
+    /** Set the speaking state and the avatar material's "SpeakingIntensity" parameter */
     UFUNCTION(BlueprintCallable, Category = "AgentAvatar|Effects")
     void TriggerSpeakingEffect(bool bEnable);
 
@@ -428,4 +455,9 @@ private:
 
     float MicroExpressionTimer;
     float HighlightTimer;
+    float SpeakingTimer = 0.0f;
+
+    // ===== Reaction Bus =====
+
+    FDelegateHandle ReactionHandle;
 };

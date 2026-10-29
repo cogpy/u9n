@@ -200,8 +200,16 @@ int32 UActiveInferenceEngine::RunActiveInference()
     }
 
     // Execute action
+    // Only real, environment-observed outcomes are broadcast as executed
     FActionOutcome Outcome = ExecuteAction(ActionIndex);
-    OnActionExecuted.Broadcast(Outcome);
+    if (Outcome.bExecuted)
+    {
+        OnActionExecuted.Broadcast(Outcome);
+    }
+    else
+    {
+        OnActionFailed.Broadcast(Outcome);
+    }
 
     return ActionIndex;
 }
@@ -658,25 +666,44 @@ FActionOutcome UActiveInferenceEngine::ExecuteAction(int32 ActionIndex)
     FActionOutcome Outcome;
     Outcome.ActionID = ActionIndex;
     Outcome.ActionType = FString::Printf(TEXT("Action_%d"), ActionIndex);
-    Outcome.Timestamp = GetWorld()->GetTimeSeconds();
+    Outcome.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 
     // Predict outcome
     Outcome.PredictedOutcome = PredictActionOutcome(ActionIndex);
 
+    // The actual outcome must come from the environment
+    if (!EnvironmentExecutor.IsBound())
+    {
+        Outcome.Status = TEXT("not executed: no environment executor bound (SetEnvironmentExecutor)");
+        UE_LOG(LogTemp, Verbose, TEXT("ActiveInferenceEngine: action %d %s"), ActionIndex, *Outcome.Status);
+        return Outcome;
+    }
+
+    TArray<float> Observation;
+    if (!EnvironmentExecutor.Execute(ActionIndex, Observation))
+    {
+        Outcome.Status = TEXT("not executed: the environment could not perform the action");
+        UE_LOG(LogTemp, Warning, TEXT("ActiveInferenceEngine: action %d %s"), ActionIndex, *Outcome.Status);
+        return Outcome;
+    }
+    if (Observation.Num() == 0)
+    {
+        Outcome.Status = TEXT("environment returned no observation; outcome unknown");
+        UE_LOG(LogTemp, Warning, TEXT("ActiveInferenceEngine: action %d %s"), ActionIndex, *Outcome.Status);
+        return Outcome;
+    }
+
+    Outcome.bExecuted = true;
+    Outcome.Status = TEXT("executed");
+    Outcome.ActualOutcome = MoveTemp(Observation);
+
     // Update active states in Markov blanket
-    if (ActionIndex < MarkovBlanket.ActiveStates.Num())
+    if (MarkovBlanket.ActiveStates.IsValidIndex(ActionIndex))
     {
         MarkovBlanket.ActiveStates[ActionIndex] = 1.0f;
     }
 
-    // Simulate actual outcome (in real system, this would come from environment)
-    Outcome.ActualOutcome = Outcome.PredictedOutcome;
-    for (float& Val : Outcome.ActualOutcome)
-    {
-        Val += FMath::FRandRange(-0.1f, 0.1f);  // Add noise
-    }
-
-    // Compute prediction error
+    // Compute prediction error against the observed outcome
     float ErrorSum = 0.0f;
     for (int32 i = 0; i < FMath::Min(Outcome.PredictedOutcome.Num(), Outcome.ActualOutcome.Num()); ++i)
     {

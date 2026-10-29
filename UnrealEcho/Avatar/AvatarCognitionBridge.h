@@ -9,9 +9,13 @@
  * 
  * Architecture:
  * - Connects EchobeatsCognitiveInterface with DeepTreeEchoExpressionSystem
- * - Maps reservoir states to expression parameters
- * - Implements relevance realization through visual salience
+ * - Maps reservoir states to embodiment parameters (emissives, breathing, posture, gaze)
+ * - Implements relevance realization through emissive salience
  * - Provides embodied grounding for cognitive processes
+ *
+ * The bridge never chooses the avatar's facial expression: the displayed expression is
+ * the one the character model chose (applied by UDeepTreeEchoExpressionSystem from
+ * FEchoReactionBus). FEmbodimentState::Expression mirrors it read-only.
  * 
  * 4E Cognition Integration:
  * - Embodied: Avatar body schema influences cognitive processing
@@ -37,13 +41,13 @@ struct FEmbodimentState
 {
     GENERATED_BODY()
 
-    /** Current expression state */
+    /** Displayed expression (mirrors the last model-chosen expression; set by the expression system) */
     UPROPERTY(BlueprintReadWrite)
     EExpressionState Expression = EExpressionState::Neutral;
 
-    /** Expression intensity (0-1) */
+    /** Displayed expression intensity (0-1, the model's intensity) */
     UPROPERTY(BlueprintReadWrite)
-    float ExpressionIntensity = 0.5f;
+    float ExpressionIntensity = 0.0f;
 
     /** Emissive glow intensity */
     UPROPERTY(BlueprintReadWrite)
@@ -75,43 +79,6 @@ struct FEmbodimentState
 };
 
 /**
- * Cognitive-Expression Mapping - Maps cognitive states to expressions
- */
-USTRUCT(BlueprintType)
-struct FCognitiveExpressionMapping
-{
-    GENERATED_BODY()
-
-    /** Cognitive state name */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ECognitiveState CognitiveState = ECognitiveState::Idle;
-
-    /** Primary expression */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EExpressionState PrimaryExpression = EExpressionState::Neutral;
-
-    /** Secondary expression (blended) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EExpressionState SecondaryExpression = EExpressionState::Neutral;
-
-    /** Blend weight for secondary (0-1) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float SecondaryBlendWeight = 0.0f;
-
-    /** Emissive intensity modifier */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float EmissiveModifier = 1.0f;
-
-    /** Breathing rate modifier */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float BreathingModifier = 1.0f;
-
-    /** Blink rate modifier */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float BlinkModifier = 1.0f;
-};
-
-/**
  * Reservoir-Expression Mapping - Maps reservoir states to expression parameters
  */
 USTRUCT(BlueprintType)
@@ -138,35 +105,6 @@ struct FReservoirExpressionMapping
     /** Smoothing factor (0=instant, 1=very smooth) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Smoothing = 0.5f;
-};
-
-/**
- * Echobeats Expression Profile - Expression settings for each echobeat step
- */
-USTRUCT(BlueprintType)
-struct FEchobeatsExpressionProfile
-{
-    GENERATED_BODY()
-
-    /** Step number (1-12) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    int32 StepNumber = 1;
-
-    /** Target expression */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EExpressionState TargetExpression = EExpressionState::Neutral;
-
-    /** Transition duration */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float TransitionDuration = 0.5f;
-
-    /** Emissive pulse on step entry */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bPulseOnEntry = false;
-
-    /** Microexpression to trigger */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    EMicroExpression MicroExpression = EMicroExpression::None;
 };
 
 /**
@@ -202,17 +140,9 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Config")
     bool bEnableEchobeatSync = true;
 
-    /** Cognitive-expression mappings */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Config")
-    TArray<FCognitiveExpressionMapping> CognitiveExpressionMappings;
-
     /** Reservoir-expression mappings */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Config")
     TArray<FReservoirExpressionMapping> ReservoirExpressionMappings;
-
-    /** Echobeats expression profiles */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Config")
-    TArray<FEchobeatsExpressionProfile> EchobeatsProfiles;
 
     /** Global expression smoothing */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bridge|Config", meta = (ClampMin = "0.0", ClampMax = "1.0"))
@@ -262,15 +192,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge")
     void InitializeBridge();
 
-    /** Setup default cognitive-expression mappings */
-    UFUNCTION(BlueprintCallable, Category = "Bridge")
-    void SetupDefaultMappings();
-
     // ========================================
     // PUBLIC API - COGNITIVE COUPLING
     // ========================================
 
-    /** Update embodiment from cognitive state */
+    /** Record cognitive state (does not change the displayed expression) */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Cognitive")
     void UpdateFromCognitiveState(ECognitiveState NewState);
 
@@ -290,7 +216,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Reservoir")
     void UpdateFromReservoirState();
 
-    /** Map salience landscape to expression */
+    /** Map salience landscape to emissive intensity (does not change the displayed expression) */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Reservoir")
     void MapSalienceToExpression(const TMap<FString, float>& SalienceMap);
 
@@ -302,7 +228,7 @@ public:
     // PUBLIC API - ECHOBEATS COUPLING
     // ========================================
 
-    /** Handle echobeat step change */
+    /** Handle echobeat step change (cadence only; no expression change) */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Echobeats")
     void OnEchobeatStepChanged(int32 NewStep, const FString& PhaseName);
 
@@ -310,7 +236,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Bridge|Echobeats")
     void OnCognitiveCycleComplete(int32 CycleCount);
 
-    /** Handle insight event */
+    /** Handle insight event (emissive pulse only; no expression change) */
     UFUNCTION(BlueprintCallable, Category = "Bridge|Echobeats")
     void OnInsightTriggered(float Intensity);
 
@@ -373,21 +299,12 @@ private:
     /** Bind to cognitive events */
     void BindCognitiveEvents();
 
-    /** Apply embodiment state to expression system */
+    /** Apply embodiment state (emissives) to the expression system and mirror its displayed expression */
     void ApplyEmbodimentToExpression();
 
     /** Smooth transition between embodiment states */
     void SmoothEmbodimentTransition(float DeltaTime);
 
-    /** Get expression for cognitive state */
-    FCognitiveExpressionMapping GetMappingForCognitiveState(ECognitiveState State) const;
-
-    /** Get echobeats profile for step */
-    FEchobeatsExpressionProfile GetProfileForStep(int32 Step) const;
-
     /** Compute embodiment coherence */
     void UpdateEmbodimentCoherence();
-
-    /** Initialize default echobeats profiles */
-    void InitializeDefaultEchobeatsProfiles();
 };

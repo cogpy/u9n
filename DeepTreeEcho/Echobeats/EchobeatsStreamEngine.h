@@ -8,24 +8,14 @@
 #include "Components/ActorComponent.h"
 #include "../Core/Sys6OperadEngine.h"
 #include "../Core/Sys6CognitiveBridge.h"
+#include "EchobeatStreamTypes.h"
 #include "EchobeatsStreamEngine.generated.h"
-
-/**
- * Cognitive stream type (3 concurrent streams)
- */
-UENUM(BlueprintType)
-enum class ECognitiveStreamType : uint8
-{
-    Pivotal     UMETA(DisplayName = "Pivotal - Relevance Realization"),
-    Affordance  UMETA(DisplayName = "Affordance - Environmental Interaction"),
-    Salience    UMETA(DisplayName = "Salience - Virtual Simulation")
-};
 
 /**
  * Cognitive mode (Expressive vs Reflective)
  */
 UENUM(BlueprintType)
-enum class ECognitiveMode : uint8
+enum class EEchobeatsCognitiveMode : uint8
 {
     Expressive  UMETA(DisplayName = "Expressive - Reactive/Action-oriented"),
     Reflective  UMETA(DisplayName = "Reflective - Anticipatory/Simulation-oriented")
@@ -46,17 +36,6 @@ enum class ESystem4Term : uint8
 };
 
 /**
- * Echobeat step type
- */
-UENUM(BlueprintType)
-enum class EEchobeatStepType : uint8
-{
-    Pivotal     UMETA(DisplayName = "Pivotal - Relevance Realization"),
-    Affordance  UMETA(DisplayName = "Affordance - Interaction"),
-    Salience    UMETA(DisplayName = "Salience - Simulation")
-};
-
-/**
  * Step configuration for 12-step cognitive loop
  */
 USTRUCT(BlueprintType)
@@ -74,7 +53,7 @@ struct FEchobeatStepConfig
 
     /** Cognitive mode */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ECognitiveMode Mode = ECognitiveMode::Expressive;
+    EEchobeatsCognitiveMode Mode = EEchobeatsCognitiveMode::Expressive;
 
     /** Primary stream for this step */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -148,7 +127,7 @@ struct FTensionalCoupling
 
     /** First term mode */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ECognitiveMode ModeA = ECognitiveMode::Expressive;
+    EEchobeatsCognitiveMode ModeA = EEchobeatsCognitiveMode::Expressive;
 
     /** Second term in coupling */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -156,7 +135,7 @@ struct FTensionalCoupling
 
     /** Second term mode */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ECognitiveMode ModeB = ECognitiveMode::Reflective;
+    EEchobeatsCognitiveMode ModeB = EEchobeatsCognitiveMode::Reflective;
 
     /** Coupling strength (0-1) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -210,7 +189,7 @@ struct FEchobeatsFullState
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchobeatStepChanged, int32, OldStep, int32, NewStep);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnStreamActivated, ECognitiveStreamType, StreamType, float, ActivationLevel);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCouplingActivated, FString, CouplingName, float, Strength);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnRelevanceRealized, int32, Step, float, RelevanceLevel);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEchobeatRelevanceRealized, int32, Step, float, RelevanceLevel);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEchobeatsCycleCompleted, int32, CycleCount);
 
 /**
@@ -279,7 +258,7 @@ public:
     FOnCouplingActivated OnCouplingActivated;
 
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
-    FOnRelevanceRealized OnRelevanceRealized;
+    FOnEchobeatRelevanceRealized OnRelevanceRealized;
 
     UPROPERTY(BlueprintAssignable, Category = "Echobeats|Events")
     FOnEchobeatsCycleCompleted OnCycleCompleted;

@@ -288,10 +288,10 @@ struct F4EEmbodimentState
 /**
  * Delegate declarations
  */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSensoryInputReceived, const FSensoryInput&, Input);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSensorimotorInputReceived, const FSensoryInput&, Input);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMotorCommandIssued, const FMotorCommand&, Command);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAffordanceDetected, const FDetectedAffordance&, Affordance);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPredictionError, const FString&, ContingencyID, float, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSensorimotorPredictionError, const FString&, ContingencyID, float, Error);
 
 /**
  * Sensorimotor Integration Component
@@ -339,7 +339,7 @@ public:
     // ========================================
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
-    FOnSensoryInputReceived OnSensoryInput;
+    FOnSensorimotorInputReceived OnSensoryInput;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnMotorCommandIssued OnMotorCommand;
@@ -348,7 +348,7 @@ public:
     FOnAffordanceDetected OnAffordanceDetected;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
-    FOnPredictionError OnPredictionError;
+    FOnSensorimotorPredictionError OnPredictionError;
 
     // ========================================
     // SENSORY INPUT
