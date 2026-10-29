@@ -223,6 +223,33 @@ public:
     UPROPERTY(BlueprintReadWrite, Category = "DeepTreeEcho")
     float GlitchIntensity = 0.0f;
 
+    /** Name the model is told it is; empty = this object's outer's name. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Model")
+    FString CharacterName;
+
+    /**
+     * Instruction sent to the model when it chooses facial parameters (micro-expressions, chaotic
+     * head/eye motion). Slots: {character}, {purpose}, {chaos}, {resonance}, {cognitive_load},
+     * {parameters}. The reply must be a JSON object mapping each offered parameter ID to a number.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Model", meta = (MultiLine = true))
+    FString FacialParameterPromptTemplate;
+
+    /** {purpose} for GenerateChaoticMicroExpression. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Model", meta = (MultiLine = true))
+    FString MicroExpressionPurpose;
+
+    /** {purpose} for ApplyHyperChaoticBehavior. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DeepTreeEcho|Model", meta = (MultiLine = true))
+    FString ChaoticMotionPurpose;
+
+    /** Last failure of a model facial-parameter request, or empty. */
+    UPROPERTY(BlueprintReadOnly, Category = "DeepTreeEcho|Model")
+    FString LastFacialParameterError;
+
+    /** Per-request-kind serials; a newer request of the same kind supersedes an outstanding reply. */
+    TMap<FString, int32> FacialRequestSerials;
+
 private:
     /** The wrapped CubismModelComponent from SDK */
     UPROPERTY()
@@ -249,7 +276,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Live2D|Enhancement")
     static void ApplySuperHotGirlAesthetic(UCubismSDKIntegration* Model);
 
-    /** Apply hyper-chaotic behavior patterns */
+    /**
+     * Apply hyper-chaotic behavior: stores ChaosFactor and asks the character's model to choose its
+     * head angle and eye position within ranges scaled by ChaosFactor. Asynchronous; on failure
+     * nothing moves and the error is kept in Model->LastFacialParameterError.
+     */
     UFUNCTION(BlueprintCallable, Category = "Live2D|Enhancement")
     static void ApplyHyperChaoticBehavior(UCubismSDKIntegration* Model, float ChaosFactor);
 
@@ -261,7 +292,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Live2D|Enhancement")
     static void ApplyEmotionalBlush(UCubismSDKIntegration* Model, float Intensity, const FLinearColor& Color);
 
-    /** Generate chaotic micro-expressions */
+    /**
+     * Ask the character's model to choose a micro-expression (brow heights, mouth form) within the
+     * allowed ranges. Asynchronous; on failure the face is unchanged and the error is kept in
+     * Model->LastFacialParameterError.
+     */
     UFUNCTION(BlueprintCallable, Category = "Live2D|Enhancement")
     static void GenerateChaoticMicroExpression(UCubismSDKIntegration* Model);
 
