@@ -638,7 +638,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Gaming")
     void ProcessGameFrame(const TArray<float>& FrameData, float DeltaTime);
 
-    /** Get recommended action */
+    /** The trained readout's integrated decision for the game state, or empty while untrained */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Gaming")
     FString GetRecommendedAction(const TArray<float>& GameState);
 
@@ -778,9 +778,6 @@ private:
 
     /** Calculate feature similarity */
     float CalculateFeatureSimilarity(const TArray<float>& Features1, const TArray<float>& Features2) const;
-
-    /** Generate action from affordance */
-    FString GenerateActionFromAffordance(const FAffordanceDetection& Affordance) const;
 
     /** Update prediction model */
     void UpdatePredictionModel(const TArray<float>& State, const TArray<float>& NextState, const FString& Action);

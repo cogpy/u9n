@@ -1161,24 +1161,9 @@ void UEchobeatsGamingIntegration::ProcessGameFrame(const TArray<float>& FrameDat
 
 FString UEchobeatsGamingIntegration::GetRecommendedAction(const TArray<float>& GameState)
 {
-    // Get integrated decision
-    FString Decision = GetIntegratedDecision();
-
-    // Check affordances for better options
-    for (const FAffordanceDetection& Affordance : DetectedAffordances)
-    {
-        if (Affordance.Confidence > 0.8f && Affordance.EstimatedValue > 0.7f)
-        {
-            // High-confidence, high-value affordance - consider it
-            FString AffordanceAction = GenerateActionFromAffordance(Affordance);
-            if (!AffordanceAction.IsEmpty())
-            {
-                return AffordanceAction;
-            }
-        }
-    }
-
-    return Decision;
+    // Only the trained readout's integrated decision (empty while untrained). Detected
+    // affordances inform the streams; they are not mapped to actions by a fixed table.
+    return GetIntegratedDecision();
 }
 
 void UEchobeatsGamingIntegration::RequestAttentionFocusRecommendation()
@@ -1433,29 +1418,6 @@ float UEchobeatsGamingIntegration::CalculateFeatureSimilarity(const TArray<float
     }
 
     return DotProduct / (FMath::Sqrt(Norm1) * FMath::Sqrt(Norm2));
-}
-
-FString UEchobeatsGamingIntegration::GenerateActionFromAffordance(const FAffordanceDetection& Affordance) const
-{
-    // Map affordance type to action
-    if (Affordance.AffordanceType == TEXT("attack"))
-    {
-        return TEXT("execute_attack");
-    }
-    else if (Affordance.AffordanceType == TEXT("resource"))
-    {
-        return TEXT("gather_resource");
-    }
-    else if (Affordance.AffordanceType == TEXT("escape"))
-    {
-        return TEXT("execute_escape");
-    }
-    else if (Affordance.AffordanceType == TEXT("defend"))
-    {
-        return TEXT("execute_defense");
-    }
-
-    return TEXT("");
 }
 
 void UEchobeatsGamingIntegration::UpdatePredictionModel(const TArray<float>& State, const TArray<float>& NextState, const FString& Action)
