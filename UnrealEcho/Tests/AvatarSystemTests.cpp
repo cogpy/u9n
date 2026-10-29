@@ -2,6 +2,7 @@
 #include "Avatar/Avatar3DComponentEnhanced.h"
 #include "Personality/PersonalityTraitSystem.h"
 #include "Neurochemical/NeurochemicalSimulationComponent.h"
+#include "Avatar/MetaHumanDNABridge.h"
 #include "Tests/AutomationCommon.h"
 #include "EchoCharacterReaction.h"
 
@@ -477,5 +478,35 @@ bool FIntegrationNeurochemicalEmotionTest::RunTest(const FString& Parameters)
         UE_LOG(LogTemp, Log, TEXT("Neurochemical-Emotion integration test passed"));
     }
     
+    return true;
+}
+
+// ===== MetaHuman DNA bridge: the face is the model's choice =====
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMetaHumanDNANoNeurochemicalFaceWithoutModelTest,
+    "UnrealEngineCog.MetaHumanDNA.NoNeurochemicalFaceWithoutModel",
+    EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FMetaHumanDNANoNeurochemicalFaceWithoutModelTest::RunTest(const FString& Parameters)
+{
+    UMetaHumanDNABridge* Bridge = NewObject<UMetaHumanDNABridge>();
+    TestNotNull(TEXT("DNA bridge should be created"), Bridge);
+    if (!Bridge) { return false; }
+
+    TestTrue(TEXT("The expression vocabulary is offered to the model"), Bridge->ExpressionRenderMap.Num() > 0);
+
+    // High dopamine/serotonin used to be rendered as a smile directly; now nothing is rendered
+    // until the model chooses an expression. An empty prompt fails without a model call.
+    FNeurochemicalState State;
+    State.DopamineLevel = 0.95f;
+    State.SerotoninLevel = 0.9f;
+    Bridge->FacialExpressionPromptTemplate.Empty();
+    AddExpectedError(TEXT("No model facial expression"));
+    TMap<FString, float> Weights;
+    Bridge->SyncNeurochemicalStateToBlendShapes(State, Weights);
+
+    TestEqual(TEXT("No blend shape weights before the model chooses an expression"), Weights.Num(), 0);
+    TestTrue(TEXT("No model expression"), Bridge->GetModelFacialExpression().IsEmpty());
+    TestFalse(TEXT("The failed request records an error"), Bridge->GetLastFacialExpressionError().IsEmpty());
     return true;
 }

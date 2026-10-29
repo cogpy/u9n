@@ -7,12 +7,28 @@
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "../Neurochemical/NeurochemicalSimulationComponent.h"
+#include "../Cognitive/EmotionalState.h"
 #include "MetaHumanDNABridge.generated.h"
 
 // Forward declarations
 class FPythonDNACalibWrapper;
-struct FNeurochemicalState;
-struct FEmotionalState;
+
+/**
+ * How one facial expression label is rendered: blend shape weights at full intensity.
+ * Rendering only; the label itself is chosen by the model.
+ */
+USTRUCT(BlueprintType)
+struct FDNAExpressionRender
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DNA")
+    TMap<FString, float> BlendShapeWeights;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnDNAFacialExpressionChosen, const FString&, Expression, float, Intensity);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDNAFacialExpressionFailed, const FString&, Error);
 
 /**
  * DNA Version Enum
@@ -319,13 +335,59 @@ public:
     bool ApplyDNAToSkeleton(USkeletalMeshComponent* SkeletalMesh);
 
     /**
-     * Sync neurochemical state to blend shapes
-     * Maps neurochemical levels to facial blend shapes
-     * @param State - Current neurochemical state
-     * @param OutBlendShapeWeights - Output blend shape weights (0-1)
+     * Sync neurochemical state to blend shapes. Asks the model to choose the facial expression
+     * for State (RequestFacialExpressionFromNeurochemicals) and outputs the blend shape weights
+     * rendered from the model's last chosen expression - empty until the model has answered.
+     * @param State - Current neurochemical state (model input)
+     * @param OutBlendShapeWeights - Weights rendered from the model's expression (0-1), or empty
      */
     UFUNCTION(BlueprintCallable, Category = "DNA|Integration")
     void SyncNeurochemicalStateToBlendShapes(const FNeurochemicalState& State, TMap<FString, float>& OutBlendShapeWeights);
+
+    /**
+     * Ask the model to choose the facial expression (a key of ExpressionRenderMap) and its
+     * intensity [0,1] given the neurochemical levels (FacialExpressionPromptTemplate). On a valid
+     * reply the expression is rendered through ExpressionRenderMap and OnFacialExpressionChosen
+     * fires. Failures: Error log, GetLastFacialExpressionError, OnFacialExpressionFailed, no change.
+     * Returns false when nothing was requested.
+     */
+    UFUNCTION(BlueprintCallable, Category = "DNA|Integration")
+    bool RequestFacialExpressionFromNeurochemicals(const FNeurochemicalState& State);
+
+    /** The model's last chosen facial expression, or empty */
+    UFUNCTION(BlueprintPure, Category = "DNA|Integration")
+    FString GetModelFacialExpression() const { return ModelFacialExpression; }
+
+    /** Intensity of the model's last chosen facial expression (0 if none) */
+    UFUNCTION(BlueprintPure, Category = "DNA|Integration")
+    float GetModelFacialExpressionIntensity() const { return ModelFacialExpressionIntensity; }
+
+    /** Blend shape weights rendered from the model's last expression, or empty */
+    UFUNCTION(BlueprintPure, Category = "DNA|Integration")
+    TMap<FString, float> GetModelExpressionBlendShapeWeights() const { return ModelExpressionWeights; }
+
+    /** Why the last facial expression request failed, or empty */
+    UFUNCTION(BlueprintPure, Category = "DNA|Integration")
+    FString GetLastFacialExpressionError() const { return LastFacialExpressionError; }
+
+    /** Expression labels the model may choose (the keys) and how each is rendered */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DNA|Model")
+    TMap<FString, FDNAExpressionRender> ExpressionRenderMap;
+
+    /**
+     * Instructions to the model for choosing the facial expression. Slots: {neurochemicals},
+     * {current}, {expressions}.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DNA|Model", meta = (MultiLine = true))
+    FString FacialExpressionPromptTemplate;
+
+    /** The model chose the facial expression */
+    UPROPERTY(BlueprintAssignable, Category = "DNA|Events")
+    FOnDNAFacialExpressionChosen OnFacialExpressionChosen;
+
+    /** A facial expression request failed; nothing changed */
+    UPROPERTY(BlueprintAssignable, Category = "DNA|Events")
+    FOnDNAFacialExpressionFailed OnFacialExpressionFailed;
 
     /**
      * Sync emotional state to facial rig
@@ -439,8 +501,17 @@ protected:
     bool ParseDNAVersion();
     void InitializeBlendShapeWeights();
 
-    // Neurochemical to blend shape mapping
-    void MapNeurochemicalToBlendShapes(const FNeurochemicalState& State, TMap<FString, float>& OutWeights);
+    // The model's facial expression and its rendering
+    FString ModelFacialExpression;
+    float ModelFacialExpressionIntensity = 0.0f;
+    TMap<FString, float> ModelExpressionWeights;
+    FString LastFacialExpressionError;
+    int32 FacialExpressionRequestSerial = 0;
+
+    void HandleFacialExpressionReply(int32 Serial, bool bSuccess, const FString& TextOrError);
+    void FailFacialExpressionRequest(const FString& Error);
+
+    // Emotional state (dimensional values) to blend shape rendering
     void MapEmotionalStateToBlendShapes(const FEmotionalState& Emotion, TMap<FString, float>& OutWeights);
 
     // Blend shape name mappings for different DNA versions
