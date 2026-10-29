@@ -146,6 +146,30 @@ private:
 };
 
 /**
+ * @brief Linear Readout - a trained map from cognitive state to output channels
+ *
+ * Holds output weights fitted by ridge regression (Wout). Until fit() has been called
+ * it is untrained and produces nothing: callers must not drive an avatar from raw
+ * reservoir state.
+ */
+class LinearReadout {
+public:
+    // Fit Wout from state rows to target rows (one sample per row)
+    void fit(const Matrix& states, const Matrix& targets, double ridge = 1e-6);
+
+    // Apply the trained readout; throws std::runtime_error when untrained or the size differs
+    Vector apply(const Vector& state) const;
+
+    bool is_trained() const { return trained_; }
+    int input_size() const { return static_cast<int>(Wout_.cols()); }
+    int output_size() const { return static_cast<int>(Wout_.rows()); }
+
+private:
+    Matrix Wout_;
+    bool trained_ = false;
+};
+
+/**
  * @brief Cognitive Node - Processing unit in the membrane hierarchy
  */
 class CognitiveNode {
@@ -241,6 +265,12 @@ public:
     // Cognitive integration
     void set_cognitive_core(std::shared_ptr<MembraneLayer> core) { cognitive_core_ = core; }
     void process_cycle();
+
+    // Motor readout: the trained map from cognitive state to motor channels
+    // (movement 4, expression 12, speech 8). Without a trained readout process_cycle
+    // produces no movement, expression or speech output.
+    void set_motor_readout(std::shared_ptr<LinearReadout> readout) { motor_readout_ = readout; }
+    bool has_trained_motor_readout() const { return motor_readout_ && motor_readout_->is_trained(); }
     
     // State
     CognitionModality current_modality() const { return current_modality_; }
@@ -248,6 +278,7 @@ public:
     
 private:
     std::shared_ptr<MembraneLayer> cognitive_core_;
+    std::shared_ptr<LinearReadout> motor_readout_;
     CognitionModality current_modality_ = CognitionModality::EMBODIED;
     
     // Sensory buffers

@@ -212,6 +212,30 @@ double EchoState::get_memory_capacity() const {
 }
 
 // ============================================================================
+// LinearReadout Implementation
+// ============================================================================
+
+void LinearReadout::fit(const Matrix& states, const Matrix& targets, double ridge) {
+    if (states.rows() == 0 || states.rows() != targets.rows()) {
+        throw std::invalid_argument("LinearReadout::fit: states and targets need the same, non-zero number of rows");
+    }
+    Matrix StS = states.transpose() * states;
+    StS.diagonal().array() += ridge;
+    Wout_ = StS.ldlt().solve(states.transpose() * targets).transpose();
+    trained_ = true;
+}
+
+Vector LinearReadout::apply(const Vector& state) const {
+    if (!trained_) {
+        throw std::runtime_error("LinearReadout not trained");
+    }
+    if (state.size() != Wout_.cols()) {
+        throw std::invalid_argument("LinearReadout::apply: state size does not match the trained readout");
+    }
+    return Wout_ * state;
+}
+
+// ============================================================================
 // CognitiveNode Implementation
 // ============================================================================
 
@@ -386,9 +410,12 @@ void AvatarInterface::process_cycle() {
     cognitive_core_->process_all(integrated);
     cognitive_core_->propagate_echoes(PropagationMode::RESONANCE);
     
-    // Update motor output
-    Vector cognitive_output = cognitive_core_->get_aggregate_output();
-    update_motor_output(cognitive_output);
+    // Motor output comes only from the trained readout of the cognitive state; the raw
+    // (randomly weighted) reservoir state never drives movement, expression or speech.
+    if (!has_trained_motor_readout()) return;
+    Vector cognitive_state = cognitive_core_->get_aggregate_output();
+    if (cognitive_state.size() != motor_readout_->input_size()) return;
+    update_motor_output(motor_readout_->apply(cognitive_state));
 }
 
 Vector AvatarInterface::integrate_sensory_input() {
