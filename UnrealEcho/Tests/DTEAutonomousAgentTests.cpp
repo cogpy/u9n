@@ -33,6 +33,7 @@
 #include "CNS/AutonomousAgentController.h"
 #include "GameTraining/GamingMasterySystem.h"
 #include "Avatar/MetaHumanCNSBinding.h"
+#include "ActiveInference/ActiveInferenceEngine.h"
 #include "EchoCharacterReaction.h"
 #include "DTEAutonomousAgentTestReceiver.h"
 
@@ -1041,5 +1042,46 @@ bool FRLBridge_TrainedGateTest::RunTest(const FString& Parameters)
 
     RL->ResetLearning();
     TestFalse(TEXT("Reset policy is untrained again"), RL->IsPolicyTrained());
+    return true;
+}
+
+// ============================================================
+// Active inference — an untrained generative model selects and executes nothing
+// ============================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FActiveInference_UntrainedGateTest,
+    "DTE.ActiveInference.UntrainedModelSelectsNothing",
+    DTE_TEST_FLAGS)
+
+bool FActiveInference_UntrainedGateTest::RunTest(const FString& Parameters)
+{
+    UActiveInferenceEngine* Engine = NewObject<UActiveInferenceEngine>();
+    TestNotNull(TEXT("Active inference engine should be created"), Engine);
+    if (!Engine) { return false; }
+
+    TestFalse(TEXT("A fresh generative model is untrained"), Engine->IsGenerativeModelTrained());
+
+    AddExpectedError(TEXT("SelectPolicy: generative model untrained"));
+    const FPolicy Policy = Engine->SelectPolicy();
+    TestTrue(TEXT("Untrained model selects no policy"), Policy.PolicyID.IsEmpty());
+    TestEqual(TEXT("Untrained model's policy has no actions"), Policy.ActionSequence.Num(), 0);
+
+    AddExpectedError(TEXT("RunActiveInference: generative model untrained"));
+    TestEqual(TEXT("Untrained model chooses no action"), Engine->RunActiveInference(), (int32)INDEX_NONE);
+    TestEqual(TEXT("Nothing was executed"), Engine->GetActionHistory().Num(), 0);
+    TestFalse(TEXT("The refusal is recorded"), Engine->GetLastError().IsEmpty());
+
+    // Only real executed outcomes count as learning
+    Engine->MinLearningUpdatesForTrainedModel = 2;
+    FActionOutcome NotExecuted;
+    NotExecuted.ActionID = 1;
+    NotExecuted.ActualOutcome = { 0.5f };
+    Engine->LearnModelStructure({ NotExecuted, NotExecuted });
+    TestFalse(TEXT("Outcomes that were never executed do not train the model"), Engine->IsGenerativeModelTrained());
+
+    FActionOutcome Executed = NotExecuted;
+    Executed.bExecuted = true;
+    Engine->LearnModelStructure({ Executed, Executed });
+    TestTrue(TEXT("Real executed outcomes train the model"), Engine->IsGenerativeModelTrained());
     return true;
 }
