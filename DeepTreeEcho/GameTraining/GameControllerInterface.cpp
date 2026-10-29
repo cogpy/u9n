@@ -185,7 +185,8 @@ UGameControllerInterface::UGameControllerInterface()
         "Actions you can take (with their controls):\n{actions}\n"
         "Buttons: {buttons}.\n"
         "Choose one action and the controller input that performs it. Sticks range from -1 to 1, "
-        "triggers from 0 to 1, duration from 0.05 to {max_duration} seconds, confidence from 0 to 1. "
+        "triggers from 0 to 1, duration from 0.05 to {max_duration} seconds, confidence from 0 to 1; "
+        "a stick or trigger you leave out stays untouched. "
         "Reply with only a JSON object: {\"action\": \"<action>\", \"buttons\": [\"<button>\", ...], "
         "\"left_stick_x\": 0, \"left_stick_y\": 0, \"right_stick_x\": 0, \"right_stick_y\": 0, "
         "\"left_trigger\": 0, \"right_trigger\": 0, \"duration\": 0.3, \"confidence\": 0.5}");
@@ -742,22 +743,28 @@ void UGameControllerInterface::HandleCognitiveCommandReply(int32 RequestSerial, 
         Command.DesiredState.PressedButtons.Add(Button);
     }
 
-    struct FRangedField { const TCHAR* Name; float Min; float Max; float* Target; };
+    // Sticks and triggers the model leaves out are untouched (read as released); duration and
+    // confidence must be given.
+    struct FRangedField { const TCHAR* Name; float Min; float Max; float* Target; bool bRequired; };
     float Duration = 0.0f;
     float Confidence = 0.0f;
     const FRangedField Fields[] = {
-        { TEXT("left_stick_x"), -1.0f, 1.0f, &Command.DesiredState.LeftStickX },
-        { TEXT("left_stick_y"), -1.0f, 1.0f, &Command.DesiredState.LeftStickY },
-        { TEXT("right_stick_x"), -1.0f, 1.0f, &Command.DesiredState.RightStickX },
-        { TEXT("right_stick_y"), -1.0f, 1.0f, &Command.DesiredState.RightStickY },
-        { TEXT("left_trigger"), 0.0f, 1.0f, &Command.DesiredState.LeftTrigger },
-        { TEXT("right_trigger"), 0.0f, 1.0f, &Command.DesiredState.RightTrigger },
-        { TEXT("duration"), 0.05f, FMath::Max(0.05f, MaxCognitiveCommandDuration), &Duration },
-        { TEXT("confidence"), 0.0f, 1.0f, &Confidence },
+        { TEXT("left_stick_x"), -1.0f, 1.0f, &Command.DesiredState.LeftStickX, false },
+        { TEXT("left_stick_y"), -1.0f, 1.0f, &Command.DesiredState.LeftStickY, false },
+        { TEXT("right_stick_x"), -1.0f, 1.0f, &Command.DesiredState.RightStickX, false },
+        { TEXT("right_stick_y"), -1.0f, 1.0f, &Command.DesiredState.RightStickY, false },
+        { TEXT("left_trigger"), 0.0f, 1.0f, &Command.DesiredState.LeftTrigger, false },
+        { TEXT("right_trigger"), 0.0f, 1.0f, &Command.DesiredState.RightTrigger, false },
+        { TEXT("duration"), 0.05f, FMath::Max(0.05f, MaxCognitiveCommandDuration), &Duration, true },
+        { TEXT("confidence"), 0.0f, 1.0f, &Confidence, true },
     };
     for (const FRangedField& Field : Fields)
     {
         double Number = 0.0;
+        if (!Json->HasField(Field.Name) && !Field.bRequired)
+        {
+            continue;
+        }
         if (!ReadLenientNumber(Json, Field.Name, Number))
         {
             FailCognitiveCommand(FString::Printf(TEXT("model reply has no numeric %s"), Field.Name));
