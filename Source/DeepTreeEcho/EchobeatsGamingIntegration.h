@@ -490,11 +490,30 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Perception")
     TArray<float> ExtractFeatures(const TArray<float>& RawInput);
 
-    /** Match patterns in features */
+    /**
+     * Match patterns in features. Matches nothing (and broadcasts nothing on OnPatternRecognized)
+     * while the feature weights are untrained (AreFeatureWeightsTrained).
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Perception")
     TArray<FString> MatchPatterns(const TArray<float>& Features);
 
-    /** Assess current situation */
+    /**
+     * True once the feature weights have had at least MinLearningUpdatesForTrainedFeatures
+     * reward-driven updates (and at least one, whatever that field holds). The initial weights
+     * are random; until then no features, patterns or situation factors derived from them are
+     * reported or given to the model as measurements.
+     */
+    UFUNCTION(BlueprintPure, Category = "Echobeats|Perception")
+    bool AreFeatureWeightsTrained() const;
+
+    /** Reward-driven weight updates needed before feature-derived outputs are used (values below 1 count as 1) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats|Perception", meta = (ClampMin = "1"))
+    int32 MinLearningUpdatesForTrainedFeatures = 1;
+
+    /**
+     * Assess the current situation from matched patterns. Only factors with evidence are present;
+     * unmeasured factors (e.g. resource_status) are omitted, never defaulted.
+     */
     UFUNCTION(BlueprintCallable, Category = "Echobeats|Perception")
     TMap<FString, float> AssessSituation(const TArray<FString>& MatchedPatterns);
 
@@ -532,8 +551,9 @@ public:
     FString GetLastStrategyError() const { return LastStrategyError; }
 
     /**
-     * Instructions to the model for choosing a strategy. Slots: {goals}, {situation},
-     * {affordances}, {strategies}.
+     * Instructions to the model for choosing a strategy. Slots: {goals}, {game_state} (raw measured
+     * values), {situation} (assessed factors; unmeasured ones listed as unknown), {affordances},
+     * {strategies}.
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Echobeats|Action", meta = (MultiLine = true))
     FString StrategyPromptTemplate;
@@ -772,6 +792,12 @@ private:
 
     void HandleStrategyReply(TArray<FString> Offered, bool bSuccess, const FString& TextOrError);
     void FailStrategyRequest(const FString& Error);
+
+    /** Raw measured game state features for prompts */
+    FString DescribeGameStateForModel() const;
+
+    /** Assessed situation factors for prompts; unmeasured factors are named as unknown */
+    FString DescribeSituationForModel();
 
     /** Builds the default per-strategy plan prompt templates and action vocabulary */
     void InitializeActionPlanning();
