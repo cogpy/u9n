@@ -313,9 +313,53 @@ public:
               meta=(ClampMin="10.0", ClampMax="120.0"))
     float ProprioceptiveHz = 60.0f;
 
-    /** Registered reflex arcs */
+    /**
+     * Registered reflex arcs. The character's model authors them (RequestReflexAuthoring, sent on
+     * BeginPlay); there are no built-in arcs, so until the model has authored them no reflex fires.
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Config")
     TArray<FReflexArc> ReflexArcs;
+
+    /**
+     * Stimulus categories the reflex arcs cover (the SuggestedReflex / ThreatType tags that threat
+     * sources submit, e.g. AutonomousAgentController's ThreatLeft / ThreatRight / ThreatFront).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Reflex Authoring")
+    TArray<FString> ReflexStimulusCategories;
+
+    /** Action names the model may give its reflex responses. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Reflex Authoring")
+    TArray<FString> ReflexActionNames;
+
+    /** Allowed range for a reflex response duration (seconds). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Reflex Authoring")
+    FVector2D ReflexDurationRange = FVector2D(0.05f, 1.0f);
+
+    /** Allowed range for a reflex refractory period (seconds). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Reflex Authoring")
+    FVector2D ReflexRefractoryRange = FVector2D(0.1f, 2.0f);
+
+    /**
+     * Instruction sent to the model to author the reflex arcs. Slots: {character}, {stimuli},
+     * {min_threat}, {actions}, {buttons}, {categories}, {duration_min}, {duration_max},
+     * {refractory_min}, {refractory_max}. The reply must be a JSON object
+     * {"arcs": [{"stimulus", "action", "threshold", "duration", "refractory", "left_stick_x",
+     * "left_stick_y", "buttons", "category"}]}; each arc is validated against the offered vocabulary.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Reflex Authoring", meta=(MultiLine=true))
+    FString ReflexAuthoringPromptTemplate;
+
+    /** Name the model is told it is; empty = the owning actor's name. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="CNS|Reflex Authoring")
+    FString ReflexCharacterName;
+
+    /** Last reflex-authoring failure (no model, unparseable reply, or rejected arcs), or empty. */
+    UPROPERTY(BlueprintReadOnly, Category="CNS|Reflex Authoring")
+    FString LastReflexAuthoringError;
+
+    /** True while a reflex-authoring request is outstanding. */
+    UPROPERTY(BlueprintReadOnly, Category="CNS|Reflex Authoring")
+    bool bReflexAuthoringPending = false;
 
     // ====================================================
     // EVENTS
@@ -381,13 +425,21 @@ public:
     UFUNCTION(BlueprintCallable, Category="CNS|Reflex")
     bool RemoveReflexArc(const FString& ReflexID);
 
-    /** Manually fire a reflex (testing / override) */
+    /** Manually fire a reflex by arc ID or stimulus category (testing / override) */
     UFUNCTION(BlueprintCallable, Category="CNS|Reflex")
     void FireReflex(const FString& ReflexID);
 
     /** Check whether a reflex arc exists */
     UFUNCTION(BlueprintPure, Category="CNS|Reflex")
     bool HasReflexArc(const FString& ReflexID) const;
+
+    /**
+     * Asks the character's model to (re-)author the reflex arcs for ReflexStimulusCategories.
+     * Reflexes then fire without a model call per reflex. On success the authored arcs replace
+     * ReflexArcs; on failure nothing changes, the error is logged and kept in LastReflexAuthoringError.
+     */
+    UFUNCTION(BlueprintCallable, Category="CNS|Reflex")
+    void RequestReflexAuthoring();
 
     // ====================================================
     // PATHWAY CONTROL
@@ -512,7 +564,11 @@ protected:
     // ====================================================
 
     void FindAndCacheComponents();
-    void InitialiseDefaultReflexArcs();
+    /** Handles the model's reflex-authoring reply: validates and installs the arcs. */
+    void HandleReflexAuthoringReply(int32 RequestSerial, bool bSuccess, const FString& TextOrError);
+
+    /** Incremented per RequestReflexAuthoring; stale replies are discarded */
+    int32 ReflexAuthoringSerial = 0;
 
     /** Fast path: spinal reflex arc evaluation */
     void ProcessSpinalReflexes(const FControllerInputState& Input, float DeltaTime);

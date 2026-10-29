@@ -13,6 +13,80 @@
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
 #include "Math/UnrealMathUtility.h"
+#include "Model/EchoModelClient.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+
+namespace
+{
+    /** Reads a number field; small models sometimes quote numbers, so a numeric string counts too. */
+    bool ReadReflexNumber(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Key, double& Out)
+    {
+        if (Obj->TryGetNumberField(Key, Out))
+        {
+            return true;
+        }
+        FString Text;
+        if (Obj->TryGetStringField(Key, Text))
+        {
+            Text.TrimStartAndEndInline();
+            if (Text.IsNumeric())
+            {
+                Out = FCString::Atod(*Text);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Matches a model-given name against an enum's names (case-insensitive). */
+    template <typename TEnum>
+    bool ParseReflexEnum(const FString& Name, TEnum& Out)
+    {
+        const UEnum* Enum = StaticEnum<TEnum>();
+        const FString Trimmed = Name.TrimStartAndEnd();
+        if (!Enum || Trimmed.IsEmpty())
+        {
+            return false;
+        }
+        for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+        {
+            if (Enum->GetNameStringByIndex(Index).Equals(Trimmed, ESearchCase::IgnoreCase))
+            {
+                Out = static_cast<TEnum>(Enum->GetValueByIndex(Index));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template <typename TEnum>
+    FString ReflexEnumNames(bool bSkipFirst)
+    {
+        TArray<FString> Names;
+        if (const UEnum* Enum = StaticEnum<TEnum>())
+        {
+            for (int32 Index = bSkipFirst ? 1 : 0; Index < Enum->NumEnums() - 1; ++Index)
+            {
+                Names.Add(Enum->GetNameStringByIndex(Index));
+            }
+        }
+        return FString::Join(Names, TEXT(", "));
+    }
+
+    bool ContainsIgnoreCase(const TArray<FString>& List, const FString& Value, FString& OutCanonical)
+    {
+        for (const FString& Entry : List)
+        {
+            if (Entry.Equals(Value.TrimStartAndEnd(), ESearchCase::IgnoreCase))
+            {
+                OutCanonical = Entry;
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
 // -------------------------------------------------------
 // FProprioceptiveSnapshot helpers
@@ -70,6 +144,24 @@ UVirtualCNS::UVirtualCNS()
     PrimaryComponentTick.bStartWithTickEnabled = true;
     // Tick in PrePhysics group so proprioception is up-to-date before physics
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+    // Stimulus tags submitted by threat sources (AutonomousAgentController::SubmitThreatToCNS)
+    ReflexStimulusCategories = { TEXT("ThreatLeft"), TEXT("ThreatRight"), TEXT("ThreatFront") };
+    ReflexActionNames = { TEXT("DodgeLeft"), TEXT("DodgeRight"), TEXT("DodgeBack"),
+                          TEXT("Block"), TEXT("Jump"), TEXT("Crouch"), TEXT("Counter") };
+
+    ReflexAuthoringPromptTemplate = TEXT(
+        "You are {character}, an embodied agent playing through a game controller. You are setting up your own "
+        "spinal reflexes: fast automatic responses that fire without thinking when a threat of level {min_threat} "
+        "to 1.0 arrives. Write one reflex for each of these stimuli: {stimuli}. For each reflex choose: "
+        "the action name (exactly one of: {actions}); the threat level at or above which it fires "
+        "(a number from {min_threat} to 1.0); how long to hold the input in seconds ({duration_min} to {duration_max}); "
+        "the refractory period in seconds before it can fire again ({refractory_min} to {refractory_max}); "
+        "the left stick x and y (numbers from -1 to 1, negative x = left, positive y = forward); the buttons "
+        "to press (a list, each exactly one of: {buttons}; may be empty); and the category (exactly one of: {categories}). "
+        "Reply with only a JSON object: {\"arcs\": [{\"stimulus\": \"<stimulus>\", \"action\": \"<action>\", "
+        "\"threshold\": <number>, \"duration\": <number>, \"refractory\": <number>, \"left_stick_x\": <number>, "
+        "\"left_stick_y\": <number>, \"buttons\": [<button names>], \"category\": \"<category>\"}]}");
 }
 
 // -------------------------------------------------------
@@ -80,7 +172,8 @@ void UVirtualCNS::BeginPlay()
 {
     Super::BeginPlay();
     FindAndCacheComponents();
-    InitialiseDefaultReflexArcs();
+    // The character's model authors its reflex arcs; none fire until it has
+    RequestReflexAuthoring();
     bInitialised = true;
 }
 
@@ -319,9 +412,10 @@ bool UVirtualCNS::RemoveReflexArc(const FString& ReflexID)
 
 void UVirtualCNS::FireReflex(const FString& ReflexID)
 {
+    // Accepts an arc ID or a stimulus category (GamingMasterySystem routes stimuli by type)
     for (FReflexArc& Arc : ReflexArcs)
     {
-        if (Arc.ReflexID == ReflexID)
+        if (Arc.ReflexID == ReflexID || Arc.TriggerCondition == ReflexID)
         {
             if (!Arc.IsRefractory())
             {
@@ -454,84 +548,193 @@ void UVirtualCNS::FindAndCacheComponents()
 }
 
 // -------------------------------------------------------
-// PRIVATE — InitialiseDefaultReflexArcs
+// Reflex authoring — the model writes the arcs once; reflexes then fire without a model call
 // -------------------------------------------------------
 
-void UVirtualCNS::InitialiseDefaultReflexArcs()
+void UVirtualCNS::RequestReflexAuthoring()
 {
-    if (!ReflexArcs.IsEmpty()) { return; } // already set in editor / blueprint
-
-    // ── Dodge Left ────────────────────────────────────────
+    if (ReflexStimulusCategories.Num() == 0 || ReflexActionNames.Num() == 0)
     {
-        FReflexArc Arc;
-        Arc.ReflexID          = TEXT("DodgeLeft");
-        Arc.TriggerCondition  = TEXT("ThreatRight");
-        Arc.Threshold         = 0.7f;
-        Arc.RefractoryPeriod  = 0.4f;
-        FControllerInputState Dodge;
-        Dodge.LeftStickX = -1.0f;
-        Arc.Response.DesiredState = Dodge;
-        Arc.Response.Duration     = 0.25f;
-        Arc.Response.Priority     = 10.0f;
-        Arc.Response.Category     = EGameActionCategory::Defense;
-        Arc.Response.ActionName   = TEXT("DodgeLeft");
-        Arc.Response.Confidence   = 0.95f;
-        ReflexArcs.Add(Arc);
+        LastReflexAuthoringError = TEXT("no stimulus categories or action names to author reflexes for");
+        UE_LOG(LogTemp, Error, TEXT("VirtualCNS: %s"), *LastReflexAuthoringError);
+        return;
     }
 
-    // ── Dodge Right ───────────────────────────────────────
+    TMap<FString, FString> Slots;
+    Slots.Add(TEXT("character"), !ReflexCharacterName.IsEmpty() ? ReflexCharacterName
+        : (GetOwner() ? GetOwner()->GetName() : GetName()));
+    Slots.Add(TEXT("stimuli"), FString::Join(ReflexStimulusCategories, TEXT(", ")));
+    Slots.Add(TEXT("min_threat"), FString::Printf(TEXT("%.2f"), ReflexThreatThreshold));
+    Slots.Add(TEXT("actions"), FString::Join(ReflexActionNames, TEXT(", ")));
+    Slots.Add(TEXT("buttons"), ReflexEnumNames<EGamepadButton>(true));
+    Slots.Add(TEXT("categories"), ReflexEnumNames<EGameActionCategory>(false));
+    Slots.Add(TEXT("duration_min"), FString::Printf(TEXT("%.2f"), ReflexDurationRange.X));
+    Slots.Add(TEXT("duration_max"), FString::Printf(TEXT("%.2f"), ReflexDurationRange.Y));
+    Slots.Add(TEXT("refractory_min"), FString::Printf(TEXT("%.2f"), ReflexRefractoryRange.X));
+    Slots.Add(TEXT("refractory_max"), FString::Printf(TEXT("%.2f"), ReflexRefractoryRange.Y));
+
+    TArray<FEchoModelMessage> Messages;
+    Messages.Add(FEchoModelMessage(TEXT("user"), UEchoModelClient::FillPrompt(ReflexAuthoringPromptTemplate, Slots)));
+
+    const int32 RequestSerial = ++ReflexAuthoringSerial;
+    bReflexAuthoringPending = true;
+    TWeakObjectPtr<UVirtualCNS> WeakThis(this);
+    UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateLambda(
+        [WeakThis, RequestSerial](bool bSuccess, const FString& TextOrError)
+        {
+            if (UVirtualCNS* Self = WeakThis.Get())
+            {
+                Self->HandleReflexAuthoringReply(RequestSerial, bSuccess, TextOrError);
+            }
+        }), 0.4f);
+}
+
+void UVirtualCNS::HandleReflexAuthoringReply(int32 RequestSerial, bool bSuccess, const FString& TextOrError)
+{
+    if (RequestSerial != ReflexAuthoringSerial)
     {
-        FReflexArc Arc;
-        Arc.ReflexID          = TEXT("DodgeRight");
-        Arc.TriggerCondition  = TEXT("ThreatLeft");
-        Arc.Threshold         = 0.7f;
-        Arc.RefractoryPeriod  = 0.4f;
-        FControllerInputState Dodge;
-        Dodge.LeftStickX = 1.0f;
-        Arc.Response.DesiredState = Dodge;
-        Arc.Response.Duration     = 0.25f;
-        Arc.Response.Priority     = 10.0f;
-        Arc.Response.Category     = EGameActionCategory::Defense;
-        Arc.Response.ActionName   = TEXT("DodgeRight");
-        Arc.Response.Confidence   = 0.95f;
-        ReflexArcs.Add(Arc);
+        return; // superseded by a newer authoring request
+    }
+    bReflexAuthoringPending = false;
+
+    if (!bSuccess)
+    {
+        LastReflexAuthoringError = TextOrError;
+        UE_LOG(LogTemp, Error, TEXT("VirtualCNS: no model-authored reflex arcs: %s"), *TextOrError);
+        return;
     }
 
-    // ── Block High ────────────────────────────────────────
+    TSharedPtr<FJsonObject> Json;
+    const TArray<TSharedPtr<FJsonValue>>* ArcValues = nullptr;
+    if (!UEchoModelClient::ParseJsonObject(TextOrError, Json) || !Json->TryGetArrayField(TEXT("arcs"), ArcValues) || !ArcValues)
     {
-        FReflexArc Arc;
-        Arc.ReflexID          = TEXT("BlockHigh");
-        Arc.TriggerCondition  = TEXT("ThreatProjectileHigh");
-        Arc.Threshold         = 0.65f;
-        Arc.RefractoryPeriod  = 0.3f;
-        FControllerInputState Block;
-        Block.PressedButtons.Add(EGamepadButton::LeftShoulder);
-        Arc.Response.DesiredState = Block;
-        Arc.Response.Duration     = 0.3f;
-        Arc.Response.Priority     = 9.0f;
-        Arc.Response.Category     = EGameActionCategory::Defense;
-        Arc.Response.ActionName   = TEXT("BlockHigh");
-        Arc.Response.Confidence   = 0.9f;
-        ReflexArcs.Add(Arc);
+        LastReflexAuthoringError = FString::Printf(TEXT("model reply is not the requested JSON: %s"), *TextOrError.Left(300));
+        UE_LOG(LogTemp, Error, TEXT("VirtualCNS: %s"), *LastReflexAuthoringError);
+        return;
     }
 
-    // ── Jump Dodge ────────────────────────────────────────
+    TArray<FReflexArc> Authored;
+    TArray<FString> Rejections;
+    for (int32 Index = 0; Index < ArcValues->Num(); ++Index)
     {
+        const TSharedPtr<FJsonValue>& Value = (*ArcValues)[Index];
+        const TSharedPtr<FJsonObject>* ArcObjPtr = nullptr;
+        if (!Value.IsValid() || !Value->TryGetObject(ArcObjPtr) || !ArcObjPtr || !ArcObjPtr->IsValid())
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d is not an object"), Index));
+            continue;
+        }
+        const TSharedPtr<FJsonObject>& ArcObj = *ArcObjPtr;
+
+        FString Stimulus, Action, CategoryName;
+        double Threshold = 0.0, Duration = 0.0, Refractory = 0.0, StickX = 0.0, StickY = 0.0;
+        if (!ArcObj->TryGetStringField(TEXT("stimulus"), Stimulus) ||
+            !ArcObj->TryGetStringField(TEXT("action"), Action) ||
+            !ArcObj->TryGetStringField(TEXT("category"), CategoryName) ||
+            !ReadReflexNumber(ArcObj, TEXT("threshold"), Threshold) ||
+            !ReadReflexNumber(ArcObj, TEXT("duration"), Duration) ||
+            !ReadReflexNumber(ArcObj, TEXT("refractory"), Refractory))
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d is missing a required field"), Index));
+            continue;
+        }
+        // Stick axes the model leaves out are simply not moved
+        ReadReflexNumber(ArcObj, TEXT("left_stick_x"), StickX);
+        ReadReflexNumber(ArcObj, TEXT("left_stick_y"), StickY);
+
+        FString CanonicalStimulus, CanonicalAction;
+        if (!ContainsIgnoreCase(ReflexStimulusCategories, Stimulus, CanonicalStimulus))
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d: stimulus '%s' is not one offered"), Index, *Stimulus));
+            continue;
+        }
+        if (!ContainsIgnoreCase(ReflexActionNames, Action, CanonicalAction))
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d: action '%s' is not one offered"), Index, *Action));
+            continue;
+        }
+        EGameActionCategory Category{};
+        if (!ParseReflexEnum(CategoryName, Category))
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d: category '%s' is not one offered"), Index, *CategoryName));
+            continue;
+        }
+
+        FControllerInputState Desired;
+        Desired.LeftStickX = FMath::Clamp(static_cast<float>(StickX), -1.0f, 1.0f);
+        Desired.LeftStickY = FMath::Clamp(static_cast<float>(StickY), -1.0f, 1.0f);
+
+        bool bButtonsValid = true;
+        TArray<FString> ButtonNames;
+        const TArray<TSharedPtr<FJsonValue>>* ButtonValues = nullptr;
+        FString SingleButton;
+        if (ArcObj->TryGetArrayField(TEXT("buttons"), ButtonValues) && ButtonValues)
+        {
+            for (const TSharedPtr<FJsonValue>& B : *ButtonValues)
+            {
+                FString Name;
+                if (B.IsValid() && B->TryGetString(Name)) { ButtonNames.Add(Name); }
+                else { bButtonsValid = false; }
+            }
+        }
+        else if (ArcObj->TryGetStringField(TEXT("buttons"), SingleButton) && !SingleButton.TrimStartAndEnd().IsEmpty())
+        {
+            ButtonNames.Add(SingleButton);
+        }
+        for (const FString& Name : ButtonNames)
+        {
+            EGamepadButton Button{};
+            if (!ParseReflexEnum(Name, Button)) { bButtonsValid = false; break; }
+            if (Button != EGamepadButton::None) { Desired.PressedButtons.Add(Button); }
+        }
+        if (!bButtonsValid)
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d: a button is not one offered"), Index));
+            continue;
+        }
+        if (FMath::Abs(Desired.LeftStickX) < 0.01f && FMath::Abs(Desired.LeftStickY) < 0.01f &&
+            Desired.PressedButtons.Num() == 0)
+        {
+            Rejections.Add(FString::Printf(TEXT("arc %d (%s) presses nothing"), Index, *CanonicalAction));
+            continue;
+        }
+
         FReflexArc Arc;
-        Arc.ReflexID          = TEXT("JumpDodge");
-        Arc.TriggerCondition  = TEXT("ThreatSweep");
-        Arc.Threshold         = 0.8f;
-        Arc.RefractoryPeriod  = 0.6f;
-        FControllerInputState Jump;
-        Jump.PressedButtons.Add(EGamepadButton::FaceBottom);
-        Arc.Response.DesiredState = Jump;
-        Arc.Response.Duration     = 0.15f;
-        Arc.Response.Priority     = 10.0f;
-        Arc.Response.Category     = EGameActionCategory::Defense;
-        Arc.Response.ActionName   = TEXT("JumpDodge");
-        Arc.Response.Confidence   = 0.9f;
-        ReflexArcs.Add(Arc);
+        Arc.ReflexID         = CanonicalStimulus + TEXT(":") + CanonicalAction;
+        Arc.TriggerCondition = CanonicalStimulus;
+        Arc.Threshold        = FMath::Clamp(static_cast<float>(Threshold), ReflexThreatThreshold, 1.0f);
+        Arc.RefractoryPeriod = FMath::Clamp(static_cast<float>(Refractory), ReflexRefractoryRange.X, ReflexRefractoryRange.Y);
+        Arc.Response.DesiredState = Desired;
+        Arc.Response.Duration     = FMath::Clamp(static_cast<float>(Duration), ReflexDurationRange.X, ReflexDurationRange.Y);
+        Arc.Response.Category     = Category;
+        Arc.Response.ActionName   = CanonicalAction;
+        Authored.RemoveAll([&Arc](const FReflexArc& A) { return A.ReflexID == Arc.ReflexID; });
+        Authored.Add(Arc);
     }
+
+    for (const FString& Rejection : Rejections)
+    {
+        UE_LOG(LogTemp, Error, TEXT("VirtualCNS: rejected model-authored reflex: %s"), *Rejection);
+    }
+    if (Authored.Num() == 0)
+    {
+        LastReflexAuthoringError = Rejections.Num() > 0
+            ? FString::Printf(TEXT("no valid reflex arcs in model reply (%s)"), *FString::Join(Rejections, TEXT("; ")))
+            : TEXT("model reply authored no reflex arcs");
+        UE_LOG(LogTemp, Error, TEXT("VirtualCNS: %s"), *LastReflexAuthoringError);
+        return;
+    }
+
+    ReflexArcs = MoveTemp(Authored);
+    if (Rejections.Num() > 0)
+    {
+        LastReflexAuthoringError = FString::Join(Rejections, TEXT("; "));
+    }
+    else
+    {
+        LastReflexAuthoringError.Reset();
+    }
+    UE_LOG(LogTemp, Log, TEXT("VirtualCNS: installed %d model-authored reflex arcs"), ReflexArcs.Num());
 }
 
 // -------------------------------------------------------

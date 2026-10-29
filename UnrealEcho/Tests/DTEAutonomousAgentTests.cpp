@@ -941,20 +941,26 @@ bool FIntegration_CNSReflexMasteryTest::RunTest(const FString& Parameters)
     // GMS wires into CNS via SetVirtualCNS
     TestNotNull(TEXT("GMS should have VirtualCNS reference"), CNS);
 
-    // Fire a stimulus via GMS → should propagate to CNS
-    // Prime reflex refractory timers
-    for (FReflexArc& R : CNS->ReflexArcs)
-    {
-        R.TimeSinceLastFire = 999.0f;
-    }
+    // There are no built-in reflex arcs: the character's model authors them
+    TestFalse(TEXT("CNS has no reflex arcs before the model authors them"),
+              CNS->HasReflexArc(TEXT("DodgeLeft")));
+    GMS->OnStimulusDetected(TEXT("DodgeLeft"), 0.85f);
+    TestFalse(TEXT("No reflex fires before the model authors the arcs"),
+              CNS->HasPendingMotorCommand());
+
+    // Install an arc (as model authoring would) and fire it through GMS
+    FReflexArc Arc;
+    Arc.ReflexID = TEXT("DodgeLeft");
+    Arc.TriggerCondition = TEXT("ThreatRight");
+    Arc.Response.ActionName = TEXT("DodgeLeft");
+    CNS->RegisterReflexArc(Arc);
 
     // GMS::OnStimulusDetected is a regular function (not a delegate), call directly
     GMS->OnStimulusDetected(TEXT("DodgeLeft"), 0.85f);
 
-    // Since urgency >= 0.7, VirtualCNS should have tried to fire the DodgeLeft reflex
-    // DodgeLeft is one of the default arcs
-    TestTrue(TEXT("CNS DodgeLeft reflex should exist"),
-             CNS->HasReflexArc(TEXT("DodgeLeft")));
+    // Since urgency >= 0.7, VirtualCNS should have fired the DodgeLeft reflex
+    TestTrue(TEXT("CNS DodgeLeft reflex should have queued its response"),
+             CNS->HasPendingMotorCommand());
 
     return true;
 }
