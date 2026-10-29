@@ -260,8 +260,17 @@ struct FAutognosisState
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FHierarchicalSelfImage> SelfImages;
 
+    /** The character's own insights: written only by the model (RequestMetaReflections). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FMetaCognitiveInsight> Insights;
+
+    /**
+     * Measurement telemetry (utilization, pattern stability, self-image confidence, pattern
+     * readings) with system-written labels. Not the character's insights: it feeds optimization
+     * discovery and is given to the model as measurements when it writes its insights.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    TArray<FMetaCognitiveInsight> Measurements;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     TArray<FOptimizationOpportunity> Optimizations;
@@ -284,6 +293,8 @@ struct FAutognosisState
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelfImageBuilt, const FHierarchicalSelfImage&, SelfImage);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInsightGenerated, const FMetaCognitiveInsight&, Insight);
+/** A measurement record was added to the telemetry (not a character insight). */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAutognosisMeasurement, const FMetaCognitiveInsight&, Measurement);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOptimizationDiscovered, const FOptimizationOpportunity&, Opportunity);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAutognosisCycleComplete, int32, CycleCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelfAwarenessChanged, float, NewScore);
@@ -349,8 +360,13 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnSelfImageBuilt OnSelfImageBuilt;
 
+    /** A model-written insight was added to the character's insights. */
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnInsightGenerated OnInsightGenerated;
+
+    /** A measurement record was added to the telemetry (system-written; not voiced as the character). */
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnAutognosisMeasurement OnMeasurementRecorded;
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnOptimizationDiscovered OnOptimizationDiscovered;
@@ -412,17 +428,25 @@ public:
     // META-COGNITIVE PROCESSING
     // ========================================
 
-    /** Process self-image for insights */
+    /**
+     * Measures a self-image (utilization, pattern stability, confidence) and records the readings
+     * in the Measurements telemetry (OnMeasurementRecorded). Returns the new measurement records.
+     * The character's insights are written by the model from these measurements.
+     */
     UFUNCTION(BlueprintCallable, Category = "Meta-Cognition")
     TArray<FMetaCognitiveInsight> ProcessSelfImage(const FHierarchicalSelfImage& SelfImage);
 
-    /** Generate insight from pattern */
+    /** Records a detected pattern's reading in the Measurements telemetry */
     UFUNCTION(BlueprintCallable, Category = "Meta-Cognition")
-    FMetaCognitiveInsight GenerateInsight(const FBehavioralPattern& Pattern, EInsightCategory Category);
+    FMetaCognitiveInsight RecordPatternMeasurement(const FBehavioralPattern& Pattern, EInsightCategory Category);
 
-    /** Get all insights */
+    /** Get all insights (model-written) */
     UFUNCTION(BlueprintPure, Category = "Meta-Cognition")
     TArray<FMetaCognitiveInsight> GetAllInsights() const;
+
+    /** Get the measurement telemetry (system-written readings, not character insights) */
+    UFUNCTION(BlueprintPure, Category = "Meta-Cognition")
+    TArray<FMetaCognitiveInsight> GetMeasurements() const;
 
     /** Get insights by category */
     UFUNCTION(BlueprintPure, Category = "Meta-Cognition")

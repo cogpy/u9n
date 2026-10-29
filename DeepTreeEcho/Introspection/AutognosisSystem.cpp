@@ -98,6 +98,7 @@ void UAutognosisSystem::InitializeAutognosis()
 {
     AutognosisState.SelfImages.Empty();
     AutognosisState.Insights.Empty();
+    AutognosisState.Measurements.Empty();
     AutognosisState.Optimizations.Empty();
     AutognosisState.CycleCount = 0;
     AutognosisState.bIsRunning = false;
@@ -486,23 +487,23 @@ TArray<FMetaCognitiveInsight> UAutognosisSystem::ProcessSelfImage(const FHierarc
         Insights.Add(Insight);
     }
 
-    // Store insights
+    // Store as measurement telemetry; the character's insights are written by the model
     for (const FMetaCognitiveInsight& Insight : Insights)
     {
-        AutognosisState.Insights.Add(Insight);
-        OnInsightGenerated.Broadcast(Insight);
+        AutognosisState.Measurements.Add(Insight);
+        OnMeasurementRecorded.Broadcast(Insight);
     }
 
-    // Limit insight history
-    while (AutognosisState.Insights.Num() > MaxInsightHistory)
+    // Limit measurement history
+    while (AutognosisState.Measurements.Num() > MaxInsightHistory)
     {
-        AutognosisState.Insights.RemoveAt(0);
+        AutognosisState.Measurements.RemoveAt(0);
     }
 
     return Insights;
 }
 
-FMetaCognitiveInsight UAutognosisSystem::GenerateInsight(const FBehavioralPattern& Pattern, EInsightCategory Category)
+FMetaCognitiveInsight UAutognosisSystem::RecordPatternMeasurement(const FBehavioralPattern& Pattern, EInsightCategory Category)
 {
     FMetaCognitiveInsight Insight;
     Insight.InsightID = GenerateInsightID();
@@ -514,10 +515,19 @@ FMetaCognitiveInsight UAutognosisSystem::GenerateInsight(const FBehavioralPatter
     Insight.Timestamp = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
     Insight.RelatedPatterns.Add(Pattern.PatternID);
 
-    AutognosisState.Insights.Add(Insight);
-    OnInsightGenerated.Broadcast(Insight);
+    AutognosisState.Measurements.Add(Insight);
+    while (AutognosisState.Measurements.Num() > MaxInsightHistory)
+    {
+        AutognosisState.Measurements.RemoveAt(0);
+    }
+    OnMeasurementRecorded.Broadcast(Insight);
 
     return Insight;
+}
+
+TArray<FMetaCognitiveInsight> UAutognosisSystem::GetMeasurements() const
+{
+    return AutognosisState.Measurements;
 }
 
 TArray<FMetaCognitiveInsight> UAutognosisSystem::GetAllInsights() const
@@ -561,8 +571,8 @@ TArray<FOptimizationOpportunity> UAutognosisSystem::DiscoverOptimizations()
 {
     TArray<FOptimizationOpportunity> Opportunities;
 
-    // Analyze insights for optimization opportunities
-    for (const FMetaCognitiveInsight& Insight : AutognosisState.Insights)
+    // Analyze measurements for optimization opportunities
+    for (const FMetaCognitiveInsight& Insight : AutognosisState.Measurements)
     {
         if (Insight.Category == EInsightCategory::ResourceUtilization && Insight.Importance > 0.5f)
         {
@@ -809,10 +819,15 @@ FString UAutognosisSystem::DescribeSelfImagesForModel() const
         }
     }
 
-    const int32 FirstInsight = FMath::Max(0, AutognosisState.Insights.Num() - 6);
+    const int32 FirstMeasurement = FMath::Max(0, AutognosisState.Measurements.Num() - 6);
+    for (int32 i = FirstMeasurement; i < AutognosisState.Measurements.Num(); ++i)
+    {
+        Text += FString::Printf(TEXT("measurement: %s\n"), *AutognosisState.Measurements[i].Description);
+    }
+    const int32 FirstInsight = FMath::Max(0, AutognosisState.Insights.Num() - 3);
     for (int32 i = FirstInsight; i < AutognosisState.Insights.Num(); ++i)
     {
-        Text += FString::Printf(TEXT("diagnostic: %s\n"), *AutognosisState.Insights[i].Description);
+        Text += FString::Printf(TEXT("your earlier insight: %s\n"), *AutognosisState.Insights[i].Description);
     }
     return Text;
 }

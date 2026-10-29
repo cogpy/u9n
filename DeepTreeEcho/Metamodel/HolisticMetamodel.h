@@ -614,8 +614,8 @@ public:
      * ("metric value > threshold"). Measurement labels for tooling/logs; never voiced as the
      * character's own insight (character insights come only from the model).
      */
-    UFUNCTION(BlueprintCallable, Category = "Metamodel|Insights")
-    TArray<FString> GenerateHolisticInsights() const;
+    UFUNCTION(BlueprintCallable, Category = "Metamodel|Measurements")
+    TArray<FString> GetThresholdMeasurements() const;
 
     /** Assess self-awareness level */
     UFUNCTION(BlueprintCallable, Category = "Metamodel|Insights")
