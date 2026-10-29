@@ -306,9 +306,24 @@ public:
     UFUNCTION(BlueprintPure, Category = "Reinforcement")
     FString GetBestAction(const FString& State) const;
 
-    /** Get action using epsilon-greedy policy */
+    /**
+     * The best learned action for State among AvailableActions: only actions whose Q-value was
+     * learned for this state (at least MinVisitsForLearnedAction updates) are considered; returns
+     * empty when there is none. Random exploration happens only in bExplorationTrainingMode.
+     */
     UFUNCTION(BlueprintCallable, Category = "Reinforcement")
     FString SelectAction(const FString& State, const TArray<FString>& AvailableActions);
+
+    /**
+     * TRAINING MODE: lets SelectAction explore (epsilon-greedy random actions, and random actions
+     * for unlearned states). Off by default; never enable it for the character's live behaviour.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reinforcement")
+    bool bExplorationTrainingMode = false;
+
+    /** Q-value updates a state-action pair needs before SelectAction may choose it */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reinforcement", meta = (ClampMin = "1"))
+    int32 MinVisitsForLearnedAction = 3;
 
     /** Provide reward signal */
     UFUNCTION(BlueprintCallable, Category = "Reinforcement")
