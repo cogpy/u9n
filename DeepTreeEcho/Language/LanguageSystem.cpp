@@ -725,26 +725,60 @@ FString ULanguageSystem::SendTemplateRequest(const FResponseTemplate& Template, 
     SetDialogueState(EDialogueState::Processing);
     UEchoModelClient::Get()->Chat(Messages, FOnEchoModelReply::CreateUObject(
         this, &ULanguageSystem::HandleResponseReply, RequestID, Template.ResponseType, EmotionalTone, StateOnSuccess,
-        Template.TemplateID));
+        Template.TemplateID, Template.StyleExample));
     return RequestID;
 }
 
 void ULanguageSystem::HandleResponseReply(bool bSuccess, const FString& TextOrError, FString RequestID,
                                           ESpeechAct SpeechAct, float EmotionalTone, EDialogueState StateOnSuccess,
-                                          FString TemplateID)
+                                          FString TemplateID, FString StyleExample)
 {
-    if (!bSuccess)
+    auto Fail = [this, &RequestID](const FString& Error)
     {
         // No agent turn, no text: report the failure as a system event.
-        UE_LOG(LogTemp, Error, TEXT("LanguageSystem: request %s produced no reply: %s"), *RequestID, *TextOrError);
+        UE_LOG(LogTemp, Error, TEXT("LanguageSystem: request %s produced no reply: %s"), *RequestID, *Error);
         SetDialogueState(EDialogueState::Listening);
-        OnGenerationFailed.Broadcast(RequestID, TextOrError);
+        OnGenerationFailed.Broadcast(RequestID, Error);
+    };
+
+    if (!bSuccess)
+    {
+        Fail(TextOrError);
+        return;
+    }
+
+    const FString Text = TextOrError.TrimStartAndEnd();
+    if (Text.IsEmpty())
+    {
+        Fail(TEXT("model reply is empty"));
+        return;
+    }
+
+    // A reply that is the style example itself is the designer's line, not the model's
+    auto Normalize = [](FString In)
+    {
+        In.TrimStartAndEndInline();
+        while (In.Len() > 0 && (In[0] == TEXT('"') || In[0] == TEXT('\'')))
+        {
+            In.RightChopInline(1);
+        }
+        while (In.Len() > 0 && (In[In.Len() - 1] == TEXT('"') || In[In.Len() - 1] == TEXT('\'')))
+        {
+            In.LeftChopInline(1);
+        }
+        In.TrimStartAndEndInline();
+        return In;
+    };
+    const FString Example = Normalize(StyleExample);
+    if (!Example.IsEmpty() && Normalize(Text).Equals(Example, ESearchCase::IgnoreCase))
+    {
+        Fail(FString::Printf(TEXT("model copied the '%s' style example verbatim"), *TemplateID));
         return;
     }
 
     FGeneratedResponse Response;
     Response.ResponseID = RequestID;
-    Response.Text = TextOrError.TrimStartAndEnd();
+    Response.Text = Text;
     Response.SpeechAct = SpeechAct;
     Response.EmotionalTone = EmotionalTone;
     Response.TemplateID = TemplateID;

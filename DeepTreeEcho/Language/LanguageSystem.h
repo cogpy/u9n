@@ -551,7 +551,8 @@ protected:
     FString SendNarrativeRequest(const FString& NarrativeType, const TMap<FString, FString>& Slots,
                                  const TArray<FString>& Characters);
     void HandleResponseReply(bool bSuccess, const FString& TextOrError, FString RequestID,
-                             ESpeechAct SpeechAct, float EmotionalTone, EDialogueState StateOnSuccess, FString TemplateID);
+                             ESpeechAct SpeechAct, float EmotionalTone, EDialogueState StateOnSuccess, FString TemplateID,
+                             FString StyleExample);
     void HandleNarrativeReply(bool bSuccess, const FString& TextOrError, FString RequestID,
                               FString NarrativeType, TArray<FString> Characters, float EmotionalArc);
 
