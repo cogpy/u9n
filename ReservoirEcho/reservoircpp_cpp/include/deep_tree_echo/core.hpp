@@ -199,7 +199,9 @@ protected:
     Vector output_;
     std::shared_ptr<EchoState> echo_state_;
     
-    std::vector<std::pair<std::shared_ptr<CognitiveNode>, double>> connections_;
+    // Non-owning links: nodes are owned by their membrane layers, and links may form
+    // cycles (e.g. reasoning <-> memory), so owning links would leak the whole graph.
+    std::vector<std::pair<std::weak_ptr<CognitiveNode>, double>> connections_;
     std::unordered_map<std::string, Vector> incoming_echoes_;
 };
 
